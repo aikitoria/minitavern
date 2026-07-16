@@ -41,7 +41,9 @@ export default function GeneralTab() {
         <option value="">— none —</option>
         <For each={state.endpoints}>{(ep) => <option value={ep.id}>{ep.name}</option>}</For>
       </select>
-      <p class="hint">Model and sampling settings are configured per endpoint in the Endpoints tab.</p>
+      <p class="hint">
+        Model and sampling settings are configured per endpoint in the Endpoints tab.
+      </p>
 
       <label>Default system prompt preset</label>
       <select
@@ -79,7 +81,9 @@ export default function GeneralTab() {
       </label>
 
       <div class="form-actions">
-        <button class="primary-btn" onClick={() => void save()}>Save</button>
+        <button class="primary-btn" onClick={() => void save()}>
+          Save
+        </button>
         <button onClick={discard}>Discard</button>
         <Show when={saved()}>
           <span class="saved-flash">✓ Saved</span>

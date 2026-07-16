@@ -11,7 +11,17 @@ const SendIcon = () => (
 );
 
 const ResumeIcon = () => (
-  <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <svg
+    viewBox="0 0 24 24"
+    width="18"
+    height="18"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2.4"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
     <path d="M5 5l7 7-7 7" />
     <path d="M13 5l7 7-7 7" />
   </svg>
@@ -34,7 +44,8 @@ const COMMANDS: Command[] = [
   {
     name: 'char',
     params: '<name>',
-    description: 'Set the assistant speaker name for this conversation (empty resets to the character)',
+    description:
+      'Set the assistant speaker name for this conversation (empty resets to the character)',
     run: async (args) => {
       if (state.selectedId == null) throw new Error('no conversation selected');
       await api.patchConversation(state.selectedId, { speakerName: args.trim() || null });
@@ -122,12 +133,17 @@ export default function Composer() {
   const resumable = () => {
     const path = activePath();
     const last = path[path.length - 1];
-    return last && last.role === 'assistant' && last.status !== 'streaming' && last.content ? last : null;
+    return last && last.role === 'assistant' && last.status !== 'streaming' && last.content
+      ? last
+      : null;
   };
 
   const resume = () => {
     const msg = resumable();
-    if (msg) void api.resume(msg.id).catch((err) => alert(err instanceof Error ? err.message : String(err)));
+    if (msg)
+      void api
+        .resume(msg.id)
+        .catch((err) => alert(err instanceof Error ? err.message : String(err)));
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -196,15 +212,26 @@ export default function Composer() {
         <Show
           when={!streamingMessage()}
           fallback={
-            <button class="send-btn stop-btn" title="Stop generating" onClick={stop}><StopIcon /></button>
+            <button class="send-btn stop-btn" title="Stop generating" onClick={stop}>
+              <StopIcon />
+            </button>
           }
         >
           <Show when={resumable()}>
-            <button class="send-btn resume-btn" title="Resume last reply (assistant prefill)" onClick={resume}>
+            <button
+              class="send-btn resume-btn"
+              title="Resume last reply (assistant prefill)"
+              onClick={resume}
+            >
               <ResumeIcon />
             </button>
           </Show>
-          <button class="send-btn" title="Send" disabled={!text().trim()} onClick={() => void send()}>
+          <button
+            class="send-btn"
+            title="Send"
+            disabled={!text().trim()}
+            onClick={() => void send()}
+          >
             <SendIcon />
           </button>
         </Show>

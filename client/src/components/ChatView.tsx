@@ -1,7 +1,12 @@
 import { For, Show, createEffect, onCleanup, onMount } from 'solid-js';
 import { api } from '../state/api.ts';
 import {
-  activePath, newConversation, selectedConversation, siblingsOf, state, streamingMessage,
+  activePath,
+  newConversation,
+  selectedConversation,
+  siblingsOf,
+  state,
+  streamingMessage,
 } from '../state/store.ts';
 import MessageNode from './MessageNode.tsx';
 import TraceView from './TraceView.tsx';
@@ -35,7 +40,8 @@ export default function ChatView() {
     }
     const path = activePath();
     const last = path[path.length - 1];
-    if (!last || last.role !== 'assistant' || last.status === 'streaming' || streamingMessage()) return;
+    if (!last || last.role !== 'assistant' || last.status === 'streaming' || streamingMessage())
+      return;
     const siblings = siblingsOf(last);
     const idx = siblings.findIndex((m) => m.id === last.id);
     if (event.key === 'ArrowLeft') {
@@ -88,7 +94,9 @@ export default function ChatView() {
               Start a new chat
             </button>
             <Show when={state.endpoints.length === 0}>
-              <p class="hint">No API endpoint configured yet — open Settings (⚙) → Endpoints first.</p>
+              <p class="hint">
+                No API endpoint configured yet — open Settings (⚙) → Endpoints first.
+              </p>
             </Show>
           </div>
         }

@@ -1,5 +1,12 @@
 import type {
-  Character, Conversation, Endpoint, Persona, Preset, Settings, Template, TreeSnapshot,
+  Character,
+  Conversation,
+  Endpoint,
+  Persona,
+  Preset,
+  Settings,
+  Template,
+  TreeSnapshot,
 } from '@minitavern/shared';
 
 async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
@@ -66,7 +73,8 @@ export const api = {
     request<{ stopped: boolean }>('POST', `/api/generations/${messageId}/stop`),
 
   characters: () => request<Character[]>('GET', '/api/characters'),
-  createCharacter: (data: Partial<Character>) => request<Character>('POST', '/api/characters', data),
+  createCharacter: (data: Partial<Character>) =>
+    request<Character>('POST', '/api/characters', data),
   patchCharacter: (id: number, data: Partial<Character>) =>
     request<Character>('PATCH', `/api/characters/${id}`, data),
   deleteCharacter: (id: number) => request<void>('DELETE', `/api/characters/${id}`),
@@ -83,12 +91,14 @@ export const api = {
 
   presets: () => request<Preset[]>('GET', '/api/presets'),
   createPreset: (data: Partial<Preset>) => request<Preset>('POST', '/api/presets', data),
-  patchPreset: (id: number, data: Partial<Preset>) => request<Preset>('PATCH', `/api/presets/${id}`, data),
+  patchPreset: (id: number, data: Partial<Preset>) =>
+    request<Preset>('PATCH', `/api/presets/${id}`, data),
   deletePreset: (id: number) => request<void>('DELETE', `/api/presets/${id}`),
 
   personas: () => request<Persona[]>('GET', '/api/personas'),
   createPersona: (data: Partial<Persona>) => request<Persona>('POST', '/api/personas', data),
-  patchPersona: (id: number, data: Partial<Persona>) => request<Persona>('PATCH', `/api/personas/${id}`, data),
+  patchPersona: (id: number, data: Partial<Persona>) =>
+    request<Persona>('PATCH', `/api/personas/${id}`, data),
   deletePersona: (id: number) => request<void>('DELETE', `/api/personas/${id}`),
   uploadPersonaAvatar: (id: number, file: File) =>
     upload<Persona>('PUT', `/api/personas/${id}/avatar`, file, file.type),

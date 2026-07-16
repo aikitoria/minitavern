@@ -63,7 +63,9 @@ function Editor(props: { conv: Conversation }) {
       <input
         value={draft.speakerName ?? ''}
         onChange={(e) => setDraft('speakerName', e.currentTarget.value.trim() || null)}
-        placeholder={state.characters.find((ch) => ch.id === draft.characterId)?.name ?? 'Assistant'}
+        placeholder={
+          state.characters.find((ch) => ch.id === draft.characterId)?.name ?? 'Assistant'
+        }
       />
 
       <label>Persona</label>
@@ -76,7 +78,9 @@ function Editor(props: { conv: Conversation }) {
       </select>
 
       <div class="form-actions">
-        <button class="primary-btn" onClick={() => void save()}>Save</button>
+        <button class="primary-btn" onClick={() => void save()}>
+          Save
+        </button>
         <button onClick={discard}>Discard</button>
         <Show when={saved()}>
           <span class="saved-flash">✓ Saved</span>

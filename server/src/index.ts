@@ -59,7 +59,9 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
 
   if (pathname.startsWith('/api/')) {
     if (await dispatch(req, res, pathname)) return;
-    res.writeHead(404, { 'content-type': 'application/json' }).end(JSON.stringify({ error: 'not found' }));
+    res
+      .writeHead(404, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ error: 'not found' }));
     return;
   }
 
@@ -125,7 +127,9 @@ if (certPath && keyPath) {
   // Browsers default to plain http for bare IP:port URLs; sniff the first byte
   // (0x16 = TLS handshake) and redirect http requests to https on the same port.
   const redirect = http.createServer((req, res) => {
-    res.writeHead(301, { location: `https://${req.headers.host ?? 'localhost'}${req.url ?? '/'}` }).end();
+    res
+      .writeHead(301, { location: `https://${req.headers.host ?? 'localhost'}${req.url ?? '/'}` })
+      .end();
   });
   listener = net.createServer((socket) => {
     socket.once('readable', () => {
@@ -149,5 +153,7 @@ setSubscribeHandler(sendTreeTo);
 initWebSocket(server as http.Server);
 
 listener.listen(PORT, () => {
-  console.log(`minitavern server listening on ${certPath && keyPath ? 'https' : 'http'}://0.0.0.0:${PORT}`);
+  console.log(
+    `minitavern server listening on ${certPath && keyPath ? 'https' : 'http'}://0.0.0.0:${PORT}`,
+  );
 });

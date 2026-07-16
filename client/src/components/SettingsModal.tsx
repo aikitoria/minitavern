@@ -27,7 +27,11 @@ export default function SettingsModal() {
         <div class="tabs">
           <For each={TABS}>
             {(t) => (
-              <button class="tab" classList={{ active: tab() === t.key }} onClick={() => setTab(t.key)}>
+              <button
+                class="tab"
+                classList={{ active: tab() === t.key }}
+                onClick={() => setTab(t.key)}
+              >
                 {t.label}
               </button>
             )}

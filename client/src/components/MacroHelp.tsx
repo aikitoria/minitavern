@@ -1,16 +1,22 @@
 import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 
 const BASIC: [string, string][] = [
-  ['{{char}}', "The character's name (or \"Assistant\")"],
-  ['{{user}}', "The persona's name (or \"User\")"],
+  ['{{char}}', 'The character\'s name (or "Assistant")'],
+  ['{{user}}', 'The persona\'s name (or "User")'],
 ];
 
 const TEMPLATE: [string, string][] = [
-  ['{{system}}', 'Resolved system prompt: character custom → character preset → global default preset'],
+  [
+    '{{system}}',
+    'Resolved system prompt: character custom → character preset → global default preset',
+  ],
   ['{{personality}}', "The character's personality text"],
   ['{{persona}}', "The persona's description text"],
   ['{{scenario}}', "The character's scenario text"],
-  ['{{#if x}}…{{/if}}', 'Include the block only when slot x is non-empty (x = system, personality, persona, scenario)'],
+  [
+    '{{#if x}}…{{/if}}',
+    'Include the block only when slot x is non-empty (x = system, personality, persona, scenario)',
+  ],
 ];
 
 /** "?" chip that pops a reference card of the macros usable in the adjacent field. */
@@ -38,7 +44,9 @@ export default function MacroHelp(props: { template?: boolean }) {
 
   return (
     <span class="macro-help" ref={root}>
-      <button class="help-btn" title="Available macros" onClick={() => setOpen(!open())}>?</button>
+      <button class="help-btn" title="Available macros" onClick={() => setOpen(!open())}>
+        ?
+      </button>
       <Show when={open()}>
         <div class="help-card">
           <div class="help-title">Available macros</div>

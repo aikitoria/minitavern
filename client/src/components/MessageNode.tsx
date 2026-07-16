@@ -39,9 +39,7 @@ export default function MessageNode(props: { message: Message }) {
 
   // Optionally show the reasoning live while the model thinks with no answer text yet.
   const reasoningOpen = () =>
-    showReasoning() ||
-    (state.settings.autoExpandThinking && streaming() && !props.message.content);
-
+    showReasoning() || (state.settings.autoExpandThinking && streaming() && !props.message.content);
 
   const swipeable = () =>
     !isUser() && !streaming() && !editing() && state.tree.activeLeafId === props.message.id;
@@ -116,25 +114,39 @@ export default function MessageNode(props: { message: Message }) {
     <>
       <Show when={siblings().length > 1}>
         <span class="branch-nav">
-          <button class="icon-btn" disabled={siblingIndex() <= 0} onClick={() => switchSibling(-1)}>‹</button>
+          <button class="icon-btn" disabled={siblingIndex() <= 0} onClick={() => switchSibling(-1)}>
+            ‹
+          </button>
           {siblingIndex() + 1}/{siblings().length}
           <button
             class="icon-btn"
             disabled={siblingIndex() >= siblings().length - 1}
             onClick={() => switchSibling(1)}
-          >›</button>
+          >
+            ›
+          </button>
         </span>
       </Show>
       <Show when={!streaming() && !editing()}>
         <span class="msg-actions">
-          <button class="icon-btn" title="Copy" onClick={copy}>⧉</button>
-          <button class="icon-btn" title="Edit" onClick={startEdit}>✎</button>
+          <button class="icon-btn" title="Copy" onClick={copy}>
+            ⧉
+          </button>
+          <button class="icon-btn" title="Edit" onClick={startEdit}>
+            ✎
+          </button>
           <Show when={!isUser()}>
-            <button class="icon-btn" title="Regenerate" onClick={() => void api.regenerate(props.message.id)}>
+            <button
+              class="icon-btn"
+              title="Regenerate"
+              onClick={() => void api.regenerate(props.message.id)}
+            >
               ↻
             </button>
           </Show>
-          <button class="icon-btn" title="Delete branch from here" onClick={remove}>🗑</button>
+          <button class="icon-btn" title="Delete branch from here" onClick={remove}>
+            🗑
+          </button>
         </span>
       </Show>
     </>
@@ -220,7 +232,6 @@ export default function MessageNode(props: { message: Message }) {
         <Show when={props.message.status === 'error'}>
           <div class="msg-error">{props.message.genMeta?.error ?? 'Generation failed'}</div>
         </Show>
-
       </div>
     </article>
   );

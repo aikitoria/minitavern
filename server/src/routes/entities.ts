@@ -12,7 +12,8 @@ function rows(sql: string): Record<string, unknown>[] {
 }
 
 function rowById(table: string, id: number): Record<string, unknown> {
-  const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as
+    Record<string, unknown> | undefined;
   if (!row) throw new HttpError(404, `${table.slice(0, -1)} ${id} not found`);
   return row;
 }
@@ -23,7 +24,12 @@ const IMAGE_EXT: Record<string, string> = {
   'image/webp': 'webp',
 };
 
-function saveAvatar(kind: 'character' | 'persona', id: number, data: Buffer, contentType: string): string {
+function saveAvatar(
+  kind: 'character' | 'persona',
+  id: number,
+  data: Buffer,
+  contentType: string,
+): string {
   const ext = IMAGE_EXT[contentType];
   if (!ext) throw new HttpError(415, 'avatar must be image/png, image/jpeg or image/webp');
   const filename = `${kind}-${id}.${ext}`;
@@ -81,10 +87,17 @@ route.del('/api/presets/:id', ({ params }) => {
 route.get('/api/templates', () => rows('SELECT * FROM templates ORDER BY id').map(toTemplate));
 
 route.post('/api/templates', ({ body }) => {
-  const b = (body ?? {}) as { name?: string; content?: string; userPrologue?: string; prefixNames?: boolean };
+  const b = (body ?? {}) as {
+    name?: string;
+    content?: string;
+    userPrologue?: string;
+    prefixNames?: boolean;
+  };
   if (!b.name?.trim()) throw new HttpError(400, 'name is required');
   const result = db
-    .prepare('INSERT INTO templates (name, content, user_prologue, prefix_names, created_at) VALUES (?, ?, ?, ?, ?)')
+    .prepare(
+      'INSERT INTO templates (name, content, user_prologue, prefix_names, created_at) VALUES (?, ?, ?, ?, ?)',
+    )
     .run(b.name.trim(), b.content ?? '', b.userPrologue ?? '', b.prefixNames ? 1 : 0, Date.now());
   invalidate('templates');
   return toTemplate(rowById('templates', Number(result.lastInsertRowid)));
@@ -93,8 +106,15 @@ route.post('/api/templates', ({ body }) => {
 route.patch('/api/templates/:id', ({ params, body }) => {
   const id = Number(params.id);
   const cur = toTemplate(rowById('templates', id));
-  const b = (body ?? {}) as Partial<{ name: string; content: string; userPrologue: string; prefixNames: boolean }>;
-  db.prepare('UPDATE templates SET name = ?, content = ?, user_prologue = ?, prefix_names = ? WHERE id = ?').run(
+  const b = (body ?? {}) as Partial<{
+    name: string;
+    content: string;
+    userPrologue: string;
+    prefixNames: boolean;
+  }>;
+  db.prepare(
+    'UPDATE templates SET name = ?, content = ?, user_prologue = ?, prefix_names = ? WHERE id = ?',
+  ).run(
     b.name ?? cur.name,
     b.content ?? cur.content,
     b.userPrologue ?? cur.userPrologue,
@@ -147,15 +167,19 @@ route.del('/api/personas/:id', ({ params }) => {
   invalidate('personas');
 });
 
-route.put('/api/personas/:id/avatar', ({ params, raw, req }: Ctx) => {
-  const id = Number(params.id);
-  rowById('personas', id);
-  if (!raw?.length) throw new HttpError(400, 'image body is required');
-  const avatar = saveAvatar('persona', id, raw, req.headers['content-type'] ?? '');
-  db.prepare('UPDATE personas SET avatar = ? WHERE id = ?').run(avatar, id);
-  invalidate('personas');
-  return toPersona(rowById('personas', id));
-}, { rawBody: true });
+route.put(
+  '/api/personas/:id/avatar',
+  ({ params, raw, req }: Ctx) => {
+    const id = Number(params.id);
+    rowById('personas', id);
+    if (!raw?.length) throw new HttpError(400, 'image body is required');
+    const avatar = saveAvatar('persona', id, raw, req.headers['content-type'] ?? '');
+    db.prepare('UPDATE personas SET avatar = ? WHERE id = ?').run(avatar, id);
+    invalidate('personas');
+    return toPersona(rowById('personas', id));
+  },
+  { rawBody: true },
+);
 
 // ---- Characters ----
 
@@ -163,8 +187,13 @@ route.get('/api/characters', () => rows('SELECT * FROM characters ORDER BY id').
 
 route.post('/api/characters', ({ body }) => {
   const b = (body ?? {}) as Partial<{
-    name: string; personality: string; scenario: string; firstMessage: string;
-    presetId: number | null; customPrompt: string | null; templateId: number | null;
+    name: string;
+    personality: string;
+    scenario: string;
+    firstMessage: string;
+    presetId: number | null;
+    customPrompt: string | null;
+    templateId: number | null;
   }>;
   if (!b.name?.trim()) throw new HttpError(400, 'name is required');
   const result = db
@@ -190,8 +219,13 @@ route.patch('/api/characters/:id', ({ params, body }) => {
   const id = Number(params.id);
   const cur = toCharacter(rowById('characters', id));
   const b = (body ?? {}) as Partial<{
-    name: string; personality: string; scenario: string; firstMessage: string;
-    presetId: number | null; customPrompt: string | null; templateId: number | null;
+    name: string;
+    personality: string;
+    scenario: string;
+    firstMessage: string;
+    presetId: number | null;
+    customPrompt: string | null;
+    templateId: number | null;
   }>;
   db.prepare(
     `UPDATE characters SET name = ?, personality = ?, scenario = ?, first_message = ?,
@@ -219,39 +253,47 @@ route.del('/api/characters/:id', ({ params }) => {
   invalidate('conversations');
 });
 
-route.put('/api/characters/:id/avatar', ({ params, raw, req }: Ctx) => {
-  const id = Number(params.id);
-  rowById('characters', id);
-  if (!raw?.length) throw new HttpError(400, 'image body is required');
-  const avatar = saveAvatar('character', id, raw, req.headers['content-type'] ?? '');
-  db.prepare('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
-  invalidate('characters');
-  return toCharacter(rowById('characters', id));
-}, { rawBody: true });
+route.put(
+  '/api/characters/:id/avatar',
+  ({ params, raw, req }: Ctx) => {
+    const id = Number(params.id);
+    rowById('characters', id);
+    if (!raw?.length) throw new HttpError(400, 'image body is required');
+    const avatar = saveAvatar('character', id, raw, req.headers['content-type'] ?? '');
+    db.prepare('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
+    invalidate('characters');
+    return toCharacter(rowById('characters', id));
+  },
+  { rawBody: true },
+);
 
-route.post('/api/characters/import-card', ({ raw }: Ctx) => {
-  if (!raw?.length) throw new HttpError(400, 'PNG body is required');
-  const card = parseCharacterCard(raw);
-  const result = db
-    .prepare(
-      `INSERT INTO characters (name, personality, scenario, first_message, custom_prompt, card_json, created_at)
+route.post(
+  '/api/characters/import-card',
+  ({ raw }: Ctx) => {
+    if (!raw?.length) throw new HttpError(400, 'PNG body is required');
+    const card = parseCharacterCard(raw);
+    const result = db
+      .prepare(
+        `INSERT INTO characters (name, personality, scenario, first_message, custom_prompt, card_json, created_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      card.name,
-      card.personality,
-      card.scenario,
-      card.firstMessage,
-      card.systemPrompt,
-      JSON.stringify(card.raw),
-      Date.now(),
-    );
-  const id = Number(result.lastInsertRowid);
-  const avatar = saveAvatar('character', id, raw, 'image/png');
-  db.prepare('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
-  invalidate('characters');
-  return toCharacter(rowById('characters', id));
-}, { rawBody: true });
+      )
+      .run(
+        card.name,
+        card.personality,
+        card.scenario,
+        card.firstMessage,
+        card.systemPrompt,
+        JSON.stringify(card.raw),
+        Date.now(),
+      );
+    const id = Number(result.lastInsertRowid);
+    const avatar = saveAvatar('character', id, raw, 'image/png');
+    db.prepare('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
+    invalidate('characters');
+    return toCharacter(rowById('characters', id));
+  },
+  { rawBody: true },
+);
 
 // ---- Endpoints ----
 
@@ -259,12 +301,18 @@ route.get('/api/endpoints', () => rows('SELECT * FROM endpoints ORDER BY id').ma
 
 route.post('/api/endpoints', ({ body }) => {
   const b = (body ?? {}) as Partial<{
-    name: string; baseUrl: string; apiKey: string; model: string | null; genParams: GenParams;
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string | null;
+    genParams: GenParams;
   }>;
   if (!b.name?.trim()) throw new HttpError(400, 'name is required');
   if (!b.baseUrl?.trim()) throw new HttpError(400, 'baseUrl is required');
   const result = db
-    .prepare('INSERT INTO endpoints (name, base_url, api_key, model, gen_params_json, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .prepare(
+      'INSERT INTO endpoints (name, base_url, api_key, model, gen_params_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    )
     .run(
       b.name.trim(),
       b.baseUrl.trim().replace(/\/+$/, ''),
@@ -281,7 +329,11 @@ route.patch('/api/endpoints/:id', ({ params, body }) => {
   const id = Number(params.id);
   const cur = toEndpoint(rowById('endpoints', id));
   const b = (body ?? {}) as Partial<{
-    name: string; baseUrl: string; apiKey: string; model: string | null; genParams: GenParams;
+    name: string;
+    baseUrl: string;
+    apiKey: string;
+    model: string | null;
+    genParams: GenParams;
   }>;
   db.prepare(
     'UPDATE endpoints SET name = ?, base_url = ?, api_key = ?, model = ?, gen_params_json = ? WHERE id = ?',
@@ -317,7 +369,10 @@ route.get('/api/endpoints/:id/models', async ({ params }) => {
     .map((m) => m.id)
     .filter((id): id is string => typeof id === 'string')
     .sort();
-  db.prepare('UPDATE endpoints SET models_json = ? WHERE id = ?').run(JSON.stringify(models), endpoint.id);
+  db.prepare('UPDATE endpoints SET models_json = ? WHERE id = ?').run(
+    JSON.stringify(models),
+    endpoint.id,
+  );
   invalidate('endpoints');
   return models;
 });

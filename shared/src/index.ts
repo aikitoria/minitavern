@@ -137,13 +137,7 @@ export interface TreeSnapshot {
 }
 
 export type InvalidateEntity =
-  | 'conversations'
-  | 'characters'
-  | 'presets'
-  | 'templates'
-  | 'personas'
-  | 'endpoints'
-  | 'settings';
+  'conversations' | 'characters' | 'presets' | 'templates' | 'personas' | 'endpoints' | 'settings';
 
 /** Server -> client WebSocket events. Delta frames are deliberately terse. */
 export type ServerEvent =

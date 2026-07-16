@@ -54,7 +54,8 @@ export default function CharactersTab() {
   const save = async () => {
     try {
       const id = selectedId();
-      const saved = id === 'new' ? await api.createCharacter(data()) : await api.patchCharacter(id, data());
+      const saved =
+        id === 'new' ? await api.createCharacter(data()) : await api.patchCharacter(id, data());
       setSelectedId(saved.id);
       setStatus('');
       flashSaved();
@@ -99,7 +100,9 @@ export default function CharactersTab() {
     <div class="master-detail" classList={{ 'detail-open': nav.detailOpen() }}>
       <div class="entity-list">
         <div class="entity-list-actions">
-          <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>+ New</button>
+          <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>
+            + New
+          </button>
           <button onClick={() => cardInput.click()}>⇪ Import PNG</button>
         </div>
         <input
@@ -111,14 +114,19 @@ export default function CharactersTab() {
         />
         <For each={state.characters}>
           {(character) => (
-            <button classList={{ active: selectedId() === character.id }} onClick={() => select(character.id)}>
+            <button
+              classList={{ active: selectedId() === character.id }}
+              onClick={() => select(character.id)}
+            >
               <Avatar src={character.avatar} name={character.name} /> {character.name}
             </button>
           )}
         </For>
       </div>
       <div class="form">
-        <button class="detail-back" onClick={nav.closeDetail}>‹ Back to list</button>
+        <button class="detail-back" onClick={nav.closeDetail}>
+          ‹ Back to list
+        </button>
         <Show when={selectedId() !== 'new'}>
           <div class="avatar-row">
             <Avatar src={selected()?.avatar} name={selected()?.name ?? '?'} />
@@ -135,21 +143,36 @@ export default function CharactersTab() {
 
         <label>Name</label>
         <input ref={nameEl} placeholder="Character name" />
-        <label>Personality <MacroHelp /></label>
+        <label>
+          Personality <MacroHelp />
+        </label>
         <textarea ref={personalityEl} rows="5" placeholder="Who is {{char}}?" />
-        <label>Scenario <MacroHelp /></label>
+        <label>
+          Scenario <MacroHelp />
+        </label>
         <textarea ref={scenarioEl} rows="3" placeholder="Setting / situation (optional)" />
-        <label>First message <MacroHelp /></label>
-        <textarea ref={firstMessageEl} rows="3" placeholder="Greeting sent when a chat starts (optional)" />
+        <label>
+          First message <MacroHelp />
+        </label>
+        <textarea
+          ref={firstMessageEl}
+          rows="3"
+          placeholder="Greeting sent when a chat starts (optional)"
+        />
 
         <label>System prompt</label>
-        <select ref={presetEl} onChange={(e) => setCustomPrompt(e.currentTarget.value === 'custom')}>
+        <select
+          ref={presetEl}
+          onChange={(e) => setCustomPrompt(e.currentTarget.value === 'custom')}
+        >
           <option value="">Global default</option>
           <For each={state.presets}>{(p) => <option value={p.id}>Preset: {p.name}</option>}</For>
           <option value="custom">Custom prompt…</option>
         </select>
         <Show when={customPrompt()}>
-          <label>Custom prompt text <MacroHelp /></label>
+          <label>
+            Custom prompt text <MacroHelp />
+          </label>
         </Show>
         <textarea
           ref={customEl}
@@ -170,7 +193,9 @@ export default function CharactersTab() {
           </button>
           <button onClick={() => select(selectedId())}>Discard</button>
           <Show when={selectedId() !== 'new'}>
-            <button class="danger-btn" onClick={() => void remove()}>Delete</button>
+            <button class="danger-btn" onClick={() => void remove()}>
+              Delete
+            </button>
           </Show>
           <Show when={saved()}>
             <span class="saved-flash">✓ Saved</span>

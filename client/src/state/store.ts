@@ -1,8 +1,16 @@
 import { createMemo, batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type {
-  Character, Conversation, Endpoint, InvalidateEntity, Message, Persona, Preset,
-  ServerEvent, Settings, Template,
+  Character,
+  Conversation,
+  Endpoint,
+  InvalidateEntity,
+  Message,
+  Persona,
+  Preset,
+  ServerEvent,
+  Settings,
+  Template,
 } from '@minitavern/shared';
 import { DEFAULT_SETTINGS } from '@minitavern/shared';
 import { api } from './api.ts';
@@ -59,12 +67,16 @@ export const selectedConversation = createMemo(
 
 export const selectedCharacter = createMemo(() => {
   const conv = selectedConversation();
-  return conv?.characterId != null ? (state.characters.find((c) => c.id === conv.characterId) ?? null) : null;
+  return conv?.characterId != null
+    ? (state.characters.find((c) => c.id === conv.characterId) ?? null)
+    : null;
 });
 
 export const selectedPersona = createMemo(() => {
   const conv = selectedConversation();
-  return conv?.personaId != null ? (state.personas.find((p) => p.id === conv.personaId) ?? null) : null;
+  return conv?.personaId != null
+    ? (state.personas.find((p) => p.id === conv.personaId) ?? null)
+    : null;
 });
 
 /** Active path, root -> leaf, walked up via parent pointers from the active leaf. */
@@ -108,7 +120,8 @@ export const streamingMessage = createMemo<Message | null>(() => {
 // ---- Loaders ----
 
 const loaders: Record<InvalidateEntity, () => Promise<void>> = {
-  conversations: async () => setState('conversations', reconcile(await api.conversations(), { key: 'id' })),
+  conversations: async () =>
+    setState('conversations', reconcile(await api.conversations(), { key: 'id' })),
   characters: async () => setState('characters', reconcile(await api.characters(), { key: 'id' })),
   presets: async () => setState('presets', reconcile(await api.presets(), { key: 'id' })),
   templates: async () => setState('templates', reconcile(await api.templates(), { key: 'id' })),
@@ -202,5 +215,6 @@ export function toggleSidebar(): void {
 
 /** True until the initial server state (and the hash-selected tree, if any) has arrived. */
 export const booting = createMemo(
-  () => !state.booted || (state.selectedId != null && state.tree.conversationId !== state.selectedId),
+  () =>
+    !state.booted || (state.selectedId != null && state.tree.conversationId !== state.selectedId),
 );

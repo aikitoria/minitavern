@@ -27,7 +27,8 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
 class WsClient {
   events: ServerEvent[] = [];
   private ws: WebSocket;
-  private waiters: { pred: (ev: ServerEvent) => boolean; resolve: (ev: ServerEvent) => void }[] = [];
+  private waiters: { pred: (ev: ServerEvent) => boolean; resolve: (ev: ServerEvent) => void }[] =
+    [];
 
   constructor() {
     this.ws = new WebSocket(`${BASE.replace('http', 'ws')}/ws`);
@@ -55,7 +56,11 @@ class WsClient {
     this.ws.send(JSON.stringify({ sub: conversationId }));
   }
 
-  waitFor(pred: (ev: ServerEvent) => boolean, label: string, timeoutMs = 15000): Promise<ServerEvent> {
+  waitFor(
+    pred: (ev: ServerEvent) => boolean,
+    label: string,
+    timeoutMs = 15000,
+  ): Promise<ServerEvent> {
     const existing = this.events.find(pred);
     if (existing) return Promise.resolve(existing);
     return new Promise((resolve, reject) => {
@@ -184,8 +189,14 @@ async function main() {
   let snap = await tree(conv.id);
   let path = pathOf(snap);
   assert(path.length === 2, 'path is [user, assistant]');
-  assert(path[1]!.status === 'done' && path[1]!.content.includes('Hello world'), 'assistant reply persisted');
-  assert(path[1]!.content.includes('You are Assistant speaking with Aiki.'), 'macros substituted in system prompt');
+  assert(
+    path[1]!.status === 'done' && path[1]!.content.includes('Hello world'),
+    'assistant reply persisted',
+  );
+  assert(
+    path[1]!.content.includes('You are Assistant speaking with Aiki.'),
+    'macros substituted in system prompt',
+  );
   assert(path[1]!.reasoning != null && path[1]!.reasoning.length > 0, 'reasoning persisted');
   const userMsg1 = path[0]!;
   const assistant1 = path[1]!;
@@ -237,7 +248,10 @@ async function main() {
   );
   snap = await tree(conv.id);
   path = pathOf(snap);
-  assert(path.length === 2 && path[0]!.content === 'Edited hello', 'edited branch active with fresh reply');
+  assert(
+    path.length === 2 && path[0]!.content === 'Edited hello',
+    'edited branch active with fresh reply',
+  );
   const roots = snap.messages.filter((m) => m.parentId === null);
   assert(roots.length === 2, 'two root siblings after root edit');
 
@@ -323,7 +337,10 @@ async function main() {
     avatar: string | null;
   };
   assert(character.name === 'Card Imported Hero', 'card name imported');
-  assert(character.personality.includes('brave') && character.personality.includes('Fearless'), 'description + personality merged');
+  assert(
+    character.personality.includes('brave') && character.personality.includes('Fearless'),
+    'description + personality merged',
+  );
   assert(character.avatar != null, 'card PNG stored as avatar');
   const avatarRes = await fetch(`${BASE}${character.avatar}`);
   assert(avatarRes.ok, 'avatar served');
@@ -334,7 +351,8 @@ async function main() {
   const charSnap = await tree(charConv.id);
   const greeting = pathOf(charSnap)[0]!;
   assert(
-    greeting.role === 'assistant' && greeting.content === 'Greetings, Aiki! I am Card Imported Hero.',
+    greeting.role === 'assistant' &&
+      greeting.content === 'Greetings, Aiki! I am Card Imported Hero.',
     'first message seeded with macros substituted',
   );
   assert(charConv.title === 'Card Imported Hero', 'conversation titled after character');

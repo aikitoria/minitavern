@@ -36,7 +36,8 @@ export default function TemplatesTab() {
   const save = async () => {
     try {
       const id = selectedId();
-      const saved = id === 'new' ? await api.createTemplate(data()) : await api.patchTemplate(id, data());
+      const saved =
+        id === 'new' ? await api.createTemplate(data()) : await api.patchTemplate(id, data());
       setSelectedId(saved.id);
       setError('');
       flashSaved();
@@ -56,22 +57,34 @@ export default function TemplatesTab() {
   return (
     <div class="master-detail" classList={{ 'detail-open': nav.detailOpen() }}>
       <div class="entity-list">
-        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>+ New template</button>
+        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>
+          + New template
+        </button>
         <For each={state.templates}>
           {(template) => (
-            <button classList={{ active: selectedId() === template.id }} onClick={() => select(template.id)}>
+            <button
+              classList={{ active: selectedId() === template.id }}
+              onClick={() => select(template.id)}
+            >
               {template.name}
             </button>
           )}
         </For>
       </div>
       <div class="form">
-        <button class="detail-back" onClick={nav.closeDetail}>‹ Back to list</button>
+        <button class="detail-back" onClick={nav.closeDetail}>
+          ‹ Back to list
+        </button>
         <label>Name</label>
         <input ref={nameEl} placeholder="Roleplay" />
-        <label>System prompt template <MacroHelp template /></label>
+        <label>
+          System prompt template <MacroHelp template />
+        </label>
         <textarea ref={contentEl} class="mono" rows="9" />
-        <label>First user message (optional — sent as a fake user turn before the history) <MacroHelp template /></label>
+        <label>
+          First user message (optional — sent as a fake user turn before the history){' '}
+          <MacroHelp template />
+        </label>
         <textarea
           ref={prologueEl}
           class="mono"
@@ -80,8 +93,8 @@ export default function TemplatesTab() {
         />
         <label class="check-row">
           <input ref={prefixEl} type="checkbox" />
-          Prefix speaker names into messages ("{'{{user}}'}: …", "{'{{char}}'}: …") and prefill the reply
-          with the current speaker name (see /char)
+          Prefix speaker names into messages ("{'{{user}}'}: …", "{'{{char}}'}: …") and prefill the
+          reply with the current speaker name (see /char)
         </label>
         <div class="form-actions">
           <button class="primary-btn" onClick={() => void save()}>
@@ -89,7 +102,9 @@ export default function TemplatesTab() {
           </button>
           <button onClick={() => select(selectedId())}>Discard</button>
           <Show when={selectedId() !== 'new'}>
-            <button class="danger-btn" onClick={() => void remove()}>Delete</button>
+            <button class="danger-btn" onClick={() => void remove()}>
+              Delete
+            </button>
           </Show>
           <Show when={saved()}>
             <span class="saved-flash">✓ Saved</span>

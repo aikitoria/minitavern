@@ -1,8 +1,6 @@
 import { For, Show, createSignal } from 'solid-js';
 import { api } from '../state/api.ts';
-import {
-  newConversation, openModal, selectConversation, setState, state,
-} from '../state/store.ts';
+import { newConversation, openModal, selectConversation, setState, state } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
 
 export default function Sidebar() {
@@ -28,9 +26,15 @@ export default function Sidebar() {
       <div class="sidebar-head">
         <span class="brand">
           MiniTavern
-          <span class="conn-dot" classList={{ ok: state.connected }} title={state.connected ? 'Connected' : 'Disconnected'} />
+          <span
+            class="conn-dot"
+            classList={{ ok: state.connected }}
+            title={state.connected ? 'Connected' : 'Disconnected'}
+          />
         </span>
-        <button class="icon-btn" title="Settings" onClick={() => openModal('settings')}>⚙</button>
+        <button class="icon-btn" title="Settings" onClick={() => openModal('settings')}>
+          ⚙
+        </button>
       </div>
 
       <div class="new-chat-wrap">
@@ -68,7 +72,11 @@ export default function Sidebar() {
                 {(character) => <Avatar src={character().avatar} name={character().name} />}
               </Show>
               <span class="conv-title">{conv.title}</span>
-              <button class="icon-btn conv-delete" title="Delete" onClick={(e) => void remove(conv.id, e)}>
+              <button
+                class="icon-btn conv-delete"
+                title="Delete"
+                onClick={(e) => void remove(conv.id, e)}
+              >
                 ✕
               </button>
             </div>

@@ -56,7 +56,8 @@ export default function EndpointsTab() {
   const save = async () => {
     try {
       const id = selectedId();
-      const saved = id === 'new' ? await api.createEndpoint(data()) : await api.patchEndpoint(id, data());
+      const saved =
+        id === 'new' ? await api.createEndpoint(data()) : await api.patchEndpoint(id, data());
       setSelectedId(saved.id);
       setStatus('');
       flashSaved();
@@ -91,7 +92,9 @@ export default function EndpointsTab() {
   return (
     <div class="master-detail" classList={{ 'detail-open': nav.detailOpen() }}>
       <div class="entity-list">
-        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>+ New endpoint</button>
+        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>
+          + New endpoint
+        </button>
         <For each={state.endpoints}>
           {(ep) => (
             <button classList={{ active: selectedId() === ep.id }} onClick={() => select(ep.id)}>
@@ -101,7 +104,9 @@ export default function EndpointsTab() {
         </For>
       </div>
       <div class="form">
-        <button class="detail-back" onClick={nav.closeDetail}>‹ Back to list</button>
+        <button class="detail-back" onClick={nav.closeDetail}>
+          ‹ Back to list
+        </button>
         <label>Name</label>
         <input ref={nameEl} placeholder="Local llama.cpp" />
         <label>Base URL (OpenAI-compatible, up to /v1)</label>
@@ -161,7 +166,9 @@ export default function EndpointsTab() {
           <button onClick={() => select(selectedId())}>Discard</button>
           <Show when={selectedId() !== 'new'}>
             <button onClick={() => void fetchModels()}>Fetch models</button>
-            <button class="danger-btn" onClick={() => void remove()}>Delete</button>
+            <button class="danger-btn" onClick={() => void remove()}>
+              Delete
+            </button>
           </Show>
           <Show when={saved()}>
             <span class="saved-flash">✓ Saved</span>

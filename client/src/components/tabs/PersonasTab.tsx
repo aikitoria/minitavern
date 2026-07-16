@@ -30,7 +30,8 @@ export default function PersonasTab() {
   const save = async () => {
     try {
       const id = selectedId();
-      const saved = id === 'new' ? await api.createPersona(data()) : await api.patchPersona(id, data());
+      const saved =
+        id === 'new' ? await api.createPersona(data()) : await api.patchPersona(id, data());
       setSelectedId(saved.id);
       setError('');
       flashSaved();
@@ -61,17 +62,24 @@ export default function PersonasTab() {
   return (
     <div class="master-detail" classList={{ 'detail-open': nav.detailOpen() }}>
       <div class="entity-list">
-        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>+ New persona</button>
+        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>
+          + New persona
+        </button>
         <For each={state.personas}>
           {(persona) => (
-            <button classList={{ active: selectedId() === persona.id }} onClick={() => select(persona.id)}>
+            <button
+              classList={{ active: selectedId() === persona.id }}
+              onClick={() => select(persona.id)}
+            >
               <Avatar src={persona.avatar} name={persona.name} /> {persona.name}
             </button>
           )}
         </For>
       </div>
       <div class="form">
-        <button class="detail-back" onClick={nav.closeDetail}>‹ Back to list</button>
+        <button class="detail-back" onClick={nav.closeDetail}>
+          ‹ Back to list
+        </button>
         <Show when={selectedId() !== 'new'}>
           <div class="avatar-row">
             <Avatar src={selected()?.avatar} name={selected()?.name ?? '?'} />
@@ -87,7 +95,9 @@ export default function PersonasTab() {
         </Show>
         <label>Name (used as {'{{user}}'})</label>
         <input ref={nameEl} placeholder="Your name" />
-        <label>Description (injected into the prompt) <MacroHelp /></label>
+        <label>
+          Description (injected into the prompt) <MacroHelp />
+        </label>
         <textarea
           ref={descriptionEl}
           rows="6"
@@ -99,7 +109,9 @@ export default function PersonasTab() {
           </button>
           <button onClick={() => select(selectedId())}>Discard</button>
           <Show when={selectedId() !== 'new'}>
-            <button class="danger-btn" onClick={() => void remove()}>Delete</button>
+            <button class="danger-btn" onClick={() => void remove()}>
+              Delete
+            </button>
           </Show>
           <Show when={saved()}>
             <span class="saved-flash">✓ Saved</span>

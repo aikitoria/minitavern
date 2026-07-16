@@ -1,7 +1,13 @@
 import { Show, createSignal } from 'solid-js';
 import { api } from '../state/api.ts';
 import {
-  openModal, selectedCharacter, selectedConversation, selectedPersona, setState, state, toggleSidebar,
+  openModal,
+  selectedCharacter,
+  selectedConversation,
+  selectedPersona,
+  setState,
+  state,
+  toggleSidebar,
 } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
 
@@ -35,7 +41,9 @@ export default function Header() {
 
   return (
     <header class="header">
-      <button class="icon-btn menu-btn" title="Conversations" onClick={toggleSidebar}>☰</button>
+      <button class="icon-btn menu-btn" title="Conversations" onClick={toggleSidebar}>
+        ☰
+      </button>
       <Show when={selectedConversation()} fallback={<span class="header-title">MiniTavern</span>}>
         {(conv) => (
           <>
@@ -97,7 +105,11 @@ export default function Header() {
             >
               {'{}'}
             </button>
-            <button class="icon-btn" title="Conversation settings" onClick={() => openModal('conversation')}>
+            <button
+              class="icon-btn"
+              title="Conversation settings"
+              onClick={() => openModal('conversation')}
+            >
               ⚙
             </button>
           </>

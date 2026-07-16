@@ -21,7 +21,8 @@ function requireIdle(conversationId: number): void {
 /** Regenerate: new assistant sibling under the same parent; the old reply stays navigable. */
 route.post('/api/messages/:id/regenerate', ({ params }) => {
   const msg = requireMessage(Number(params.id));
-  if (msg.role !== 'assistant') throw new HttpError(400, 'only assistant messages can be regenerated');
+  if (msg.role !== 'assistant')
+    throw new HttpError(400, 'only assistant messages can be regenerated');
   requireIdle(msg.conversationId);
   const conv = getConversation(msg.conversationId);
   // A regeneration replaces this reply, so it keeps the speaker name it had.
@@ -37,7 +38,8 @@ route.post('/api/messages/:id/continue', ({ params }) => {
   if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
   requireIdle(msg.conversationId);
   const conv = getConversation(msg.conversationId);
-  if (conv.activeLeafId !== msg.id) throw new HttpError(400, 'only the last message on the branch can be resumed');
+  if (conv.activeLeafId !== msg.id)
+    throw new HttpError(400, 'only the last message on the branch can be resumed');
   db.prepare("UPDATE messages SET status = 'streaming' WHERE id = ?").run(msg.id);
   broadcastTree(msg.conversationId);
   startGeneration(conv, msg.id, { content: msg.content, reasoning: msg.reasoning ?? '' });
@@ -65,7 +67,12 @@ route.post('/api/messages/:id/edit-branch', ({ params, body }) => {
   if (!content) throw new HttpError(400, 'content is required');
   requireIdle(msg.conversationId);
   const sibling = appendMessage(
-    msg.conversationId, msg.role, content, msg.parentId, 'done', null,
+    msg.conversationId,
+    msg.role,
+    content,
+    msg.parentId,
+    'done',
+    null,
     msg.role === 'assistant' ? msg.name : null,
   );
   let assistantMessageId: number | null = null;

@@ -55,16 +55,26 @@ function renderIcon(size: number): Uint8Array {
     const cy = Math.max(corner - y, y - (s - corner), 0);
     return cx * cx + cy * cy <= corner * corner;
   };
-  const inEllipse = (x: number, y: number, cx: number, cy: number, rx: number, ry: number): boolean => {
+  const inEllipse = (
+    x: number,
+    y: number,
+    cx: number,
+    cy: number,
+    rx: number,
+    ry: number,
+  ): boolean => {
     const dx = (x - cx) / rx;
     const dy = (y - cy) / ry;
     return dx * dx + dy * dy <= 1;
   };
   const inTail = (x: number, y: number): boolean => {
     // Triangle pointing down-left from the bubble's lower-left.
-    const ax = s * 0.26, ay = s * 0.6;
-    const bx = s * 0.48, by = s * 0.72;
-    const cx = s * 0.24, cy = s * 0.88;
+    const ax = s * 0.26,
+      ay = s * 0.6;
+    const bx = s * 0.48,
+      by = s * 0.72;
+    const cx = s * 0.24,
+      cy = s * 0.88;
     const sign = (x1: number, y1: number, x2: number, y2: number) =>
       (x - x2) * (y1 - y2) - (x1 - x2) * (y - y2);
     const d1 = sign(ax, ay, bx, by);
@@ -79,7 +89,10 @@ function renderIcon(size: number): Uint8Array {
   const rgba = new Uint8Array(size * size * 4);
   for (let py = 0; py < size; py++) {
     for (let px = 0; px < size; px++) {
-      let r = 0, g = 0, b = 0, a = 0;
+      let r = 0,
+        g = 0,
+        b = 0,
+        a = 0;
       for (let sy = 0; sy < SS; sy++) {
         for (let sx = 0; sx < SS; sx++) {
           const x = px * SS + sx + 0.5;

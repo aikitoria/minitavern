@@ -4,12 +4,17 @@ import { route, HttpError } from '../router.ts';
 import { appendMessage, getActivePath } from '../tree.ts';
 import { buildChatMessages, getCharacter, getPersona, substituteMacros } from '../prompt.ts';
 import { getSettings } from '../settingsStore.ts';
-import { hasActiveGeneration, startGeneration, stopConversationGenerations } from '../generation.ts';
+import {
+  hasActiveGeneration,
+  startGeneration,
+  stopConversationGenerations,
+} from '../generation.ts';
 import { broadcastTree, treeSnapshot } from '../sync.ts';
 import { invalidate } from '../events.ts';
 
 export function getConversation(id: number): Conversation {
-  const row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as
+    Record<string, unknown> | undefined;
   if (!row) throw new HttpError(404, `conversation ${id} not found`);
   return toConversation(row);
 }
@@ -43,7 +48,10 @@ export function spawnAssistantReply(
 }
 
 route.get('/api/conversations', () => {
-  const rows = db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all() as Record<string, unknown>[];
+  const rows = db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all() as Record<
+    string,
+    unknown
+  >[];
   return rows.map(toConversation);
 });
 
@@ -68,7 +76,11 @@ route.post('/api/conversations', ({ body }) => {
     const convId = Number(result.lastInsertRowid);
     if (character?.firstMessage.trim()) {
       const persona = getPersona(settings.defaultPersonaId);
-      const greeting = substituteMacros(character.firstMessage, character.name, persona?.name ?? 'User');
+      const greeting = substituteMacros(
+        character.firstMessage,
+        character.name,
+        persona?.name ?? 'User',
+      );
       appendMessage(convId, 'assistant', greeting, null);
     }
     return convId;
@@ -93,7 +105,7 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
     b.title !== undefined ? b.title : conv.title,
     b.characterId !== undefined ? b.characterId : conv.characterId,
     b.personaId !== undefined ? b.personaId : conv.personaId,
-    b.speakerName !== undefined ? (b.speakerName?.trim() || null) : conv.speakerName,
+    b.speakerName !== undefined ? b.speakerName?.trim() || null : conv.speakerName,
     Date.now(),
     id,
   );
@@ -129,7 +141,8 @@ route.post('/api/conversations/:id/messages', ({ params, body }) => {
   const b = (body ?? {}) as { content?: string };
   const content = (b.content ?? '').trim();
   if (!content) throw new HttpError(400, 'content is required');
-  if (hasActiveGeneration(id)) throw new HttpError(409, 'a generation is already running in this conversation');
+  if (hasActiveGeneration(id))
+    throw new HttpError(409, 'a generation is already running in this conversation');
 
   const userMsg = appendMessage(id, 'user', content, conv.activeLeafId);
   if (conv.title === 'New chat') {

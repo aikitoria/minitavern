@@ -16,17 +16,17 @@ const QUOTE_RE = /"[^"\n]+"|“[^”\n]+”/g;
  */
 function autoclose(src: string): string {
   // Inside an unclosed code fence marked already renders everything as code.
-  if (((src.match(/```/g) ?? []).length) % 2 === 1) return src;
+  if ((src.match(/```/g) ?? []).length % 2 === 1) return src;
   let out = src;
   let scan = src.replace(/```[\s\S]*?```/g, '');
-  if (((scan.match(/`/g) ?? []).length) % 2 === 1) {
+  if ((scan.match(/`/g) ?? []).length % 2 === 1) {
     out += '`';
     scan += '`';
   }
   scan = scan.replace(/`[^`\n]*`/g, '');
   const closers: string[] = [];
-  if (((scan.match(/"/g) ?? []).length) % 2 === 1) closers.push('"');
-  if (((scan.match(/“/g) ?? []).length) > ((scan.match(/”/g) ?? []).length)) closers.push('”');
+  if ((scan.match(/"/g) ?? []).length % 2 === 1) closers.push('"');
+  if ((scan.match(/“/g) ?? []).length > (scan.match(/”/g) ?? []).length) closers.push('”');
   const bolds = (scan.match(/\*\*/g) ?? []).length;
   const singles = (scan.replace(/\*\*/g, '').match(/\*/g) ?? []).length;
   if (singles % 2 === 1) closers.push('*');

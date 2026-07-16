@@ -35,7 +35,10 @@ function extractTextChunks(png: Buffer): Map<string, string> {
         p = data.indexOf(0, p) + 1;
         if (p > 0 && p <= data.length) {
           const payload = data.subarray(p);
-          chunks.set(keyword, compressed ? inflateSync(payload).toString('utf8') : payload.toString('utf8'));
+          chunks.set(
+            keyword,
+            compressed ? inflateSync(payload).toString('utf8') : payload.toString('utf8'),
+          );
         }
       }
     } else if (type === 'IEND') {
@@ -68,7 +71,9 @@ export function parseCharacterCard(png: Buffer): ParsedCard {
   }
   const data: CardData = json.data ?? json;
   if (!data.name) throw new Error('Character card has no name');
-  const personality = [data.description?.trim(), data.personality?.trim()].filter(Boolean).join('\n\n');
+  const personality = [data.description?.trim(), data.personality?.trim()]
+    .filter(Boolean)
+    .join('\n\n');
   return {
     name: data.name,
     personality,

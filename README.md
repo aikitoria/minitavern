@@ -23,12 +23,12 @@ Open `http://<host>:5487`. State lives in `./data`.
 Put your certificate in `./certs` and uncomment the TLS lines in `docker-compose.yml`:
 
 ```yaml
-    volumes:
-      - ./data:/data
-      - ./certs:/certs:ro
-    environment:
-      TLS_CERT_PATH: /certs/cert.pem
-      TLS_KEY_PATH: /certs/key.pem
+volumes:
+  - ./data:/data
+  - ./certs:/certs:ro
+environment:
+  TLS_CERT_PATH: /certs/cert.pem
+  TLS_KEY_PATH: /certs/key.pem
 ```
 
 WebSockets automatically become `wss://`. Certificates are hot-reloaded on renewal.

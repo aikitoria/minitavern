@@ -10,27 +10,32 @@ export interface ChatMessage {
 
 export function getCharacter(id: number | null): Character | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as
+    Record<string, unknown> | undefined;
   return row ? toCharacter(row) : null;
 }
 
 export function getPersona(id: number | null): Persona | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT * FROM personas WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM personas WHERE id = ?').get(id) as
+    Record<string, unknown> | undefined;
   return row ? toPersona(row) : null;
 }
 
 function getPresetContent(id: number | null): string | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT * FROM presets WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM presets WHERE id = ?').get(id) as
+    Record<string, unknown> | undefined;
   return row ? toPreset(row).content : null;
 }
 
-function getTemplate(id: number | null): { content: string; user_prologue: string; prefix_names: number } | null {
+function getTemplate(
+  id: number | null,
+): { content: string; user_prologue: string; prefix_names: number } | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT content, user_prologue, prefix_names FROM templates WHERE id = ?').get(id) as
-    | { content: string; user_prologue: string; prefix_names: number }
-    | undefined;
+  const row = db
+    .prepare('SELECT content, user_prologue, prefix_names FROM templates WHERE id = ?')
+    .get(id) as { content: string; user_prologue: string; prefix_names: number } | undefined;
   return row ?? null;
 }
 
@@ -50,7 +55,10 @@ export function renderTemplate(template: string, vars: Record<string, string>): 
     /\{\{#if ([a-z]+)\}\}([\s\S]*?)\{\{\/if\}\}/gi,
     (_, key: string, body: string) => (vars[key.toLowerCase()]?.trim() ? body : ''),
   );
-  out = out.replaceAll(/\{\{([a-z]+)\}\}/gi, (match, key: string) => vars[key.toLowerCase()] ?? match);
+  out = out.replaceAll(
+    /\{\{([a-z]+)\}\}/gi,
+    (match, key: string) => vars[key.toLowerCase()] ?? match,
+  );
   return out.replaceAll(/\n{3,}/g, '\n\n').trim();
 }
 
@@ -85,7 +93,8 @@ export function buildChatMessages(
     '';
 
   // Character-specific template wins over the global default, then the built-in.
-  const template = getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId);
+  const template =
+    getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId);
   const vars = {
     system: sub(systemPrompt),
     personality: sub(character?.personality ?? ''),
@@ -96,11 +105,13 @@ export function buildChatMessages(
   };
   const systemContent = renderTemplate(template?.content.trim() || DEFAULT_PROMPT_TEMPLATE, vars);
   // Optional fake first user message (e.g. introducing the character); empty = not emitted.
-  const prologue = template?.user_prologue.trim() ? renderTemplate(template.user_prologue, vars) : '';
+  const prologue = template?.user_prologue.trim()
+    ? renderTemplate(template.user_prologue, vars)
+    : '';
 
   const prefixNames = template != null && template.prefix_names !== 0;
   const speakerFor = (msg: Message) =>
-    msg.role === 'user' ? userName : (msg.name?.trim() || charName);
+    msg.role === 'user' ? userName : msg.name?.trim() || charName;
 
   const messages: ChatMessage[] = [];
   if (systemContent) messages.push({ role: 'system', content: systemContent });

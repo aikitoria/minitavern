@@ -28,7 +28,12 @@ interface Route {
 
 const routes: Route[] = [];
 
-function add(method: string, pattern: string, handler: Handler, opts?: { rawBody?: boolean }): void {
+function add(
+  method: string,
+  pattern: string,
+  handler: Handler,
+  opts?: { rawBody?: boolean },
+): void {
   const paramNames: string[] = [];
   const regexSrc = pattern.replace(/:([a-zA-Z]+)/g, (_, name: string) => {
     paramNames.push(name);
@@ -72,7 +77,11 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
 }
 
 /** Returns false if no route matched (caller falls through to static file serving). */
-export async function dispatch(req: IncomingMessage, res: ServerResponse, pathname: string): Promise<boolean> {
+export async function dispatch(
+  req: IncomingMessage,
+  res: ServerResponse,
+  pathname: string,
+): Promise<boolean> {
   for (const r of routes) {
     if (r.method !== req.method) continue;
     const m = r.regex.exec(pathname);
@@ -105,7 +114,9 @@ export async function dispatch(req: IncomingMessage, res: ServerResponse, pathna
       const status = err instanceof HttpError ? err.status : 500;
       const message = err instanceof Error ? err.message : String(err);
       if (status === 500) console.error(`[api] ${req.method} ${pathname}:`, err);
-      res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify({ error: message }));
+      res
+        .writeHead(status, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: message }));
     }
     return true;
   }

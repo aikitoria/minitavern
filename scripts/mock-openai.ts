@@ -31,7 +31,10 @@ const server = http.createServer((req, res) => {
         (system ? `> system: ${system.replaceAll('\n', ' · ')}\n\n` : '') +
         `${LOREM}\n\n\`\`\`js\nconsole.log('hello from the mock');\n\`\`\``;
       const words = text.split(/(?<=\s)/);
-      const reasoning = 'Thinking about the request… composing a demo answer with markdown and code. '.split(/(?<=\s)/);
+      const reasoning =
+        'Thinking about the request… composing a demo answer with markdown and code. '.split(
+          /(?<=\s)/,
+        );
       let ri = 0;
       let wi = 0;
       const timer = setInterval(() => {

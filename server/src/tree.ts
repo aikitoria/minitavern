@@ -15,7 +15,8 @@ function getRow(id: number): MsgRow | undefined {
 }
 
 export function getMessage(id: number): Message | undefined {
-  const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+  const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as
+    Record<string, unknown> | undefined;
   return row ? toMessage(row) : undefined;
 }
 
@@ -27,9 +28,9 @@ export function getTreeMessages(conversationId: number): Message[] {
 }
 
 export function getActiveLeafId(conversationId: number): number | null {
-  const row = db.prepare('SELECT active_leaf_id FROM conversations WHERE id = ?').get(conversationId) as
-    | { active_leaf_id: number | null }
-    | undefined;
+  const row = db
+    .prepare('SELECT active_leaf_id FROM conversations WHERE id = ?')
+    .get(conversationId) as { active_leaf_id: number | null } | undefined;
   return row?.active_leaf_id ?? null;
 }
 

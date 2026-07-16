@@ -2,7 +2,13 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
-  Character, Conversation, Endpoint, Message, Persona, Preset, Template,
+  Character,
+  Conversation,
+  Endpoint,
+  Message,
+  Persona,
+  Preset,
+  Template,
 } from '@minitavern/shared';
 import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_SETTINGS } from '@minitavern/shared';
 
@@ -18,7 +24,9 @@ db.exec('PRAGMA foreign_keys = ON');
 
 // Schema migrations (DDL + seeds only). Settings that move between scopes are
 // not carried over — they reset to defaults and get re-picked in the UI.
-const { user_version: version } = db.prepare('PRAGMA user_version').get() as { user_version: number };
+const { user_version: version } = db.prepare('PRAGMA user_version').get() as {
+  user_version: number;
+};
 
 if (version < 1) {
   db.exec(`

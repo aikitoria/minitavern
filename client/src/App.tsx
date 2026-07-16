@@ -14,7 +14,11 @@ export default function App() {
         <div class="boot-screen">
           <img src="/icon.svg" alt="" width="72" height="72" />
           <span class="boot-name">MiniTavern</span>
-          <span class="boot-dots"><i /><i /><i /></span>
+          <span class="boot-dots">
+            <i />
+            <i />
+            <i />
+          </span>
         </div>
       </Show>
       <Sidebar />

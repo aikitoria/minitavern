@@ -26,7 +26,9 @@ export default function TraceView() {
             <For each={t().messages}>
               {(msg) => (
                 <div class="trace-msg">
-                  <span class="trace-role" classList={{ [`trace-${msg.role}`]: true }}>{msg.role}</span>
+                  <span class="trace-role" classList={{ [`trace-${msg.role}`]: true }}>
+                    {msg.role}
+                  </span>
                   <pre class="trace-content">{msg.content}</pre>
                 </div>
               )}

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+data/
+data-dev/
+data-e2e/
+certs/
+package-lock.json
+client/public/

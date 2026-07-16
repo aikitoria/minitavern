@@ -30,7 +30,12 @@ export function mergeLiveBuffers(messages: Message[]): Message[] {
   return messages.map((m) => {
     const gen = active.get(m.id);
     if (!gen) return m;
-    return { ...m, content: gen.content, reasoning: gen.reasoning || m.reasoning, model: gen.model };
+    return {
+      ...m,
+      content: gen.content,
+      reasoning: gen.reasoning || m.reasoning,
+      model: gen.model,
+    };
   });
 }
 
@@ -120,15 +125,16 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
   const settings = getSettings();
   const endpointRow = settings.activeEndpointId
     ? (db.prepare('SELECT * FROM endpoints WHERE id = ?').get(settings.activeEndpointId) as
-        | Record<string, unknown>
-        | undefined)
+        Record<string, unknown> | undefined)
     : undefined;
   if (!endpointRow) {
     throw new Error('No active endpoint — pick one in Settings → General');
   }
   const endpoint = toEndpoint(endpointRow);
   if (!endpoint.model) {
-    throw new Error(`Endpoint "${endpoint.name}" has no model selected — set one in Settings → Endpoints`);
+    throw new Error(
+      `Endpoint "${endpoint.name}" has no model selected — set one in Settings → Endpoints`,
+    );
   }
   gen.model = endpoint.model;
 
@@ -230,7 +236,12 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
       if (!active.has(gen.mid)) return; // stopped while iterating
       if (!dOut && !r) continue;
       // Latency first: forward each delta the moment it arrives.
-      broadcastConv(gen.conversationId, { t: 'delta', mid: gen.mid, ...(dOut ? { d: dOut } : {}), ...(r ? { r } : {}) });
+      broadcastConv(gen.conversationId, {
+        t: 'delta',
+        mid: gen.mid,
+        ...(dOut ? { d: dOut } : {}),
+        ...(r ? { r } : {}),
+      });
     }
   }
   // A reply shorter than the name prefix may still be held back — flush it.
