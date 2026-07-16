@@ -1,0 +1,14 @@
+services:
+  minitavern:
+    build: .
+    container_name: minitavern
+    user: "1000:1000"
+    ports:
+      - "5487:5487"
+    volumes:
+      - ./data:/data
+      - ./certs:/certs:ro
+    environment:
+      TLS_CERT_PATH: /certs/cert.pem
+      TLS_KEY_PATH: /certs/key.pem
+    restart: unless-stopped

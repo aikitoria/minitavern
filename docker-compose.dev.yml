@@ -1,0 +1,58 @@
+# Dev stack with hot reload: source is bind-mounted read-write, but the git
+# folder, Dockerfile and compose files are shadowed read-only so container
+# processes can never modify them. Uses ./data-dev, not the prod ./data.
+x-dev-volumes: &dev-volumes
+  volumes:
+    - .:/app
+    - ./.git:/app/.git:ro
+    - ./Dockerfile:/app/Dockerfile:ro
+    - ./docker-compose.yml:/app/docker-compose.yml:ro
+    - ./docker-compose.dev.yml:/app/docker-compose.dev.yml:ro
+
+services:
+  server:
+    image: node:26-alpine
+    working_dir: /app
+    user: "1000:1000"
+    # --watch-path is more reliable than module-graph watching on bind mounts
+    command: node --watch-path=server/src --watch-path=shared/src server/src/index.ts
+    environment:
+      DATA_DIR: /app/data-dev
+    <<: *dev-volumes
+    ports:
+      - "5488:5487"
+
+  client:
+    image: node:26-alpine
+    working_dir: /app
+    user: "1000:1000"
+    command: npm run dev -w client
+    environment:
+      VITE_PROXY_TARGET: http://server:5487
+      TLS_CERT_PATH: /certs/cert.pem
+      TLS_KEY_PATH: /certs/key.pem
+    volumes:
+      - .:/app
+      - ./.git:/app/.git:ro
+      - ./Dockerfile:/app/Dockerfile:ro
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      - ./docker-compose.dev.yml:/app/docker-compose.dev.yml:ro
+      - ./certs:/certs:ro
+    ports:
+      - "5173:5173"
+    depends_on:
+      - server
+
+  # Fake OpenAI-compatible API for testing without a real backend:
+  #   docker compose -f docker-compose.dev.yml --profile mock up
+  # then add an endpoint with base URL http://mock:9800/v1 (from the server's
+  # point of view) in the UI.
+  mock:
+    profiles: ["mock"]
+    image: node:26-alpine
+    working_dir: /app
+    user: "1000:1000"
+    command: node scripts/mock-openai.ts
+    <<: *dev-volumes
+    ports:
+      - "9800:9800"
