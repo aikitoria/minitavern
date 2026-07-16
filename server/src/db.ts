@@ -168,6 +168,15 @@ if (version < 6) {
   `);
 }
 
+if (version < 7) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE endpoints ADD COLUMN prefill_mode TEXT NOT NULL DEFAULT 'none';
+    PRAGMA user_version = 7;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 db.prepare(
   `UPDATE messages SET status = 'error',
@@ -286,6 +295,7 @@ export function toEndpoint(r: Row): Endpoint {
     models: JSON.parse(r.models_json as string),
     model: r.model as string | null,
     genParams: JSON.parse(r.gen_params_json as string),
+    prefillMode: r.prefill_mode as Endpoint['prefillMode'],
     createdAt: r.created_at as number,
   };
 }

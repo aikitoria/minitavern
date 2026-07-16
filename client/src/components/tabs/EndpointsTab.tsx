@@ -1,5 +1,5 @@
 import { For, Show, createSignal } from 'solid-js';
-import type { GenParams } from '@minitavern/shared';
+import type { Endpoint, GenParams } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createSavedFlash, createDetailNav } from '../../util.ts';
@@ -18,6 +18,7 @@ export default function EndpointsTab() {
   let maxTokEl!: HTMLInputElement;
   let freqEl!: HTMLInputElement;
   let presEl!: HTMLInputElement;
+  let prefillEl!: HTMLSelectElement;
 
   const selected = () => state.endpoints.find((e) => e.id === selectedId());
 
@@ -35,6 +36,7 @@ export default function EndpointsTab() {
     maxTokEl.value = String(ep?.genParams.maxTokens ?? '');
     freqEl.value = String(ep?.genParams.frequencyPenalty ?? '');
     presEl.value = String(ep?.genParams.presencePenalty ?? '');
+    prefillEl.value = ep?.prefillMode ?? 'none';
   };
 
   const data = () => {
@@ -50,6 +52,7 @@ export default function EndpointsTab() {
       apiKey: keyEl.value,
       model: model() || null,
       genParams,
+      prefillMode: prefillEl.value as Endpoint['prefillMode'],
     };
   };
 
@@ -158,6 +161,13 @@ export default function EndpointsTab() {
           </div>
         </div>
         <p class="hint">Empty fields are omitted from requests (backend defaults apply).</p>
+
+        <label>Prefill support (for resume and speaker-name prefill)</label>
+        <select ref={prefillEl}>
+          <option value="none">Generic (trailing assistant message)</option>
+          <option value="vllm">vLLM (continue_final_message)</option>
+          <option value="deepseek">DeepSeek beta (prefix flag, needs /beta base URL)</option>
+        </select>
 
         <div class="form-actions">
           <button class="primary-btn" onClick={() => void save()}>

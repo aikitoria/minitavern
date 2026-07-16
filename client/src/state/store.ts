@@ -39,6 +39,7 @@ interface AppState {
   modal: ModalKind;
   /** 'trace' replaces the timeline with the assembled upstream request. */
   viewMode: 'chat' | 'trace';
+  toasts: { id: number; text: string }[];
   tree: TreeState;
 }
 
@@ -56,8 +57,18 @@ export const [state, setState] = createStore<AppState>({
   sidebarOpen: false,
   modal: null,
   viewMode: 'chat',
+  toasts: [],
   tree: { conversationId: null, messages: {}, activeLeafId: null },
 });
+
+let toastCounter = 0;
+
+/** Transient error/info notification, bottom corner, auto-dismisses. */
+export function toast(text: string): void {
+  const id = ++toastCounter;
+  setState('toasts', (toasts) => [...toasts, { id, text }]);
+  setTimeout(() => setState('toasts', (toasts) => toasts.filter((t) => t.id !== id)), 4500);
+}
 
 // ---- Derived state ----
 

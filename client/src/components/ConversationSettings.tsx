@@ -3,7 +3,7 @@ import { createStore, reconcile } from 'solid-js/store';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { selectedConversation, state } from '../state/store.ts';
-import { createSavedFlash } from '../util.ts';
+import { createSavedFlash, download } from '../util.ts';
 import Modal from './Modal.tsx';
 
 interface Draft {
@@ -82,6 +82,9 @@ function Editor(props: { conv: Conversation }) {
           Save
         </button>
         <button onClick={discard}>Discard</button>
+        <button onClick={() => download(`/api/conversations/${props.conv.id}/export`)}>
+          Export JSON
+        </button>
         <Show when={saved()}>
           <span class="saved-flash">✓ Saved</span>
         </Show>

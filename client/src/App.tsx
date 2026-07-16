@@ -1,4 +1,4 @@
-import { Show } from 'solid-js';
+import { For, Show } from 'solid-js';
 import { booting, state, setState } from './state/store.ts';
 import Sidebar from './components/Sidebar.tsx';
 import Header from './components/Header.tsx';
@@ -36,6 +36,9 @@ export default function App() {
       <Show when={state.modal === 'conversation'}>
         <ConversationSettings />
       </Show>
+      <div class="toasts">
+        <For each={state.toasts}>{(t) => <div class="toast">{t.text}</div>}</For>
+      </div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { inflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 
 export interface ParsedCard {
   name: string;
@@ -82,4 +82,87 @@ export function parseCharacterCard(png: Buffer): ParsedCard {
     systemPrompt: data.system_prompt?.trim() || null,
     raw: json,
   };
+}
+
+// ---- Card export ----
+
+const CRC_TABLE = new Uint32Array(256).map((_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (const byte of buf) c = CRC_TABLE[(c ^ byte) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function buildChunk(type: string, data: Buffer): Buffer {
+  const head = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const out = Buffer.alloc(head.length + 8);
+  out.writeUInt32BE(data.length, 0);
+  head.copy(out, 4);
+  out.writeUInt32BE(crc32(head), head.length + 4);
+  return out;
+}
+
+/** Minimal fallback portrait for characters without a PNG avatar. */
+export function makePlaceholderPng(): Buffer {
+  const size = 256;
+  const raw = Buffer.alloc(size * (size * 3 + 1));
+  for (let y = 0; y < size; y++) {
+    const rowStart = y * (size * 3 + 1);
+    raw[rowStart] = 0; // filter: none
+    for (let x = 0; x < size; x++) {
+      raw[rowStart + 1 + x * 3] = 0x17;
+      raw[rowStart + 2 + x * 3] = 0x17;
+      raw[rowStart + 3 + x * 3] = 0x17;
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(size, 0);
+  ihdr.writeUInt32BE(size, 4);
+  ihdr[8] = 8; // bit depth
+  ihdr[9] = 2; // RGB
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    buildChunk('IHDR', ihdr),
+    buildChunk('IDAT', deflateSync(raw, { level: 9 })),
+    buildChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/**
+ * Embeds a V2 character card into a PNG: strips any existing chara/ccv3
+ * chunks and inserts a fresh tEXt 'chara' chunk before IEND.
+ */
+export function buildCharacterCard(png: Buffer, card: unknown): Buffer {
+  if (png.length < 8 || !png.subarray(0, 8).equals(PNG_SIGNATURE)) {
+    throw new Error('avatar is not a PNG');
+  }
+  const parts: Buffer[] = [png.subarray(0, 8)];
+  let off = 8;
+  while (off + 12 <= png.length) {
+    const length = png.readUInt32BE(off);
+    const type = png.toString('latin1', off + 4, off + 8);
+    const chunk = png.subarray(off, off + 12 + length);
+    off += 12 + length;
+    if (type === 'tEXt' || type === 'iTXt') {
+      const data = chunk.subarray(8, 8 + length);
+      const nul = data.indexOf(0);
+      const keyword = nul > 0 ? data.toString('latin1', 0, nul) : '';
+      if (keyword === 'chara' || keyword === 'ccv3') continue; // strip old card
+    }
+    if (type === 'IEND') break;
+    parts.push(chunk);
+  }
+  const payload = Buffer.concat([
+    Buffer.from('chara', 'latin1'),
+    Buffer.from([0]),
+    Buffer.from(Buffer.from(JSON.stringify(card), 'utf8').toString('base64'), 'latin1'),
+  ]);
+  parts.push(buildChunk('tEXt', payload));
+  parts.push(buildChunk('IEND', Buffer.alloc(0)));
+  return Buffer.concat(parts);
 }

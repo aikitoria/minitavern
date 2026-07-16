@@ -1,10 +1,10 @@
-import { writeFileSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import type { GenParams } from '@minitavern/shared';
+import type { Endpoint, GenParams } from '@minitavern/shared';
 import { AVATAR_DIR, db, toCharacter, toEndpoint, toPersona, toPreset, toTemplate } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import { invalidate } from '../events.ts';
-import { parseCharacterCard } from '../pngCard.ts';
+import { buildCharacterCard, makePlaceholderPng, parseCharacterCard } from '../pngCard.ts';
 import type { Ctx } from '../router.ts';
 
 function rows(sql: string): Record<string, unknown>[] {
@@ -306,12 +306,13 @@ route.post('/api/endpoints', ({ body }) => {
     apiKey: string;
     model: string | null;
     genParams: GenParams;
+    prefillMode: Endpoint['prefillMode'];
   }>;
   if (!b.name?.trim()) throw new HttpError(400, 'name is required');
   if (!b.baseUrl?.trim()) throw new HttpError(400, 'baseUrl is required');
   const result = db
     .prepare(
-      'INSERT INTO endpoints (name, base_url, api_key, model, gen_params_json, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      'INSERT INTO endpoints (name, base_url, api_key, model, gen_params_json, prefill_mode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
     )
     .run(
       b.name.trim(),
@@ -319,6 +320,7 @@ route.post('/api/endpoints', ({ body }) => {
       b.apiKey ?? '',
       b.model ?? null,
       JSON.stringify(b.genParams ?? {}),
+      b.prefillMode ?? 'none',
       Date.now(),
     );
   invalidate('endpoints');
@@ -334,15 +336,17 @@ route.patch('/api/endpoints/:id', ({ params, body }) => {
     apiKey: string;
     model: string | null;
     genParams: GenParams;
+    prefillMode: Endpoint['prefillMode'];
   }>;
   db.prepare(
-    'UPDATE endpoints SET name = ?, base_url = ?, api_key = ?, model = ?, gen_params_json = ? WHERE id = ?',
+    'UPDATE endpoints SET name = ?, base_url = ?, api_key = ?, model = ?, gen_params_json = ?, prefill_mode = ? WHERE id = ?',
   ).run(
     b.name ?? cur.name,
     (b.baseUrl ?? cur.baseUrl).replace(/\/+$/, ''),
     b.apiKey ?? cur.apiKey,
     b.model !== undefined ? b.model : cur.model,
     JSON.stringify(b.genParams ?? cur.genParams),
+    b.prefillMode ?? cur.prefillMode,
     id,
   );
   invalidate('endpoints');
@@ -375,4 +379,41 @@ route.get('/api/endpoints/:id/models', async ({ params }) => {
   );
   invalidate('endpoints');
   return models;
+});
+
+/** Export a character as a SillyTavern-compatible V2 PNG card. */
+route.get('/api/characters/:id/card', ({ params, res }) => {
+  const id = Number(params.id);
+  const row = rowById('characters', id);
+  const character = toCharacter(row);
+  const original = row.card_json
+    ? (JSON.parse(row.card_json as string) as { data?: Record<string, unknown> })
+    : null;
+  const card = {
+    spec: 'chara_card_v2',
+    spec_version: '2.0',
+    data: {
+      ...(original?.data ?? {}),
+      name: character.name,
+      description: character.personality,
+      personality: '',
+      scenario: character.scenario,
+      first_mes: character.firstMessage,
+      system_prompt: character.customPrompt ?? original?.data?.system_prompt ?? '',
+    },
+  };
+  let base: Buffer | null = null;
+  try {
+    base = readFileSync(join(AVATAR_DIR, `character-${id}.png`));
+  } catch {
+    /* no PNG avatar */
+  }
+  const png = buildCharacterCard(base ?? makePlaceholderPng(), card);
+  res
+    .writeHead(200, {
+      'content-type': 'image/png',
+      'content-disposition': `attachment; filename="${character.name.replace(/[^\w.-]+/g, '_')}.card.png"`,
+      'content-length': png.length,
+    })
+    .end(png);
 });

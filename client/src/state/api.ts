@@ -46,6 +46,11 @@ export const api = {
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   deleteConversation: (id: number) => request<void>('DELETE', `/api/conversations/${id}`),
   tree: (id: number) => request<TreeSnapshot>('GET', `/api/conversations/${id}/tree`),
+  search: (q: string) =>
+    request<{ conversation: Conversation; snippet: string | null }[]>(
+      'GET',
+      `/api/search?q=${encodeURIComponent(q)}`,
+    ),
   trace: (id: number) =>
     request<{ messages: { role: string; content: string }[]; namePrefill: string | null }>(
       'GET',

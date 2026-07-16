@@ -23,3 +23,13 @@ export function createSavedFlash(): [() => boolean, () => void] {
     },
   ];
 }
+
+/** Triggers a browser download of a server URL (content-disposition attachment). */
+export function download(url: string): void {
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '';
+  document.body.append(a);
+  a.click();
+  a.remove();
+}

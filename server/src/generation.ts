@@ -116,10 +116,14 @@ export function startGeneration(
   active.set(mid, gen);
   run(conversation, gen, resumeFrom != null).catch((err: unknown) => {
     if (!active.has(mid)) return; // already stopped/finalized
-    gen.meta.error = err instanceof Error ? err.message : String(err);
+    // May already carry a specific message (e.g. idle timeout).
+    gen.meta.error ??= err instanceof Error ? err.message : String(err);
     finalize(gen, 'error');
   });
 }
+
+/** A wedged backend must not leave a message spinning forever. */
+const IDLE_TIMEOUT_MS = 120_000;
 
 async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean): Promise<void> {
   const settings = getSettings();
@@ -144,42 +148,80 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
   const stampedName = getMessage(gen.mid)?.name ?? null;
   const { messages, namePrefill } = buildChatMessages(conversation, history, stampedName);
   // Prefill-style trailing assistant message (resume content and/or "Name:").
-  // Not part of the official OpenAI spec — whether the model truly continues
-  // it depends on the backend.
+  // Not part of the official OpenAI spec — with prefillMode 'none' the
+  // backend decides; 'vllm'/'deepseek' send their native continuation flags.
+  let prefilled = false;
   if (isResume && gen.content) {
     messages.push({
       role: 'assistant',
       content: namePrefill ? `${namePrefill} ${gen.content}` : gen.content,
     });
+    prefilled = true;
   } else if (namePrefill) {
     messages.push({ role: 'assistant', content: namePrefill });
+    prefilled = true;
+  }
+  const upstreamMessages: Record<string, unknown>[] = messages.map((m) => ({ ...m }));
+  if (prefilled && endpoint.prefillMode === 'deepseek') {
+    upstreamMessages[upstreamMessages.length - 1] = {
+      ...upstreamMessages[upstreamMessages.length - 1],
+      prefix: true,
+    };
   }
   const p = endpoint.genParams;
 
-  const res = await fetch(`${endpoint.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
-    },
-    body: JSON.stringify({
-      model: endpoint.model,
-      messages,
-      stream: true,
-      ...(p.temperature != null ? { temperature: p.temperature } : {}),
-      ...(p.topP != null ? { top_p: p.topP } : {}),
-      ...(p.maxTokens != null ? { max_tokens: p.maxTokens } : {}),
-      ...(p.frequencyPenalty != null ? { frequency_penalty: p.frequencyPenalty } : {}),
-      ...(p.presencePenalty != null ? { presence_penalty: p.presencePenalty } : {}),
-    }),
-    signal: gen.abort.signal,
-  });
+  // Idle watchdog: abort if the backend goes silent (including before headers).
+  const onIdle = () => {
+    gen.meta.error = `Upstream idle timeout — no data received for ${IDLE_TIMEOUT_MS / 1000}s`;
+    gen.abort.abort();
+  };
+  let idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS);
+  const resetIdle = () => {
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(onIdle, IDLE_TIMEOUT_MS);
+  };
 
-  if (!res.ok || !res.body) {
-    const text = await res.text().catch(() => '');
-    throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
+  try {
+    const res = await fetch(`${endpoint.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: endpoint.model,
+        messages: upstreamMessages,
+        stream: true,
+        ...(p.temperature != null ? { temperature: p.temperature } : {}),
+        ...(p.topP != null ? { top_p: p.topP } : {}),
+        ...(p.maxTokens != null ? { max_tokens: p.maxTokens } : {}),
+        ...(p.frequencyPenalty != null ? { frequency_penalty: p.frequencyPenalty } : {}),
+        ...(p.presencePenalty != null ? { presence_penalty: p.presencePenalty } : {}),
+        ...(prefilled && endpoint.prefillMode === 'vllm'
+          ? { continue_final_message: true, add_generation_prompt: false }
+          : {}),
+      }),
+      signal: gen.abort.signal,
+    });
+    resetIdle();
+
+    if (!res.ok || !res.body) {
+      const text = await res.text().catch(() => '');
+      throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
+    }
+    await consumeStream(res.body, gen, namePrefill, isResume, resetIdle);
+  } finally {
+    clearTimeout(idleTimer);
   }
+}
 
+async function consumeStream(
+  body: NonNullable<Awaited<ReturnType<typeof fetch>>['body']>,
+  gen: ActiveGen,
+  namePrefill: string | null,
+  isResume: boolean,
+  resetIdle: () => void,
+): Promise<void> {
   // Backends without real prefill support tend to echo the "Name:" prefix at
   // the start of their reply; hold back the first characters and strip it.
   let holdback: string | null = namePrefill && !isResume ? '' : null;
@@ -200,7 +242,8 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
 
   const decoder = new TextDecoder();
   let buffer = '';
-  for await (const chunk of res.body) {
+  for await (const chunk of body) {
+    resetIdle();
     buffer += decoder.decode(chunk as Uint8Array, { stream: true });
     let idx: number;
     while ((idx = buffer.indexOf('\n')) !== -1) {

@@ -117,6 +117,7 @@ function makeCardPng(): Buffer {
       personality: 'Fearless and pixelated.',
       scenario: 'Inside a unit test.',
       first_mes: 'Greetings, {{user}}! I am {{char}}.',
+      alternate_greetings: ['Alternate hello, {{user}}!'],
     },
   };
   const text = Buffer.concat([
@@ -356,6 +357,106 @@ async function main() {
     'first message seeded with macros substituted',
   );
   assert(charConv.title === 'Card Imported Hero', 'conversation titled after character');
+  const greetingRoots = charSnap.messages.filter((m) => m.parentId === null);
+  assert(greetingRoots.length === 2, 'alternate greeting seeded as root sibling');
+  assert(
+    greetingRoots.some((m) => m.content === 'Alternate hello, Aiki!'),
+    'alternate greeting macros substituted',
+  );
+
+  console.log('== character card export round-trip ==');
+  const exportRes = await fetch(`${BASE}/api/characters/${character.id}/card`);
+  assert(
+    exportRes.ok && exportRes.headers.get('content-type') === 'image/png',
+    'card export returns PNG',
+  );
+  const reimportRes = await fetch(`${BASE}/api/characters/import-card`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: new Uint8Array(await exportRes.arrayBuffer()),
+  });
+  const reimported = (await reimportRes.json()) as { name: string; personality: string };
+  assert(reimported.name === 'Card Imported Hero', 'exported card reimports with same name');
+  assert(reimported.personality.includes('brave'), 'exported card keeps personality text');
+
+  console.log('== templates: prologue, name prefixing, /char, resume ==');
+  const tpl = await req<{ id: number }>('POST', '/api/templates', {
+    name: 'e2e-prefix',
+    content: '{{system}}',
+    userPrologue: 'You are playing {{char}}.',
+    prefixNames: true,
+  });
+  const prevSettings = await req<{ defaultTemplateId: number | null }>('GET', '/api/settings');
+  await req('PUT', '/api/settings', { defaultTemplateId: tpl.id });
+  const conv2 = await req<{ id: number }>('POST', '/api/conversations', {});
+  await req('PATCH', `/api/conversations/${conv2.id}`, { speakerName: 'Ari' });
+
+  const trace = await req<{
+    messages: { role: string; content: string }[];
+    namePrefill: string | null;
+  }>('GET', `/api/conversations/${conv2.id}/trace`);
+  assert(
+    trace.messages.some((m) => m.role === 'user' && m.content === 'You are playing Assistant.'),
+    'template prologue emitted as fake user turn',
+  );
+  assert(trace.namePrefill === 'Ari:', 'name prefill uses the /char speaker');
+
+  ws.sub(conv2.id);
+  const sent = await req<{ assistantMessageId: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/messages`,
+    { content: 'prefix check' },
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === sent.assistantMessageId,
+    'prefixed generation finished',
+  );
+  let snap2 = await tree(conv2.id);
+  const reply = snap2.messages.find((m) => m.id === sent.assistantMessageId)!;
+  assert(reply.name === 'Ari', 'reply stamped with the /char speaker name');
+  assert(
+    reply.content.includes('Aiki: prefix check'),
+    'history prefixed with persona name upstream',
+  );
+
+  await req('PATCH', `/api/conversations/${conv2.id}`, { speakerName: 'Bob' });
+  const regen = await req<{ assistantMessageId: number }>(
+    'POST',
+    `/api/messages/${sent.assistantMessageId}/regenerate`,
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === regen.assistantMessageId,
+    'regeneration finished',
+  );
+  snap2 = await tree(conv2.id);
+  assert(
+    snap2.messages.find((m) => m.id === regen.assistantMessageId)!.name === 'Ari',
+    'regeneration keeps the original speaker name',
+  );
+
+  const beforeResume = snap2.messages.find((m) => m.id === regen.assistantMessageId)!.content
+    .length;
+  await req('POST', `/api/messages/${regen.assistantMessageId}/continue`);
+  await ws.waitFor(
+    (e) =>
+      e.t === 'final' &&
+      e.message.id === regen.assistantMessageId &&
+      e.message.content.length > beforeResume &&
+      e.message.status === 'done',
+    'resume appended to the same message',
+  );
+
+  await req('PUT', '/api/settings', { defaultTemplateId: prevSettings.defaultTemplateId });
+
+  console.log('== conversation search ==');
+  const found = await req<{ conversation: { id: number }; snippet: string | null }[]>(
+    'GET',
+    `/api/search?q=${encodeURIComponent('prefix check')}`,
+  );
+  assert(
+    found.some((r) => r.conversation.id === conv2.id && r.snippet?.includes('prefix check')),
+    'search finds conversation by message content with snippet',
+  );
 
   ws.close();
   console.log(`\nALL ${passed} ASSERTIONS PASSED`);

@@ -1,7 +1,7 @@
 import { For, Show, createSignal } from 'solid-js';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
-import { createSavedFlash, createDetailNav } from '../../util.ts';
+import { createSavedFlash, createDetailNav, download } from '../../util.ts';
 import Avatar from '../Avatar.tsx';
 import MacroHelp from '../MacroHelp.tsx';
 
@@ -193,6 +193,9 @@ export default function CharactersTab() {
           </button>
           <button onClick={() => select(selectedId())}>Discard</button>
           <Show when={selectedId() !== 'new'}>
+            <button onClick={() => download(`/api/characters/${selectedId()}/card`)}>
+              Export PNG
+            </button>
             <button class="danger-btn" onClick={() => void remove()}>
               Delete
             </button>

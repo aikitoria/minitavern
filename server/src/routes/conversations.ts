@@ -1,7 +1,7 @@
 import type { Conversation } from '@minitavern/shared';
 import { db, toConversation, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
-import { appendMessage, getActivePath } from '../tree.ts';
+import { activateMessage, appendMessage, getActivePath, getTreeMessages } from '../tree.ts';
 import { buildChatMessages, getCharacter, getPersona, substituteMacros } from '../prompt.ts';
 import { getSettings } from '../settingsStore.ts';
 import {
@@ -47,6 +47,19 @@ export function spawnAssistantReply(
   return msg.id;
 }
 
+function getAlternateGreetings(characterId: number): string[] {
+  const row = db.prepare('SELECT card_json FROM characters WHERE id = ?').get(characterId) as
+    { card_json: string | null } | undefined;
+  if (!row?.card_json) return [];
+  try {
+    const card = JSON.parse(row.card_json) as { data?: { alternate_greetings?: unknown } };
+    const alts = card.data?.alternate_greetings;
+    return Array.isArray(alts) ? alts.filter((a): a is string => typeof a === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 route.get('/api/conversations', () => {
   const rows = db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all() as Record<
     string,
@@ -76,12 +89,14 @@ route.post('/api/conversations', ({ body }) => {
     const convId = Number(result.lastInsertRowid);
     if (character?.firstMessage.trim()) {
       const persona = getPersona(settings.defaultPersonaId);
-      const greeting = substituteMacros(
-        character.firstMessage,
-        character.name,
-        persona?.name ?? 'User',
-      );
-      appendMessage(convId, 'assistant', greeting, null);
+      const sub = (text: string) => substituteMacros(text, character.name, persona?.name ?? 'User');
+      const primary = appendMessage(convId, 'assistant', sub(character.firstMessage), null);
+      // Imported cards may carry alternate greetings — seed them as root
+      // siblings so they're swipeable, with the primary greeting active.
+      for (const alt of getAlternateGreetings(character.id)) {
+        if (alt.trim()) appendMessage(convId, 'assistant', sub(alt), null);
+      }
+      activateMessage(primary.id);
     }
     return convId;
   });
@@ -133,6 +148,54 @@ route.get('/api/conversations/:id/trace', ({ params }) => {
   const history = getActivePath(conv.id);
   const { messages, namePrefill } = buildChatMessages(conv, history);
   return { messages, namePrefill };
+});
+
+/** Download the full conversation (all branches) as JSON. */
+route.get('/api/conversations/:id/export', ({ params, res }) => {
+  const conv = getConversation(Number(params.id));
+  const payload = JSON.stringify(
+    { exportedAt: Date.now(), conversation: conv, messages: getTreeMessages(conv.id) },
+    null,
+    2,
+  );
+  res
+    .writeHead(200, {
+      'content-type': 'application/json',
+      'content-disposition': `attachment; filename="${conv.title.replace(/[^\w.-]+/g, '_').slice(0, 60)}.json"`,
+    })
+    .end(payload);
+});
+
+/** Search conversation titles and message contents. */
+route.get('/api/search', ({ req }) => {
+  const q = new URL(req.url ?? '/', 'http://x').searchParams.get('q')?.trim() ?? '';
+  if (!q) return [];
+  const like = `%${q}%`;
+  const convRows = db
+    .prepare(
+      `SELECT DISTINCT c.* FROM conversations c
+       LEFT JOIN messages m ON m.conversation_id = c.id
+       WHERE c.title LIKE ?1 OR m.content LIKE ?1
+       ORDER BY c.updated_at DESC LIMIT 50`,
+    )
+    .all(like) as Record<string, unknown>[];
+  const snippetStmt = db.prepare(
+    'SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ORDER BY id DESC LIMIT 1',
+  );
+  return convRows.map((row) => {
+    const conv = toConversation(row);
+    const match = snippetStmt.get(conv.id, like) as { content: string } | undefined;
+    let snippet: string | null = null;
+    if (match) {
+      const idx = match.content.toLowerCase().indexOf(q.toLowerCase());
+      const start = Math.max(0, idx - 32);
+      snippet =
+        (start > 0 ? '…' : '') +
+        match.content.slice(start, idx + q.length + 48) +
+        (idx + q.length + 48 < match.content.length ? '…' : '');
+    }
+    return { conversation: conv, snippet };
+  });
 });
 
 route.post('/api/conversations/:id/messages', ({ params, body }) => {

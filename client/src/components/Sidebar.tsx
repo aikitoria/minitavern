@@ -1,10 +1,37 @@
 import { For, Show, createSignal } from 'solid-js';
+import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { newConversation, openModal, selectConversation, setState, state } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
 
+interface SearchResult {
+  conversation: Conversation;
+  snippet: string | null;
+}
+
 export default function Sidebar() {
   const [newMenuOpen, setNewMenuOpen] = createSignal(false);
+  const [query, setQuery] = createSignal('');
+  const [results, setResults] = createSignal<SearchResult[] | null>(null);
+  let searchTimer: number | undefined;
+
+  const onSearchInput = (value: string) => {
+    setQuery(value);
+    clearTimeout(searchTimer);
+    const q = value.trim();
+    if (!q) {
+      setResults(null);
+      return;
+    }
+    searchTimer = window.setTimeout(() => {
+      void api
+        .search(q)
+        .then((r) => {
+          if (query().trim() === q) setResults(r);
+        })
+        .catch(console.error);
+    }, 250);
+  };
 
   const create = (characterId: number | null) => {
     setNewMenuOpen(false);
@@ -20,6 +47,34 @@ export default function Sidebar() {
 
   const characterOf = (characterId: number | null) =>
     characterId != null ? state.characters.find((c) => c.id === characterId) : undefined;
+
+  const ConvItem = (props: { conv: Conversation; snippet?: string | null }) => (
+    <div
+      class="conv-item"
+      classList={{ active: props.conv.id === state.selectedId }}
+      onClick={() => selectConversation(props.conv.id)}
+    >
+      <Show
+        when={characterOf(props.conv.characterId)}
+        fallback={<span class="avatar avatar-fallback">A</span>}
+      >
+        {(character) => <Avatar src={character().avatar} name={character().name} />}
+      </Show>
+      <span class="conv-body">
+        <span class="conv-title">{props.conv.title}</span>
+        <Show when={props.snippet}>
+          <span class="conv-snippet">{props.snippet}</span>
+        </Show>
+      </span>
+      <button
+        class="icon-btn conv-delete"
+        title="Delete"
+        onClick={(e) => void remove(props.conv.id, e)}
+      >
+        ✕
+      </button>
+    </div>
+  );
 
   return (
     <aside class="sidebar" classList={{ open: state.sidebarOpen }}>
@@ -57,31 +112,31 @@ export default function Sidebar() {
         </Show>
       </div>
 
+      <div class="search-wrap">
+        <input
+          class="search-input"
+          placeholder="Search…"
+          value={query()}
+          onInput={(e) => onSearchInput(e.currentTarget.value)}
+        />
+      </div>
+
       <nav class="conv-list">
-        <For each={state.conversations}>
-          {(conv) => (
-            <div
-              class="conv-item"
-              classList={{ active: conv.id === state.selectedId }}
-              onClick={() => selectConversation(conv.id)}
-            >
-              <Show
-                when={characterOf(conv.characterId)}
-                fallback={<span class="avatar avatar-fallback">A</span>}
-              >
-                {(character) => <Avatar src={character().avatar} name={character().name} />}
+        <Show
+          when={results()}
+          fallback={<For each={state.conversations}>{(conv) => <ConvItem conv={conv} />}</For>}
+        >
+          {(found) => (
+            <>
+              <Show when={found().length === 0}>
+                <p class="hint search-empty">No matches.</p>
               </Show>
-              <span class="conv-title">{conv.title}</span>
-              <button
-                class="icon-btn conv-delete"
-                title="Delete"
-                onClick={(e) => void remove(conv.id, e)}
-              >
-                ✕
-              </button>
-            </div>
+              <For each={found()}>
+                {(r) => <ConvItem conv={r.conversation} snippet={r.snippet} />}
+              </For>
+            </>
           )}
-        </For>
+        </Show>
       </nav>
     </aside>
   );

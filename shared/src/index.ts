@@ -93,6 +93,9 @@ export interface Endpoint {
   model: string | null;
   /** Sampling settings sent with every generation through this endpoint. */
   genParams: GenParams;
+  /** How assistant-prefill continuation is requested: generic trailing message,
+   * vLLM's continue_final_message, or DeepSeek's beta prefix flag. */
+  prefillMode: 'none' | 'vllm' | 'deepseek';
   createdAt: number;
 }
 

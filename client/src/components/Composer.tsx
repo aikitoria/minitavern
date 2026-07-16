@@ -1,6 +1,6 @@
 import { For, Show, createEffect, createSignal } from 'solid-js';
 import { api } from '../state/api.ts';
-import { activePath, state, streamingMessage } from '../state/store.ts';
+import { activePath, state, streamingMessage, toast } from '../state/store.ts';
 
 const coarsePointer = matchMedia('(pointer: coarse)').matches;
 
@@ -100,7 +100,7 @@ export default function Composer() {
       const m = content.match(/^\/(\w+)\s*([\s\S]*)$/);
       const cmd = m ? COMMANDS.find((c) => c.name === m[1]!.toLowerCase()) : undefined;
       if (!cmd) {
-        alert(`Unknown command: ${content.split(/\s/)[0]}`);
+        toast(`Unknown command: ${content.split(/\s/)[0]}`);
         return;
       }
       try {
@@ -108,7 +108,7 @@ export default function Composer() {
         setText('');
         queueMicrotask(resize);
       } catch (err) {
-        alert(err instanceof Error ? err.message : String(err));
+        toast(err instanceof Error ? err.message : String(err));
       }
       return;
     }
@@ -120,7 +120,7 @@ export default function Composer() {
       await api.send(id, content);
     } catch (err) {
       setText(content); // restore on failure so nothing is lost
-      alert(err instanceof Error ? err.message : String(err));
+      toast(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -143,7 +143,7 @@ export default function Composer() {
     if (msg)
       void api
         .resume(msg.id)
-        .catch((err) => alert(err instanceof Error ? err.message : String(err)));
+        .catch((err) => toast(err instanceof Error ? err.message : String(err)));
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
