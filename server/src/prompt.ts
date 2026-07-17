@@ -4,7 +4,8 @@ import { stmt, toCharacter, toPersona, toPreset, toTemplate } from './db.ts';
 import { getSettings } from './settingsStore.ts';
 
 export interface ChatMessage {
-  role: Role;
+  /** Upstream chat roles only — 'tool' messages never leave the server. */
+  role: Exclude<Role, 'tool'>;
   content: string;
 }
 
@@ -131,6 +132,7 @@ export function buildChatMessages(
   if (prologue) messages.push({ role: 'user', content: prologue });
   for (const msg of history) {
     if (msg.status === 'streaming') continue;
+    if (msg.role === 'tool') continue; // plugin output is chat-visible only, never sent upstream
     const trimmedContent = msg.content.trim();
     if (trimmedContent.length === 0) continue;
     const content =
@@ -142,4 +144,34 @@ export function buildChatMessages(
 
   const currentSpeaker = speakerName?.trim() || charName;
   return { messages, namePrefill: prefixNames ? `${currentSpeaker}:` : null };
+}
+
+/** {{char}}/{{user}} names as buildChatMessages resolves them (persona honors
+ * the effective template's usesPersonas). */
+function resolveNames(conversation: Conversation): { charName: string; userName: string } {
+  const character = getCharacter(conversation.characterId);
+  const settings = getSettings();
+  const custom = character?.customTemplate ?? null;
+  const template = custom
+    ? null
+    : (getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId));
+  const usesPersonas = custom ? custom.usesPersonas : (template?.usesPersonas ?? true);
+  const persona = usesPersonas ? getPersona(conversation.personaId) : null;
+  return { charName: character?.name ?? 'Assistant', userName: persona?.name ?? 'User' };
+}
+
+/**
+ * Upstream request for a plugin tool generation: the normal chat context plus
+ * the tool's prompt (macros expanded) as a trailing user turn. No name
+ * prefill — tool output is not a character reply.
+ */
+export function buildToolPrompt(
+  conversation: Conversation,
+  history: Message[],
+  prompt: string,
+): BuiltPrompt {
+  const { messages } = buildChatMessages(conversation, history);
+  const { charName, userName } = resolveNames(conversation);
+  messages.push({ role: 'user', content: substituteMacros(prompt.trim(), charName, userName) });
+  return { messages, namePrefill: null };
 }

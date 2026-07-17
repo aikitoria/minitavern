@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, on } from 'solid-js';
+import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { newConversation, openModal, selectConversation, state, toast } from '../state/store.ts';
@@ -16,6 +16,25 @@ export default function Sidebar() {
   const [query, setQuery] = createSignal('');
   const [results, setResults] = createSignal<SearchResult[] | null>(null);
   let searchTimer: number | undefined;
+  let newChatWrap: HTMLDivElement | undefined;
+
+  // Dismiss the new-chat menu on outside click or Escape (same as the tools menu).
+  const onDocClick = (event: MouseEvent) => {
+    if (newMenuOpen() && newChatWrap && !newChatWrap.contains(event.target as Node)) {
+      setNewMenuOpen(false);
+    }
+  };
+  const onDocKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') setNewMenuOpen(false);
+  };
+  onMount(() => {
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKey);
+  });
+  onCleanup(() => {
+    document.removeEventListener('click', onDocClick);
+    document.removeEventListener('keydown', onDocKey);
+  });
 
   const onSearchInput = (value: string) => {
     setQuery(value);
@@ -121,7 +140,7 @@ export default function Sidebar() {
         </button>
       </div>
 
-      <div class="new-chat-wrap">
+      <div class="new-chat-wrap" ref={newChatWrap}>
         <button class="new-chat-btn" onClick={() => setNewMenuOpen(!newMenuOpen())}>
           + New chat
         </button>

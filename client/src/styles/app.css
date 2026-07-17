@@ -556,7 +556,21 @@ textarea.mono,
   }
 }
 
-.new-chat-menu button {
+/* Same entrance for menus that open upward (rises from the button instead of dropping). */
+@keyframes menu-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(5px) scaleY(0.97);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0) scaleY(1);
+  }
+}
+
+.new-chat-menu button,
+.tools-menu button {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -568,7 +582,8 @@ textarea.mono,
   text-align: left;
 }
 
-.new-chat-menu button:hover {
+.new-chat-menu button:hover,
+.tools-menu button:hover {
   background: var(--bg-hover);
 }
 
@@ -819,6 +834,22 @@ textarea.mono,
 .msg-body {
   flex: 1;
   min-width: 0;
+}
+
+/* Plugin tool output: visibly part of the chat, but not a character reply. */
+.msg-tool .msg-body {
+  background: var(--bg-panel);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+}
+
+.msg-tool .msg-name {
+  color: var(--text-dim);
+}
+
+.msg-tool .msg-content {
+  color: var(--text-dim);
 }
 
 /* Incoming side of a sibling swipe: slide in from the direction the swipe came from. */
@@ -1126,8 +1157,35 @@ textarea.mono,
   flex-shrink: 0;
 }
 
+/* Neutral round tools button left of the input; its menu opens upward. */
+.tools-btn {
+  background: none;
+  color: var(--text-dim);
+}
+
+.tools-btn:hover,
+.tools-btn-open {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+.tools-menu {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 30;
+  min-width: 200px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  transform-origin: bottom left;
+  animation: menu-in-up 0.1s ease-out;
+}
+
 /* Optical centering: the plane points right, so its mass sits left of center. */
-.send-btn:not(.stop-btn, .resume-btn) svg {
+.send-btn:not(.stop-btn, .resume-btn, .tools-btn) svg {
   transform: translateX(1.5px);
 }
 

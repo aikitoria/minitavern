@@ -8,6 +8,7 @@ import PresetsTab from './tabs/PresetsTab.tsx';
 import TemplatesTab from './tabs/TemplatesTab.tsx';
 import CharactersTab from './tabs/CharactersTab.tsx';
 import PersonasTab from './tabs/PersonasTab.tsx';
+import ToolsTab from './tabs/ToolsTab.tsx';
 
 const TABS: { key: string; label: string; component: Component }[] = [
   { key: 'general', label: 'General', component: GeneralTab },
@@ -16,6 +17,7 @@ const TABS: { key: string; label: string; component: Component }[] = [
   { key: 'templates', label: 'Templates', component: TemplatesTab },
   { key: 'characters', label: 'Characters', component: CharactersTab },
   { key: 'personas', label: 'Personas', component: PersonasTab },
+  { key: 'tools', label: 'Tools', component: ToolsTab },
 ];
 
 export default function SettingsModal() {

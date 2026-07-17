@@ -1,5 +1,7 @@
-import { For, Show, createEffect, createSignal } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
 import { api } from '../state/api.ts';
+import type { PluginCommand } from '../plugins/api.ts';
+import { pluginCommands, pluginTools } from '../plugins/index.ts';
 import {
   activePath,
   navigateTree,
@@ -42,14 +44,23 @@ const StopIcon = () => (
   </svg>
 );
 
-interface Command {
-  name: string;
-  params: string;
-  description: string;
-  run: (args: string) => Promise<boolean | void>;
-}
+const WrenchIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="17"
+    height="17"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+  </svg>
+);
 
-const COMMANDS: Command[] = [
+const BUILTIN_COMMANDS: PluginCommand[] = [
   {
     name: 'char',
     params: '<name>',
@@ -87,10 +98,30 @@ const COMMANDS: Command[] = [
   },
 ];
 
+const COMMANDS: PluginCommand[] = [...BUILTIN_COMMANDS, ...pluginCommands];
+
 export default function Composer() {
   const [text, setText] = createSignal('');
   const [selIdx, setSelIdx] = createSignal(0);
+  const [toolsOpen, setToolsOpen] = createSignal(false);
   let area: HTMLTextAreaElement | undefined;
+  let toolsWrap: HTMLSpanElement | undefined;
+
+  // Dismiss the tools menu on outside click or Escape.
+  const onDocClick = (event: MouseEvent) => {
+    if (toolsOpen() && toolsWrap && !toolsWrap.contains(event.target as Node)) setToolsOpen(false);
+  };
+  const onDocKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') setToolsOpen(false);
+  };
+  onMount(() => {
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKey);
+  });
+  onCleanup(() => {
+    document.removeEventListener('click', onDocClick);
+    document.removeEventListener('keydown', onDocKey);
+  });
 
   // "/cha" -> completion menu; "/char args" -> parameter hint.
   const cmdQuery = () => {
@@ -111,7 +142,7 @@ export default function Composer() {
     setSelIdx(0);
   });
 
-  const complete = (cmd: Command) => {
+  const complete = (cmd: PluginCommand) => {
     setText(`/${cmd.name} `);
     area?.focus();
   };
@@ -246,6 +277,32 @@ export default function Composer() {
             </div>
           )}
         </Show>
+        <span class="tools-wrap" ref={toolsWrap}>
+          <button
+            class="send-btn tools-btn"
+            title="Tools"
+            classList={{ 'tools-btn-open': toolsOpen() }}
+            onClick={() => setToolsOpen(!toolsOpen())}
+          >
+            <WrenchIcon />
+          </button>
+          <Show when={toolsOpen()}>
+            <div class="tools-menu">
+              <For each={pluginTools}>
+                {(tool) => (
+                  <button
+                    onClick={() => {
+                      setToolsOpen(false);
+                      tool.run();
+                    }}
+                  >
+                    <tool.icon /> {tool.label}
+                  </button>
+                )}
+              </For>
+            </div>
+          </Show>
+        </span>
         <textarea
           ref={area}
           class="composer-input"

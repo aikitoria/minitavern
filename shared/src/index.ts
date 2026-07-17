@@ -1,4 +1,5 @@
-export type Role = 'user' | 'assistant' | 'system';
+/** 'tool' messages are plugin output shown in the chat but excluded from prompt history. */
+export type Role = 'user' | 'assistant' | 'system' | 'tool';
 export type MessageStatus = 'done' | 'streaming' | 'error' | 'stopped';
 export type GenerationKind = 'normal' | 'speculative';
 
@@ -129,6 +130,8 @@ export interface Settings {
   autoExpandThinking: boolean;
   /** Keep one unread assistant sibling prepared ahead of the active reply. */
   backgroundSwipeGeneration: boolean;
+  /** Per-plugin settings blobs, keyed by plugin id (shapes are plugin-defined). */
+  pluginSettings: Record<string, Record<string, unknown>>;
 }
 
 /**
@@ -155,6 +158,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultTemplateId: null,
   autoExpandThinking: false,
   backgroundSwipeGeneration: false,
+  pluginSettings: {},
 };
 
 export interface TreeSnapshot {

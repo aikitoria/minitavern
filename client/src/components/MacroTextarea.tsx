@@ -6,10 +6,10 @@ const TEMPLATE_KEYS = new Set(['char', 'user', 'system', 'personality', 'persona
 
 type MacroKind = 'valid' | 'invalid' | 'cond';
 
-function classify(token: string, template: boolean): MacroKind {
+function classify(token: string, keys: Set<string>, template: boolean): MacroKind {
   const lower = token.toLowerCase();
   const slot = /^\{\{([a-z]+)\}\}$/.exec(lower);
-  if (slot) return (template ? TEMPLATE_KEYS : BASIC_KEYS).has(slot[1]!) ? 'valid' : 'invalid';
+  if (slot) return keys.has(slot[1]!) ? 'valid' : 'invalid';
   if (template) {
     if (lower === '{{/if}}') return 'cond';
     const cond = /^\{\{#if ([a-z]+)\}\}$/.exec(lower);
@@ -23,12 +23,12 @@ interface Segment {
   kind: MacroKind | null;
 }
 
-function segments(text: string, template: boolean): Segment[] {
+function segments(text: string, keys: Set<string>, template: boolean): Segment[] {
   const out: Segment[] = [];
   let last = 0;
   for (const match of text.matchAll(TOKEN_RE)) {
     if (match.index! > last) out.push({ text: text.slice(last, match.index), kind: null });
-    out.push({ text: match[0], kind: classify(match[0], template) });
+    out.push({ text: match[0], kind: classify(match[0], keys, template) });
     last = match.index! + match[0].length;
   }
   if (last < text.length) out.push({ text: text.slice(last), kind: null });
@@ -45,6 +45,8 @@ export default function MacroTextarea(props: {
   ref?: HTMLTextAreaElement | ((el: HTMLTextAreaElement) => void);
   /** Enables the template macro set ({{system}}, {{#if x}}…) on top of {{char}}/{{user}}. */
   template?: boolean;
+  /** Additional macro names to treat as valid (e.g. a plugin's {{instruction}}). */
+  extraKeys?: string[];
   rows?: number | string;
   class?: string;
   classList?: { [key: string]: boolean | undefined };
@@ -89,7 +91,13 @@ export default function MacroTextarea(props: {
   return (
     <div class="macro-box" classList={props.classList}>
       <div class={`macro-overlay ${props.class ?? ''}`} ref={overlay} aria-hidden="true">
-        <For each={segments(text(), props.template === true)}>
+        <For
+          each={segments(
+            text(),
+            new Set([...(props.template ? TEMPLATE_KEYS : BASIC_KEYS), ...(props.extraKeys ?? [])]),
+            props.template === true,
+          )}
+        >
           {(seg) => (seg.kind ? <mark class={`macro-${seg.kind}`}>{seg.text}</mark> : seg.text)}
         </For>
         {'\n'}

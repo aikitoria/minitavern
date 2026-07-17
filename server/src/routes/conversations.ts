@@ -13,7 +13,13 @@ import {
   takeDirtyMessageIds,
 } from '../tree.ts';
 import { requireReference } from './entityUtils.ts';
-import { buildChatMessages, getCharacter, getPersona, substituteMacros } from '../prompt.ts';
+import {
+  buildChatMessages,
+  buildToolPrompt,
+  getCharacter,
+  getPersona,
+  substituteMacros,
+} from '../prompt.ts';
 import { clearSettingReference, getSettings } from '../settingsStore.ts';
 import {
   hasActiveGeneration,
@@ -249,6 +255,45 @@ route.get('/api/conversations/:id/tree', ({ params }) => {
   const id = positiveId(params.id);
   getConversation(id);
   return treeSnapshot(id);
+});
+
+/**
+ * Runs a plugin tool prompt as a foreground generation: the output streams
+ * into a role='tool' message appended at the active leaf. Tool messages are
+ * chat-visible but excluded from future prompt history. The prompt gets the
+ * full chat context and is macro-expanded server-side ({{char}}/{{user}}).
+ */
+route.post('/api/conversations/:id/tool', ({ params, body }) => {
+  const id = positiveId(params.id);
+  const conv = getConversation(id);
+  const b = objectBody(body);
+  const prompt = requiredString(b, 'prompt');
+  const label = optionalNullableString(b, 'label');
+  requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
+  // An in-flight speculative swipe is deliberately discarded and not refilled:
+  // once the tool output is the leaf, the previous reply can't be swiped
+  // without a branch switch, which restarts speculation on its own.
+  cancelBackgroundSwipe(id);
+  if (hasActiveGeneration(id))
+    throw new HttpError(409, 'a generation is already running in this conversation');
+
+  // Build from the pre-tool history: the tool message itself must not appear
+  // in its own context, and a fixed prompt keeps retries consistent.
+  const built = buildToolPrompt(conv, getActivePath(id), prompt);
+  const msg = appendMessage(
+    id,
+    'tool',
+    '',
+    conv.activeLeafId,
+    'streaming',
+    null,
+    label?.trim() || null,
+  );
+  touchConversation(id);
+  broadcastTree(id);
+  startGeneration(getConversation(id), msg.id, undefined, { prompt: built });
+  invalidate('conversations');
+  return { toolMessageId: msg.id, activeLeafId: msg.id };
 });
 
 /** The exact upstream request messages a generation on the current branch would send. */

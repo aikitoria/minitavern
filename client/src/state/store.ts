@@ -356,7 +356,9 @@ export async function swipeToSibling(message: Message, dir: 1 | -1): Promise<voi
   const siblings = siblingsOf(message);
   const idx = siblings.findIndex((m) => m.id === message.id);
   let action: (() => Promise<unknown>) | null = null;
-  if (dir === -1 || message.role === 'user') {
+  // Only assistant messages generate new siblings past the end; user and tool
+  // messages can just switch between existing ones.
+  if (dir === -1 || message.role !== 'assistant') {
     const target = siblings[idx + dir];
     if (target) action = () => api.activate(target.id, state.tree.activeLeafId);
   } else {

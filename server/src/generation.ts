@@ -2,6 +2,7 @@ import type { Conversation, GenMeta, Message } from '@minitavern/shared';
 import { stmt, toEndpoint } from './db.ts';
 import { getMessage, getPathToMessage } from './tree.ts';
 import { buildChatMessages } from './prompt.ts';
+import type { BuiltPrompt } from './prompt.ts';
 import { getSettings } from './settingsStore.ts';
 import { broadcastConv, invalidate } from './events.ts';
 
@@ -18,6 +19,8 @@ interface ActiveGen {
   background: boolean;
   /** New tokens since the last periodic DB flush. */
   dirty: boolean;
+  /** Fixed upstream request (plugin tool generations) instead of the chat history. */
+  promptOverride?: BuiltPrompt;
   onDone?: () => void;
   onError?: () => void;
 }
@@ -159,7 +162,12 @@ export function startGeneration(
   conversation: Conversation,
   mid: number,
   resumeFrom?: { content: string; reasoning: string },
-  options?: { background?: boolean; onDone?: () => void; onError?: () => void },
+  options?: {
+    background?: boolean;
+    prompt?: BuiltPrompt;
+    onDone?: () => void;
+    onError?: () => void;
+  },
 ): void {
   const gen: ActiveGen = {
     mid,
@@ -172,6 +180,7 @@ export function startGeneration(
     meta: {},
     background: options?.background ?? false,
     dirty: false,
+    promptOverride: options?.prompt,
     onDone: options?.onDone,
     onError: options?.onError,
   };
@@ -243,11 +252,18 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
 
   // A reply is based on its ancestors, not whichever sibling happens to be active.
   // This matters for speculative siblings, which deliberately stay inactive.
-  const target = getMessage(gen.mid);
-  const history = getPathToMessage(target?.parentId ?? null);
-  // The reply speaks as the name it was stamped with (regenerations keep their sibling's name).
-  const stampedName = getMessage(gen.mid)?.name ?? null;
-  const { messages, namePrefill } = buildChatMessages(conversation, history, stampedName);
+  // Tool generations carry a fixed prompt instead; copy the message list — a
+  // transient retry re-enters run() and must not see earlier prefill pushes.
+  const built =
+    gen.promptOverride ??
+    buildChatMessages(
+      conversation,
+      getPathToMessage(getMessage(gen.mid)?.parentId ?? null),
+      // The reply speaks as the name it was stamped with (regenerations keep their sibling's name).
+      getMessage(gen.mid)?.name ?? null,
+    );
+  const messages = [...built.messages];
+  const namePrefill = built.namePrefill;
   // Prefill-style trailing assistant message (resume content and/or "Name:").
   // Not part of the official OpenAI spec — with prefillMode 'none' the
   // backend decides; 'vllm'/'deepseek' send their native continuation flags.

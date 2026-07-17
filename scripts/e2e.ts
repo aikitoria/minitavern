@@ -305,6 +305,20 @@ async function main() {
     },
     400,
   );
+  const withPlugin = await putSettings({
+    pluginSettings: { imageGeneration: { describePrompt: 'test prompt' } },
+  });
+  assert(
+    (withPlugin.pluginSettings.imageGeneration as { describePrompt?: string }).describePrompt ===
+      'test prompt',
+    'plugin settings round-trip through PUT /api/settings',
+  );
+  await expectStatus(
+    'PUT',
+    '/api/settings',
+    { pluginSettings: 'nope', expectedRevision: withPlugin.revision },
+    400,
+  );
 
   console.log('== core chat loop with streaming ==');
   const conv = await req<{ id: number }>('POST', '/api/conversations', { characterId: null });
@@ -830,6 +844,46 @@ async function main() {
   assert(
     revertFinal.t === 'final' && revertFinal.message.model === 'mock-large',
     'clearing the override falls back to the global endpoint',
+  );
+
+  console.log('== plugin tool generation (foreground, role=tool) ==');
+  const toolSnap = await tree(conv2.id);
+  const toolRes = await req<{ toolMessageId: number; activeLeafId: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/tool`,
+    {
+      prompt: 'Describe {{char}} for {{user}}.',
+      label: 'Image prompt',
+      expectedActiveLeafId: toolSnap.activeLeafId,
+    },
+  );
+  // Foreground semantics: a concurrent send is rejected while the tool streams.
+  await expectStatus(
+    'POST',
+    `/api/conversations/${conv2.id}/messages`,
+    { content: 'busy', expectedActiveLeafId: toolRes.toolMessageId },
+    409,
+  );
+  const toolFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === toolRes.toolMessageId,
+    'tool generation finished',
+  );
+  assert(
+    toolFinal.t === 'final' &&
+      toolFinal.message.role === 'tool' &&
+      toolFinal.message.status === 'done',
+    'tool output streams into a role=tool message',
+  );
+  assert(
+    toolFinal.message.content.includes('Describe Assistant for Aiki.'),
+    'tool prompt gets {{char}}/{{user}} expanded and the chat context',
+  );
+  const toolTrace = await fetchTrace(conv2.id);
+  assert(
+    toolTrace.messages.every(
+      (m) => m.role !== 'tool' && !m.content.includes('Describe Assistant for Aiki.'),
+    ),
+    'tool messages are excluded from prompt history',
   );
 
   console.log('== transient upstream failures auto-resume ==');

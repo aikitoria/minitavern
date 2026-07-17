@@ -27,11 +27,15 @@ export default function MessageNode(props: { message: Message }) {
   let editArea: HTMLTextAreaElement | undefined;
 
   const isUser = () => props.message.role === 'user';
+  const isTool = () => props.message.role === 'tool';
+  const isAssistant = () => props.message.role === 'assistant';
   const persona = () => (personasEnabled() ? selectedPersona() : null);
   const name = () =>
     isUser()
       ? (persona()?.name ?? 'You')
-      : (props.message.name ?? selectedCharacter()?.name ?? 'Assistant');
+      : isTool()
+        ? (props.message.name ?? 'Tool')
+        : (props.message.name ?? selectedCharacter()?.name ?? 'Assistant');
   const avatarSrc = () => (isUser() ? persona()?.avatar : selectedCharacter()?.avatar);
   const streaming = () => props.message.status === 'streaming';
 
@@ -94,7 +98,7 @@ export default function MessageNode(props: { message: Message }) {
     showReasoning() || (state.settings.autoExpandThinking && streaming() && !props.message.content);
 
   const swipeable = () =>
-    !isUser() &&
+    isAssistant() &&
     !editing() &&
     !state.treeNavigationPending &&
     state.tree.activeLeafId === props.message.id;
@@ -178,7 +182,8 @@ export default function MessageNode(props: { message: Message }) {
       class="msg"
       classList={{
         'msg-user': isUser(),
-        'msg-assistant': !isUser(),
+        'msg-assistant': isAssistant(),
+        'msg-tool': isTool(),
         touched: touchedId() === props.message.id,
       }}
       onClick={() => setTouchedId(props.message.id)}
@@ -187,7 +192,9 @@ export default function MessageNode(props: { message: Message }) {
       onTouchEnd={onTouchEnd}
       onTouchCancel={onTouchEnd}
     >
-      <Avatar src={avatarSrc()} name={name()} />
+      <Show when={!isTool()} fallback={<span class="avatar avatar-fallback">⚙</span>}>
+        <Avatar src={avatarSrc()} name={name()} />
+      </Show>
       <div
         class="msg-body"
         classList={{
@@ -225,7 +232,7 @@ export default function MessageNode(props: { message: Message }) {
             </button>
           </Show>
           <span class="msg-tools-top">
-            <Show when={siblings().length > 1 || (!isUser() && !editing())}>
+            <Show when={siblings().length > 1 || (isAssistant() && !editing())}>
               <span class="branch-nav">
                 <button
                   class="icon-btn"
@@ -242,10 +249,12 @@ export default function MessageNode(props: { message: Message }) {
                   disabled={
                     state.treeNavigationPending ||
                     editing() ||
-                    (isUser() && siblingIndex() >= siblings().length - 1)
+                    (!isAssistant() && siblingIndex() >= siblings().length - 1)
                   }
                   title={
-                    !isUser() && siblingIndex() >= siblings().length - 1 ? 'Regenerate' : undefined
+                    isAssistant() && siblingIndex() >= siblings().length - 1
+                      ? 'Regenerate'
+                      : undefined
                   }
                   onClick={() => void swipeToSibling(props.message, 1)}
                 >
@@ -304,19 +313,27 @@ export default function MessageNode(props: { message: Message }) {
                   onKeyDown={(e) => {
                     if (e.isComposing) return; // IME candidate confirmation, not a command
                     // Ctrl/Cmd+Enter submits as a new branch; Escape cancels.
+                    // Tool output has no branch semantics — save in place.
                     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                       e.preventDefault();
-                      void saveAsBranch();
+                      void (isTool() ? saveInPlace() : saveAsBranch());
                     } else if (e.key === 'Escape') {
                       setEditing(false);
                     }
                   }}
                 />
                 <div class="msg-edit-actions">
-                  <button class="primary-btn" onClick={() => void saveAsBranch()}>
-                    {isUser() ? 'Send as branch' : 'Save as branch'}
+                  <Show when={!isTool()}>
+                    <button class="primary-btn" onClick={() => void saveAsBranch()}>
+                      {isUser() ? 'Send as branch' : 'Save as branch'}
+                    </button>
+                  </Show>
+                  <button
+                    classList={{ 'primary-btn': isTool() }}
+                    onClick={() => void saveInPlace()}
+                  >
+                    Save in place
                   </button>
-                  <button onClick={() => void saveInPlace()}>Save in place</button>
                   <button onClick={() => setEditing(false)}>Cancel</button>
                 </div>
               </div>

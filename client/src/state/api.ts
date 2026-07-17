@@ -83,6 +83,17 @@ export const api = {
       `/api/conversations/${conversationId}/delete-tail`,
       { count, expectedActiveLeafId },
     ),
+  toolGenerate: (
+    conversationId: number,
+    prompt: string,
+    label: string,
+    expectedActiveLeafId: number | null,
+  ) =>
+    request<{ toolMessageId: number; activeLeafId: number }>(
+      'POST',
+      `/api/conversations/${conversationId}/tool`,
+      { prompt, label, expectedActiveLeafId },
+    ),
 
   editMessage: (messageId: number, content: string, expectedActiveLeafId: number | null) =>
     request<unknown>('PATCH', `/api/messages/${messageId}`, { content, expectedActiveLeafId }),

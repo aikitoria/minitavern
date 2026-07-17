@@ -36,12 +36,20 @@ route.put('/api/settings', ({ body }) => {
   }
   const autoExpandThinking = optionalBoolean(b, 'autoExpandThinking');
   const backgroundSwipeGeneration = optionalBoolean(b, 'backgroundSwipeGeneration');
+  const pluginSettings = b.pluginSettings as Settings['pluginSettings'] | undefined;
+  if (pluginSettings !== undefined) {
+    const isPlainObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v);
+    if (!isPlainObject(pluginSettings) || !Object.values(pluginSettings).every(isPlainObject)) {
+      throw new HttpError(400, 'pluginSettings must be an object of per-plugin objects');
+    }
+  }
   const next: Settings = {
     ...DEFAULT_SETTINGS,
     ...current,
     ...Object.fromEntries(Object.entries(ids).filter(([, value]) => value !== undefined)),
     ...(autoExpandThinking === undefined ? {} : { autoExpandThinking }),
     ...(backgroundSwipeGeneration === undefined ? {} : { backgroundSwipeGeneration }),
+    ...(pluginSettings === undefined ? {} : { pluginSettings }),
     revision: current.revision + 1,
   };
   putSettings(next);
