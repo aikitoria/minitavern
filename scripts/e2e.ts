@@ -1,10 +1,23 @@
-// End-to-end test against a running dev stack (server + mock).
-// Run: docker compose -f docker-compose.dev.yml run --rm --no-deps server node scripts/e2e.ts
+// End-to-end test suite. DESTRUCTIVE: it mutates settings and creates/deletes
+// data on the target server — NEVER point it at a live instance. There are
+// deliberately no default targets; run it fully isolated (see CLAUDE.md):
+//
+//   docker compose -p minitavern-e2e -f docker-compose.dev.yml run --rm --no-deps \
+//     -e DATA_DIR=/tmp/e2e-data -e E2E_BASE=http://127.0.0.1:15487 -e E2E_MOCK=http://127.0.0.1:19800/v1 \
+//     server sh -c 'PORT=15487 node server/src/index.ts & PORT=19800 node scripts/mock-openai.ts & \
+//       sleep 2; node scripts/e2e.ts'
 import { deflateSync } from 'node:zlib';
 import type { Message, ServerEvent, Settings, TreeSnapshot } from '@minitavern/shared';
 
-const BASE = process.env.E2E_BASE ?? 'http://server:5487';
-const MOCK_URL = process.env.E2E_MOCK ?? 'http://mock:9800/v1';
+if (!process.env.E2E_BASE || !process.env.E2E_MOCK) {
+  console.error(
+    'E2E_BASE and E2E_MOCK must be set explicitly — this suite mutates settings and data\n' +
+      'on the target server. Run it against an isolated throwaway instance only.',
+  );
+  process.exit(1);
+}
+const BASE = process.env.E2E_BASE;
+const MOCK_URL = process.env.E2E_MOCK;
 const MOCK_CONTROL = MOCK_URL.replace(/\/v1\/?$/, '');
 
 let passed = 0;
