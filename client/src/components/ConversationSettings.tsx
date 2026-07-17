@@ -3,7 +3,7 @@ import { createStore, reconcile } from 'solid-js/store';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { selectedConversation, state } from '../state/store.ts';
-import { createSavedFlash, download } from '../util.ts';
+import { createSavedFlash, download, errorMessage, numberOrNull } from '../util.ts';
 import Modal from './Modal.tsx';
 
 interface Draft {
@@ -27,15 +27,13 @@ function Editor(props: { conv: Conversation }) {
   const [saved, flashSaved] = createSavedFlash();
   const [error, setError] = createSignal('');
 
-  const numOrNull = (value: string) => (value === '' ? null : Number(value));
-
   const save = async () => {
     try {
       await api.patchConversation(props.conv.id, { ...draft });
       setError('');
       flashSaved();
     } catch (err) {
-      setError(String(err));
+      setError(errorMessage(err));
     }
   };
 
@@ -53,7 +51,7 @@ function Editor(props: { conv: Conversation }) {
       <label>Character</label>
       <select
         value={draft.characterId ?? ''}
-        onChange={(e) => setDraft('characterId', numOrNull(e.currentTarget.value))}
+        onChange={(e) => setDraft('characterId', numberOrNull(e.currentTarget.value))}
       >
         <option value="">Assistant (none)</option>
         <For each={state.characters}>{(ch) => <option value={ch.id}>{ch.name}</option>}</For>
@@ -71,7 +69,7 @@ function Editor(props: { conv: Conversation }) {
       <label>Persona</label>
       <select
         value={draft.personaId ?? ''}
-        onChange={(e) => setDraft('personaId', numOrNull(e.currentTarget.value))}
+        onChange={(e) => setDraft('personaId', numberOrNull(e.currentTarget.value))}
       >
         <option value="">— none —</option>
         <For each={state.personas}>{(p) => <option value={p.id}>{p.name}</option>}</For>

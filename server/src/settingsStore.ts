@@ -13,3 +13,15 @@ export function putSettings(settings: Settings): void {
     'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
   ).run('app', JSON.stringify(settings));
 }
+
+type SettingsReferenceKey = Exclude<
+  keyof Settings,
+  'revision' | 'autoExpandThinking' | 'backgroundSwipeGeneration'
+>;
+
+export function clearSettingReference(key: SettingsReferenceKey, id: number): boolean {
+  const settings = getSettings();
+  if (settings[key] !== id) return false;
+  putSettings({ ...settings, [key]: null, revision: settings.revision + 1 });
+  return true;
+}

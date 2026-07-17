@@ -2,6 +2,7 @@ import { For, Show, createEffect, onCleanup, onMount } from 'solid-js';
 import { api } from '../state/api.ts';
 import {
   activePath,
+  navigateTree,
   newConversation,
   selectedConversation,
   siblingsOf,
@@ -23,7 +24,13 @@ export default function ChatView() {
   // unless the user is typing somewhere non-empty.
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-    if (state.modal !== null || state.viewMode !== 'chat' || state.selectedId == null) return;
+    if (
+      state.modal !== null ||
+      state.viewMode !== 'chat' ||
+      state.selectedId == null ||
+      state.treeNavigationPending
+    )
+      return;
     const target = event.target as HTMLElement;
     const editable =
       target instanceof HTMLInputElement ||
@@ -40,16 +47,15 @@ export default function ChatView() {
     }
     const path = activePath();
     const last = path[path.length - 1];
-    if (!last || last.role !== 'assistant' || last.status === 'streaming' || streamingMessage())
-      return;
+    if (!last || last.role !== 'assistant') return;
     const siblings = siblingsOf(last);
     const idx = siblings.findIndex((m) => m.id === last.id);
     if (event.key === 'ArrowLeft') {
-      if (idx > 0) void api.activate(siblings[idx - 1]!.id);
-    } else if (idx < siblings.length - 1) {
-      void api.activate(siblings[idx + 1]!.id);
+      if (last.status === 'streaming' || streamingMessage()) return;
+      if (idx > 0)
+        void navigateTree(() => api.activate(siblings[idx - 1]!.id, state.tree.activeLeafId));
     } else {
-      void api.regenerate(last.id).catch(console.error);
+      void navigateTree(() => api.advance(last.id, state.tree.activeLeafId));
     }
     event.preventDefault();
   };
@@ -94,9 +100,7 @@ export default function ChatView() {
               Start a new chat
             </button>
             <Show when={state.endpoints.length === 0}>
-              <p class="hint">
-                No API endpoint configured yet — open Settings (⚙) → Endpoints first.
-              </p>
+              <p class="hint">No API endpoint configured yet — open Settings → Endpoints first.</p>
             </Show>
           </div>
         }

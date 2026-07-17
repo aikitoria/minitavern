@@ -10,6 +10,8 @@ import {
   toggleSidebar,
 } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
+import GearIcon from './GearIcon.tsx';
+import TraceIcon from './TraceIcon.tsx';
 
 export default function Header() {
   const [editing, setEditing] = createSignal(false);
@@ -103,14 +105,14 @@ export default function Header() {
               title="Toggle prompt trace"
               onClick={() => setState('viewMode', state.viewMode === 'chat' ? 'trace' : 'chat')}
             >
-              {'{}'}
+              <TraceIcon />
             </button>
             <button
               class="icon-btn"
               title="Conversation settings"
               onClick={() => openModal('conversation')}
             >
-              ⚙
+              <GearIcon />
             </button>
           </>
         )}

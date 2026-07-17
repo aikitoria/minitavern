@@ -18,6 +18,7 @@ services:
     command: node --watch-path=server/src --watch-path=shared/src server/src/index.ts
     environment:
       DATA_DIR: /app/data-dev
+      MINITAVERN_IP_ALLOWLIST: ${MINITAVERN_IP_ALLOWLIST:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10}
     <<: *dev-volumes
     ports:
       - "5488:5487"
@@ -31,6 +32,7 @@ services:
       VITE_PROXY_TARGET: http://server:5487
       TLS_CERT_PATH: /certs/cert.pem
       TLS_KEY_PATH: /certs/key.pem
+      MINITAVERN_IP_ALLOWLIST: ${MINITAVERN_IP_ALLOWLIST:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10}
     volumes:
       - .:/app
       - ./.git:/app/.git:ro

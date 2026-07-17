@@ -10,6 +10,25 @@ export interface ParsedCard {
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const MAX_COMPRESSED_METADATA = 1024 * 1024;
+const MAX_DECOMPRESSED_METADATA = 8 * 1024 * 1024;
+
+function relevantKeyword(keyword: string): boolean {
+  return keyword === 'chara' || keyword === 'ccv3';
+}
+
+function boundedText(payload: Buffer, compressed: boolean): string {
+  if (payload.length > (compressed ? MAX_COMPRESSED_METADATA : MAX_DECOMPRESSED_METADATA)) {
+    throw new Error('Character card metadata is too large');
+  }
+  const decoded = compressed
+    ? inflateSync(payload, { maxOutputLength: MAX_DECOMPRESSED_METADATA })
+    : payload;
+  if (decoded.length > MAX_DECOMPRESSED_METADATA) {
+    throw new Error('Character card metadata is too large');
+  }
+  return decoded.toString('utf8');
+}
 
 function extractTextChunks(png: Buffer): Map<string, string> {
   if (png.length < 8 || !png.subarray(0, 8).equals(PNG_SIGNATURE)) {
@@ -19,32 +38,47 @@ function extractTextChunks(png: Buffer): Map<string, string> {
   let off = 8;
   while (off + 12 <= png.length) {
     const length = png.readUInt32BE(off);
+    const chunkEnd = off + 12 + length;
+    if (!Number.isSafeInteger(chunkEnd) || chunkEnd > png.length) {
+      throw new Error('PNG contains a truncated chunk');
+    }
     const type = png.toString('latin1', off + 4, off + 8);
     const data = png.subarray(off + 8, off + 8 + length);
     if (type === 'tEXt') {
       const nul = data.indexOf(0);
-      if (nul > 0) chunks.set(data.toString('latin1', 0, nul), data.toString('latin1', nul + 1));
-    } else if (type === 'iTXt') {
-      const nul = data.indexOf(0);
       if (nul > 0) {
         const keyword = data.toString('latin1', 0, nul);
+        if (relevantKeyword(keyword))
+          chunks.set(keyword, boundedText(data.subarray(nul + 1), false));
+      }
+    } else if (type === 'iTXt') {
+      const nul = data.indexOf(0);
+      if (nul > 0 && nul + 2 < data.length) {
+        const keyword = data.toString('latin1', 0, nul);
+        if (!relevantKeyword(keyword)) {
+          off = chunkEnd;
+          continue;
+        }
         const compressed = data[nul + 1] === 1;
+        if (data[nul + 1] !== 0 && !compressed) throw new Error('Invalid iTXt compression flag');
+        if (data[nul + 2] !== 0) throw new Error('Unsupported iTXt compression method');
         // Skip compression flag+method, then language tag and translated keyword (both NUL-terminated).
         let p = nul + 3;
-        p = data.indexOf(0, p) + 1;
-        p = data.indexOf(0, p) + 1;
-        if (p > 0 && p <= data.length) {
+        const languageEnd = data.indexOf(0, p);
+        if (languageEnd === -1) throw new Error('Invalid iTXt language field');
+        p = languageEnd + 1;
+        const translatedEnd = data.indexOf(0, p);
+        if (translatedEnd === -1) throw new Error('Invalid iTXt translated keyword');
+        p = translatedEnd + 1;
+        if (p <= data.length) {
           const payload = data.subarray(p);
-          chunks.set(
-            keyword,
-            compressed ? inflateSync(payload).toString('utf8') : payload.toString('utf8'),
-          );
+          chunks.set(keyword, boundedText(payload, compressed));
         }
       }
     } else if (type === 'IEND') {
       break;
     }
-    off += 12 + length;
+    off = chunkEnd;
   }
   return chunks;
 }

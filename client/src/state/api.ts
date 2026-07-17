@@ -9,11 +9,35 @@ import type {
   TreeSnapshot,
 } from '@minitavern/shared';
 
-async function request<T>(method: string, url: string, body?: unknown): Promise<T> {
+interface RequestOptions {
+  rawBody?: BodyInit;
+  contentType?: string;
+}
+
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+  }
+}
+
+async function request<T>(
+  method: string,
+  url: string,
+  body?: unknown,
+  options?: RequestOptions,
+): Promise<T> {
+  const hasRawBody = options?.rawBody !== undefined;
+  const hasJsonBody = body !== undefined;
   const res = await fetch(url, {
     method,
-    headers: body !== undefined ? { 'content-type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    headers:
+      hasRawBody || hasJsonBody
+        ? { 'content-type': options?.contentType ?? 'application/json' }
+        : {},
+    body: hasRawBody ? options.rawBody : hasJsonBody ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {
     let message = `${res.status}`;
@@ -23,18 +47,9 @@ async function request<T>(method: string, url: string, body?: unknown): Promise<
     } catch {
       /* keep status */
     }
-    throw new Error(message);
+    throw new ApiError(res.status, message);
   }
   if (res.status === 204) return undefined as T;
-  return (await res.json()) as T;
-}
-
-async function upload<T>(method: string, url: string, file: Blob, contentType: string): Promise<T> {
-  const res = await fetch(url, { method, headers: { 'content-type': contentType }, body: file });
-  if (!res.ok) {
-    const json = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(json.error ?? `${res.status}`);
-  }
   return (await res.json()) as T;
 }
 
@@ -56,24 +71,45 @@ export const api = {
       'GET',
       `/api/conversations/${id}/trace`,
     ),
-  send: (conversationId: number, content: string) =>
+  send: (conversationId: number, content: string, expectedActiveLeafId: number | null) =>
     request<{ userMessageId: number; assistantMessageId: number }>(
       'POST',
       `/api/conversations/${conversationId}/messages`,
-      { content },
+      { content, expectedActiveLeafId },
+    ),
+  deleteTail: (conversationId: number, count: number, expectedActiveLeafId: number | null) =>
+    request<{ activeLeafId: number | null; deletedSiblingRoots: number }>(
+      'POST',
+      `/api/conversations/${conversationId}/delete-tail`,
+      { count, expectedActiveLeafId },
     ),
 
-  regenerate: (messageId: number) =>
-    request<{ assistantMessageId: number }>('POST', `/api/messages/${messageId}/regenerate`),
-  editMessage: (messageId: number, content: string) =>
-    request<unknown>('PATCH', `/api/messages/${messageId}`, { content }),
-  editBranch: (messageId: number, content: string) =>
-    request<{ messageId: number }>('POST', `/api/messages/${messageId}/edit-branch`, { content }),
-  activate: (messageId: number) =>
-    request<{ activeLeafId: number }>('POST', `/api/messages/${messageId}/activate`),
-  deleteMessage: (messageId: number) => request<void>('DELETE', `/api/messages/${messageId}`),
-  resume: (messageId: number) =>
-    request<{ assistantMessageId: number }>('POST', `/api/messages/${messageId}/continue`),
+  editMessage: (messageId: number, content: string, expectedActiveLeafId: number | null) =>
+    request<unknown>('PATCH', `/api/messages/${messageId}`, { content, expectedActiveLeafId }),
+  editBranch: (messageId: number, content: string, expectedActiveLeafId: number | null) =>
+    request<{ messageId: number }>('POST', `/api/messages/${messageId}/edit-branch`, {
+      content,
+      expectedActiveLeafId,
+    }),
+  activate: (messageId: number, expectedActiveLeafId: number | null) =>
+    request<{ activeLeafId: number }>('POST', `/api/messages/${messageId}/activate`, {
+      expectedActiveLeafId,
+    }),
+  advance: (messageId: number, expectedActiveLeafId: number | null) =>
+    request<{ activeLeafId: number; assistantMessageId: number | null }>(
+      'POST',
+      `/api/messages/${messageId}/advance`,
+      { expectedActiveLeafId },
+    ),
+  deleteMessage: (messageId: number, expectedActiveLeafId: number | null) =>
+    request<void>(
+      'DELETE',
+      `/api/messages/${messageId}?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}`,
+    ),
+  resume: (messageId: number, expectedActiveLeafId: number | null) =>
+    request<{ assistantMessageId: number }>('POST', `/api/messages/${messageId}/continue`, {
+      expectedActiveLeafId,
+    }),
   stopGeneration: (messageId: number) =>
     request<{ stopped: boolean }>('POST', `/api/generations/${messageId}/stop`),
 
@@ -84,9 +120,15 @@ export const api = {
     request<Character>('PATCH', `/api/characters/${id}`, data),
   deleteCharacter: (id: number) => request<void>('DELETE', `/api/characters/${id}`),
   uploadCharacterAvatar: (id: number, file: File) =>
-    upload<Character>('PUT', `/api/characters/${id}/avatar`, file, file.type),
+    request<Character>('PUT', `/api/characters/${id}/avatar`, undefined, {
+      rawBody: file,
+      contentType: file.type,
+    }),
   importCard: (file: File) =>
-    upload<Character>('POST', '/api/characters/import-card', file, 'application/octet-stream'),
+    request<Character>('POST', '/api/characters/import-card', undefined, {
+      rawBody: file,
+      contentType: 'application/octet-stream',
+    }),
 
   templates: () => request<Template[]>('GET', '/api/templates'),
   createTemplate: (data: Partial<Template>) => request<Template>('POST', '/api/templates', data),
@@ -106,7 +148,10 @@ export const api = {
     request<Persona>('PATCH', `/api/personas/${id}`, data),
   deletePersona: (id: number) => request<void>('DELETE', `/api/personas/${id}`),
   uploadPersonaAvatar: (id: number, file: File) =>
-    upload<Persona>('PUT', `/api/personas/${id}/avatar`, file, file.type),
+    request<Persona>('PUT', `/api/personas/${id}/avatar`, undefined, {
+      rawBody: file,
+      contentType: file.type,
+    }),
 
   endpoints: () => request<Endpoint[]>('GET', '/api/endpoints'),
   createEndpoint: (data: Partial<Endpoint>) => request<Endpoint>('POST', '/api/endpoints', data),
@@ -116,5 +161,6 @@ export const api = {
   fetchModels: (id: number) => request<string[]>('GET', `/api/endpoints/${id}/models`),
 
   settings: () => request<Settings>('GET', '/api/settings'),
-  putSettings: (settings: Partial<Settings>) => request<Settings>('PUT', '/api/settings', settings),
+  putSettings: (settings: Partial<Settings>, expectedRevision: number) =>
+    request<Settings>('PUT', '/api/settings', { ...settings, expectedRevision }),
 };

@@ -1,7 +1,14 @@
 import { Show, createSignal } from 'solid-js';
 import type { Message } from '@minitavern/shared';
 import { api } from '../state/api.ts';
-import { selectedCharacter, selectedPersona, siblingsOf, state } from '../state/store.ts';
+import {
+  navigateTree,
+  selectedCharacter,
+  selectedPersona,
+  siblingsOf,
+  state,
+  toast,
+} from '../state/store.ts';
 import Avatar from './Avatar.tsx';
 import Markdown from './Markdown.tsx';
 
@@ -26,7 +33,14 @@ export default function MessageNode(props: { message: Message }) {
 
   const switchSibling = (offset: number) => {
     const target = siblings()[siblingIndex() + offset];
-    if (target) void api.activate(target.id);
+    if (target) void navigateTree(() => api.activate(target.id, state.tree.activeLeafId));
+  };
+
+  const nextSiblingOrRegenerate = () => {
+    if (isUser()) switchSibling(1);
+    else {
+      void navigateTree(() => api.advance(props.message.id, state.tree.activeLeafId));
+    }
   };
 
   // SillyTavern-style swipe gesture on the last assistant message: swipe left
@@ -42,7 +56,10 @@ export default function MessageNode(props: { message: Message }) {
     showReasoning() || (state.settings.autoExpandThinking && streaming() && !props.message.content);
 
   const swipeable = () =>
-    !isUser() && !streaming() && !editing() && state.tree.activeLeafId === props.message.id;
+    !isUser() &&
+    !editing() &&
+    !state.treeNavigationPending &&
+    state.tree.activeLeafId === props.message.id;
 
   const onTouchStart = (e: TouchEvent) => {
     if (!swipeable() || e.touches.length !== 1) return;
@@ -70,10 +87,8 @@ export default function MessageNode(props: { message: Message }) {
     if (dragging() && horizontal) {
       const dx = dragX();
       if (dx <= -48) {
-        // Forward: next sibling, or a fresh swipe at the end.
-        if (siblingIndex() < siblings().length - 1) switchSibling(1);
-        else void api.regenerate(props.message.id).catch(console.error);
-      } else if (dx >= 48) {
+        nextSiblingOrRegenerate();
+      } else if (dx >= 48 && !streaming()) {
         switchSibling(-1);
       }
     }
@@ -93,35 +108,48 @@ export default function MessageNode(props: { message: Message }) {
   };
 
   const saveInPlace = async () => {
-    await api.editMessage(props.message.id, editArea!.value);
-    setEditing(false);
+    const saved = await navigateTree(() =>
+      api.editMessage(props.message.id, editArea!.value, state.tree.activeLeafId),
+    );
+    if (saved) setEditing(false);
   };
 
   const saveAsBranch = async () => {
-    await api.editBranch(props.message.id, editArea!.value);
-    setEditing(false);
+    const saved = await navigateTree(() =>
+      api.editBranch(props.message.id, editArea!.value, state.tree.activeLeafId),
+    );
+    if (saved) setEditing(false);
   };
 
   const remove = () => {
-    if (confirm('Delete this message and everything after it on this branch?')) {
-      void api.deleteMessage(props.message.id);
-    }
+    void navigateTree(() => api.deleteMessage(props.message.id, state.tree.activeLeafId));
   };
 
   const copy = () => void navigator.clipboard.writeText(props.message.content);
 
   const Tools = () => (
     <>
-      <Show when={siblings().length > 1}>
+      <Show when={siblings().length > 1 || (!isUser() && !editing())}>
         <span class="branch-nav">
-          <button class="icon-btn" disabled={siblingIndex() <= 0} onClick={() => switchSibling(-1)}>
+          <button
+            class="icon-btn"
+            disabled={
+              state.treeNavigationPending || streaming() || editing() || siblingIndex() <= 0
+            }
+            onClick={() => switchSibling(-1)}
+          >
             ‹
           </button>
           {siblingIndex() + 1}/{siblings().length}
           <button
             class="icon-btn"
-            disabled={siblingIndex() >= siblings().length - 1}
-            onClick={() => switchSibling(1)}
+            disabled={
+              state.treeNavigationPending ||
+              editing() ||
+              (isUser() && siblingIndex() >= siblings().length - 1)
+            }
+            title={!isUser() && siblingIndex() >= siblings().length - 1 ? 'Regenerate' : undefined}
+            onClick={nextSiblingOrRegenerate}
           >
             ›
           </button>
@@ -135,15 +163,6 @@ export default function MessageNode(props: { message: Message }) {
           <button class="icon-btn" title="Edit" onClick={startEdit}>
             ✎
           </button>
-          <Show when={!isUser()}>
-            <button
-              class="icon-btn"
-              title="Regenerate"
-              onClick={() => void api.regenerate(props.message.id)}
-            >
-              ↻
-            </button>
-          </Show>
           <button class="icon-btn" title="Delete branch from here" onClick={remove}>
             🗑
           </button>

@@ -1,5 +1,6 @@
 export type Role = 'user' | 'assistant' | 'system';
 export type MessageStatus = 'done' | 'streaming' | 'error' | 'stopped';
+export type GenerationKind = 'normal' | 'speculative';
 
 export interface GenParams {
   temperature?: number;
@@ -28,6 +29,7 @@ export interface Message {
   activeChildId: number | null;
   model: string | null;
   genMeta: GenMeta | null;
+  generationKind: GenerationKind;
   createdAt: number;
 }
 
@@ -88,6 +90,8 @@ export interface Endpoint {
   name: string;
   baseUrl: string;
   apiKey: string;
+  /** Whether a secret is stored; the secret itself is never returned by the API. */
+  hasApiKey: boolean;
   models: string[];
   /** The model used for generations through this endpoint. */
   model: string | null;
@@ -100,6 +104,8 @@ export interface Endpoint {
 }
 
 export interface Settings {
+  /** Monotonic server revision used to reject stale cross-device writes. */
+  revision: number;
   defaultPresetId: number | null;
   /** The single endpoint all generations go through. */
   activeEndpointId: number | null;
@@ -107,6 +113,8 @@ export interface Settings {
   defaultTemplateId: number | null;
   /** Auto-expand the thinking block while a model reasons with no answer text yet. */
   autoExpandThinking: boolean;
+  /** Keep one unread assistant sibling prepared ahead of the active reply. */
+  backgroundSwipeGeneration: boolean;
 }
 
 /**
@@ -126,11 +134,13 @@ export const DEFAULT_PROMPT_TEMPLATE = `{{system}}
 {{scenario}}{{/if}}`;
 
 export const DEFAULT_SETTINGS: Settings = {
+  revision: 0,
   defaultPresetId: null,
   activeEndpointId: null,
   defaultPersonaId: null,
   defaultTemplateId: null,
   autoExpandThinking: false,
+  backgroundSwipeGeneration: false,
 };
 
 export interface TreeSnapshot {

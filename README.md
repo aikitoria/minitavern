@@ -2,7 +2,7 @@
 
 Small but mighty self-hosted chat frontend for OpenAI-compatible LLM APIs.
 
-- Tree-structured conversation history: edit any user message to branch, regenerate AI replies as siblings, switch branches with `‹ n/m ›` — the previously active chain under each branch is restored when you switch back.
+- Tree-structured conversation history: edit any user message to branch, swipe AI replies as siblings, switch branches with `‹ n/m ›` — the previously active chain under each branch is restored when you switch back.
 - Server-authoritative state in SQLite; clients are pure viewers synced live over WebSocket. Open the same chat on desktop and phone and watch streams arrive on both.
 - Characters (with SillyTavern PNG card import), system prompt presets, user personas with `{{char}}`/`{{user}}` macros, multiple named API endpoints.
 - Responsive: desktop two-pane layout, mobile PWA with bottom composer.
@@ -17,6 +17,18 @@ docker compose up --build -d
 ```
 
 Open `http://<host>:5487`. State lives in `./data`.
+
+### Network allowlist
+
+HTTP and WebSocket access are restricted by source IP. Configure the addresses or CIDR ranges
+allowed to use MiniTavern in the gitignored local `.env` file shared by both Compose stacks:
+
+```sh
+MINITAVERN_IP_ALLOWLIST=127.0.0.1/32,::1/128,192.168.1.20/32,192.168.1.0/24
+```
+
+When unset, loopback, RFC 1918 private networks, IPv6 unique-local addresses, and link-local
+addresses are allowed. Keep `172.16.0.0/12` when using Docker-internal tools or the mock service.
 
 ### HTTPS
 

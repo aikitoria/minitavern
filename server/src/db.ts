@@ -177,7 +177,20 @@ if (version < 7) {
   `);
 }
 
+if (version < 8) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE messages ADD COLUMN generation_kind TEXT NOT NULL DEFAULT 'normal';
+    PRAGMA user_version = 8;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
+// Speculative placeholders are disposable; do not expose them as broken swipe choices.
+db.prepare(
+  "DELETE FROM messages WHERE status = 'streaming' AND generation_kind = 'speculative'",
+).run();
 db.prepare(
   `UPDATE messages SET status = 'error',
    gen_meta_json = json_object('error', 'Server restarted during generation') WHERE status = 'streaming'`,
@@ -217,13 +230,14 @@ export function toMessage(r: Row): Message {
     conversationId: r.conversation_id as number,
     parentId: r.parent_id as number | null,
     role: r.role as Message['role'],
-    content: r.content as string,
-    reasoning: r.reasoning as string | null,
+    content: (r.content as string).trim(),
+    reasoning: r.reasoning ? (r.reasoning as string).trim() || null : null,
     name: r.name as string | null,
     status: r.status as Message['status'],
     activeChildId: r.active_child_id as number | null,
     model: r.model as string | null,
     genMeta: r.gen_meta_json ? JSON.parse(r.gen_meta_json as string) : null,
+    generationKind: r.generation_kind as Message['generationKind'],
     createdAt: r.created_at as number,
   };
 }
@@ -287,11 +301,13 @@ export function toPersona(r: Row): Persona {
 }
 
 export function toEndpoint(r: Row): Endpoint {
+  const apiKey = r.api_key as string;
   return {
     id: r.id as number,
     name: r.name as string,
     baseUrl: r.base_url as string,
-    apiKey: r.api_key as string,
+    apiKey,
+    hasApiKey: apiKey.length > 0,
     models: JSON.parse(r.models_json as string),
     model: r.model as string | null,
     genParams: JSON.parse(r.gen_params_json as string),

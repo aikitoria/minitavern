@@ -2,14 +2,12 @@ import { For, Show, createSignal } from 'solid-js';
 import type { Endpoint, GenParams } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
-import { createSavedFlash, createDetailNav } from '../../util.ts';
+import { createEntityEditor, errorMessage } from '../../util.ts';
 
 export default function EndpointsTab() {
-  const [selectedId, setSelectedId] = createSignal<number | 'new'>('new');
-  const [saved, flashSaved] = createSavedFlash();
-  const nav = createDetailNav();
-  const [status, setStatus] = createSignal('');
   const [model, setModel] = createSignal('');
+  const [keyChanged, setKeyChanged] = createSignal(false);
+  const [editingExisting, setEditingExisting] = createSignal(false);
   let nameEl!: HTMLInputElement;
   let urlEl!: HTMLInputElement;
   let keyEl!: HTMLInputElement;
@@ -20,94 +18,90 @@ export default function EndpointsTab() {
   let presEl!: HTMLInputElement;
   let prefillEl!: HTMLSelectElement;
 
-  const selected = () => state.endpoints.find((e) => e.id === selectedId());
-
-  const select = (id: number | 'new') => {
-    nav.openDetail();
-    setSelectedId(id);
-    setStatus('');
-    const ep = state.endpoints.find((e) => e.id === id);
-    nameEl.value = ep?.name ?? '';
-    urlEl.value = ep?.baseUrl ?? '';
-    keyEl.value = ep?.apiKey ?? '';
-    setModel(ep?.model ?? '');
-    tempEl.value = String(ep?.genParams.temperature ?? '');
-    topPEl.value = String(ep?.genParams.topP ?? '');
-    maxTokEl.value = String(ep?.genParams.maxTokens ?? '');
-    freqEl.value = String(ep?.genParams.frequencyPenalty ?? '');
-    presEl.value = String(ep?.genParams.presencePenalty ?? '');
-    prefillEl.value = ep?.prefillMode ?? 'none';
-  };
-
-  const data = () => {
-    const genParams: GenParams = {};
-    if (tempEl.value !== '') genParams.temperature = Number(tempEl.value);
-    if (topPEl.value !== '') genParams.topP = Number(topPEl.value);
-    if (maxTokEl.value !== '') genParams.maxTokens = Number(maxTokEl.value);
-    if (freqEl.value !== '') genParams.frequencyPenalty = Number(freqEl.value);
-    if (presEl.value !== '') genParams.presencePenalty = Number(presEl.value);
-    return {
-      name: nameEl.value,
-      baseUrl: urlEl.value,
-      apiKey: keyEl.value,
-      model: model() || null,
-      genParams,
-      prefillMode: prefillEl.value as Endpoint['prefillMode'],
-    };
-  };
-
-  const save = async () => {
-    try {
-      const id = selectedId();
-      const saved =
-        id === 'new' ? await api.createEndpoint(data()) : await api.patchEndpoint(id, data());
-      setSelectedId(saved.id);
-      setStatus('');
-      flashSaved();
-    } catch (err) {
-      setStatus(String(err));
-    }
-  };
-
-  const remove = async () => {
-    const id = selectedId();
-    if (id === 'new' || !confirm('Delete this endpoint?')) return;
-    await api.deleteEndpoint(id);
-    select('new');
-    nav.closeDetail(); // mobile: back to the list after deleting
-  };
+  const editor = createEntityEditor({
+    items: () => state.endpoints,
+    load: (endpoint) => {
+      setEditingExisting(endpoint != null);
+      nameEl.value = endpoint?.name ?? '';
+      urlEl.value = endpoint?.baseUrl ?? '';
+      keyEl.value = '';
+      setKeyChanged(false);
+      setModel(endpoint?.model ?? '');
+      tempEl.value = String(endpoint?.genParams.temperature ?? '');
+      topPEl.value = String(endpoint?.genParams.topP ?? '');
+      maxTokEl.value = String(endpoint?.genParams.maxTokens ?? '');
+      freqEl.value = String(endpoint?.genParams.frequencyPenalty ?? '');
+      presEl.value = String(endpoint?.genParams.presencePenalty ?? '');
+      prefillEl.value = endpoint?.prefillMode ?? 'none';
+    },
+    data: () => {
+      const genParams: GenParams = {};
+      if (tempEl.value !== '') genParams.temperature = Number(tempEl.value);
+      if (topPEl.value !== '') genParams.topP = Number(topPEl.value);
+      if (maxTokEl.value !== '') genParams.maxTokens = Number(maxTokEl.value);
+      if (freqEl.value !== '') genParams.frequencyPenalty = Number(freqEl.value);
+      if (presEl.value !== '') genParams.presencePenalty = Number(presEl.value);
+      return {
+        name: nameEl.value,
+        baseUrl: urlEl.value,
+        ...(!editingExisting() || keyChanged() ? { apiKey: keyEl.value } : {}),
+        model: model() || null,
+        genParams,
+        prefillMode: prefillEl.value as Endpoint['prefillMode'],
+      };
+    },
+    create: async (data) => {
+      const endpoint = await api.createEndpoint(data);
+      setEditingExisting(true);
+      setKeyChanged(false);
+      return endpoint;
+    },
+    patch: async (id, data) => {
+      const endpoint = await api.patchEndpoint(id, data);
+      setKeyChanged(false);
+      return endpoint;
+    },
+    remove: api.deleteEndpoint,
+    deletePrompt: 'Delete this endpoint?',
+  });
 
   const fetchModels = async () => {
-    const id = selectedId();
+    const id = editor.selectedId();
     if (id === 'new') return;
-    setStatus('Fetching models…');
+    editor.setStatus('Fetching models…');
     try {
       const models = await api.fetchModels(id);
-      setStatus(`${models.length} models available.`);
+      editor.setStatus(`${models.length} models available.`);
       if (!model() && models.length > 0) setModel(models[0]!);
     } catch (err) {
-      setStatus(String(err));
+      editor.setStatus(errorMessage(err));
     }
   };
 
-  const models = () => selected()?.models ?? [];
+  const models = () => editor.selected()?.models ?? [];
 
   return (
-    <div class="master-detail" classList={{ 'detail-open': nav.detailOpen() }}>
+    <div class="master-detail" classList={{ 'detail-open': editor.nav.detailOpen() }}>
       <div class="entity-list">
-        <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>
+        <button
+          classList={{ active: editor.selectedId() === 'new' }}
+          onClick={() => editor.select('new')}
+        >
           + New endpoint
         </button>
         <For each={state.endpoints}>
           {(ep) => (
-            <button classList={{ active: selectedId() === ep.id }} onClick={() => select(ep.id)}>
+            <button
+              classList={{ active: editor.selectedId() === ep.id }}
+              onClick={() => editor.select(ep.id)}
+            >
               {ep.name}
             </button>
           )}
         </For>
       </div>
       <div class="form">
-        <button class="detail-back" onClick={nav.closeDetail}>
+        <button class="detail-back" onClick={editor.nav.closeDetail}>
           ‹ Back to list
         </button>
         <label>Name</label>
@@ -115,7 +109,12 @@ export default function EndpointsTab() {
         <label>Base URL (OpenAI-compatible, up to /v1)</label>
         <input ref={urlEl} placeholder="http://192.168.1.10:8080/v1" />
         <label>API key (optional)</label>
-        <input ref={keyEl} type="password" placeholder="sk-…" />
+        <input
+          ref={keyEl}
+          type="password"
+          placeholder={editor.selected()?.hasApiKey ? 'Configured — enter to replace' : 'sk-…'}
+          onInput={() => setKeyChanged(true)}
+        />
 
         <label>Model</label>
         <Show
@@ -170,22 +169,22 @@ export default function EndpointsTab() {
         </select>
 
         <div class="form-actions">
-          <button class="primary-btn" onClick={() => void save()}>
-            {selectedId() === 'new' ? 'Create' : 'Save'}
+          <button class="primary-btn" onClick={() => void editor.save()}>
+            {editor.selectedId() === 'new' ? 'Create' : 'Save'}
           </button>
-          <button onClick={() => select(selectedId())}>Discard</button>
-          <Show when={selectedId() !== 'new'}>
+          <button onClick={() => editor.select(editor.selectedId())}>Discard</button>
+          <Show when={editor.selectedId() !== 'new'}>
             <button onClick={() => void fetchModels()}>Fetch models</button>
-            <button class="danger-btn" onClick={() => void remove()}>
+            <button class="danger-btn" onClick={() => void editor.remove()}>
               Delete
             </button>
           </Show>
-          <Show when={saved()}>
+          <Show when={editor.saved()}>
             <span class="saved-flash">✓ Saved</span>
           </Show>
         </div>
-        <Show when={status()}>
-          <p class="hint">{status()}</p>
+        <Show when={editor.status()}>
+          <p class="hint">{editor.status()}</p>
         </Show>
       </div>
     </div>

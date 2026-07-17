@@ -1,6 +1,14 @@
 import { For, Show, createEffect, createSignal } from 'solid-js';
 import { api } from '../state/api.ts';
-import { activePath, state, streamingMessage, toast } from '../state/store.ts';
+import {
+  activePath,
+  navigateTree,
+  selectConversation,
+  state,
+  streamingMessage,
+  toast,
+} from '../state/store.ts';
+import { errorMessage } from '../util.ts';
 
 const coarsePointer = matchMedia('(pointer: coarse)').matches;
 
@@ -37,7 +45,7 @@ interface Command {
   name: string;
   params: string;
   description: string;
-  run: (args: string) => Promise<void>;
+  run: (args: string) => Promise<boolean | void>;
 }
 
 const COMMANDS: Command[] = [
@@ -49,6 +57,31 @@ const COMMANDS: Command[] = [
     run: async (args) => {
       if (state.selectedId == null) throw new Error('no conversation selected');
       await api.patchConversation(state.selectedId, { speakerName: args.trim() || null });
+    },
+  },
+  {
+    name: 'del',
+    params: '<count>',
+    description: 'Delete messages from the end, including their swipes and descendant branches',
+    run: async (args) => {
+      const count = Number(args.trim());
+      if (!Number.isSafeInteger(count) || count <= 0) {
+        throw new Error('Usage: /del <positive count>');
+      }
+      if (state.selectedId == null) throw new Error('no conversation selected');
+      return navigateTree(() => api.deleteTail(state.selectedId!, count, state.tree.activeLeafId));
+    },
+  },
+  {
+    name: 'delchat',
+    params: '',
+    description: 'Delete the current chat',
+    run: async (args) => {
+      if (args.trim()) throw new Error('Usage: /delchat');
+      const id = state.selectedId;
+      if (id == null) throw new Error('no conversation selected');
+      await api.deleteConversation(id);
+      if (state.selectedId === id) selectConversation(null);
     },
   },
 ];
@@ -94,7 +127,7 @@ export default function Composer() {
   const send = async () => {
     const content = text().trim();
     const id = state.selectedId;
-    if (!content || id == null) return;
+    if (!content || id == null || state.treeNavigationPending) return;
 
     if (content.startsWith('/')) {
       const m = content.match(/^\/(\w+)\s*([\s\S]*)$/);
@@ -104,11 +137,12 @@ export default function Composer() {
         return;
       }
       try {
-        await cmd.run(m![2]!);
+        const completed = await cmd.run(m![2]!);
+        if (completed === false) return;
         setText('');
         queueMicrotask(resize);
       } catch (err) {
-        toast(err instanceof Error ? err.message : String(err));
+        toast(errorMessage(err));
       }
       return;
     }
@@ -116,12 +150,8 @@ export default function Composer() {
     if (streamingMessage()) return;
     setText('');
     queueMicrotask(resize);
-    try {
-      await api.send(id, content);
-    } catch (err) {
-      setText(content); // restore on failure so nothing is lost
-      toast(err instanceof Error ? err.message : String(err));
-    }
+    const sent = await navigateTree(() => api.send(id, content, state.tree.activeLeafId));
+    if (!sent) setText(content); // restore on failure so nothing is lost
   };
 
   const stop = () => {
@@ -140,10 +170,7 @@ export default function Composer() {
 
   const resume = () => {
     const msg = resumable();
-    if (msg)
-      void api
-        .resume(msg.id)
-        .catch((err) => toast(err instanceof Error ? err.message : String(err)));
+    if (msg) void navigateTree(() => api.resume(msg.id, state.tree.activeLeafId));
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -156,6 +183,12 @@ export default function Composer() {
         return;
       }
       if (event.key === 'Tab' || event.key === 'Enter') {
+        const exact = matches.find((command) => command.name === cmdQuery()?.toLowerCase());
+        if (event.key === 'Enter' && exact && !exact.params) {
+          event.preventDefault();
+          void send();
+          return;
+        }
         event.preventDefault();
         complete(matches[Math.min(selIdx(), matches.length - 1)]!);
         return;

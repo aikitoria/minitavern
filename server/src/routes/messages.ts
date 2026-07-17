@@ -1,10 +1,27 @@
 import { db } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import { activateMessage, appendMessage, deleteMessage, getMessage } from '../tree.ts';
-import { hasActiveGeneration, startGeneration, stopGeneration } from '../generation.ts';
+import {
+  hasActiveGeneration,
+  hasForegroundGeneration,
+  isBackgroundGeneration,
+  promoteBackgroundGeneration,
+  startGeneration,
+  stopGeneration,
+} from '../generation.ts';
 import { broadcastTree } from '../sync.ts';
 import { invalidate } from '../events.ts';
-import { getConversation, spawnAssistantReply, touchConversation } from './conversations.ts';
+import {
+  cancelBackgroundSwipe,
+  getConversation,
+  prepareNextSwipe,
+  spawnAssistantReply,
+  touchConversation,
+} from './conversations.ts';
+import { objectBody, positiveId } from '../validation.ts';
+import { optionalNullableId } from '../validation.ts';
+import { requireExpectedActiveLeaf } from '../concurrency.ts';
+import { discardSpeculativeSwipes, markSwipeRead } from '../speculation.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -13,47 +30,95 @@ function requireMessage(id: number) {
 }
 
 function requireIdle(conversationId: number): void {
+  cancelBackgroundSwipe(conversationId);
   if (hasActiveGeneration(conversationId)) {
     throw new HttpError(409, 'a generation is already running in this conversation');
   }
 }
 
-/** Regenerate: new assistant sibling under the same parent; the old reply stays navigable. */
-route.post('/api/messages/:id/regenerate', ({ params }) => {
-  const msg = requireMessage(Number(params.id));
-  if (msg.role !== 'assistant')
-    throw new HttpError(400, 'only assistant messages can be regenerated');
-  requireIdle(msg.conversationId);
-  const conv = getConversation(msg.conversationId);
-  // A regeneration replaces this reply, so it keeps the speaker name it had.
-  const mid = spawnAssistantReply(conv, msg.parentId, msg.name);
-  invalidate('conversations');
-  return { assistantMessageId: mid };
-});
+function requireExpectedLeaf(message: ReturnType<typeof requireMessage>, body: unknown): void {
+  const b = objectBody(body);
+  requireExpectedActiveLeaf(message.conversationId, optionalNullableId(b, 'expectedActiveLeafId'));
+}
 
 /** Resume: continue the last assistant reply in place via prefill-style trailing assistant message. */
-route.post('/api/messages/:id/continue', ({ params }) => {
-  const msg = requireMessage(Number(params.id));
+route.post('/api/messages/:id/continue', ({ params, body }) => {
+  const msg = requireMessage(positiveId(params.id));
   if (msg.role !== 'assistant') throw new HttpError(400, 'only assistant messages can be resumed');
   if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
-  requireIdle(msg.conversationId);
   const conv = getConversation(msg.conversationId);
+  requireExpectedLeaf(msg, body);
   if (conv.activeLeafId !== msg.id)
     throw new HttpError(400, 'only the last message on the branch can be resumed');
+  requireIdle(msg.conversationId);
   db.prepare("UPDATE messages SET status = 'streaming' WHERE id = ?").run(msg.id);
   broadcastTree(msg.conversationId);
-  startGeneration(conv, msg.id, { content: msg.content, reasoning: msg.reasoning ?? '' });
+  startGeneration(
+    conv,
+    msg.id,
+    { content: msg.content, reasoning: msg.reasoning ?? '' },
+    { onDone: () => prepareNextSwipe(msg.id) },
+  );
   invalidate('conversations');
   return { assistantMessageId: msg.id };
 });
 
+/** Atomically move to the next assistant sibling, creating it when needed. */
+route.post('/api/messages/:id/advance', ({ params, body }) => {
+  const msg = requireMessage(positiveId(params.id));
+  if (msg.role !== 'assistant') throw new HttpError(400, 'only assistant messages can advance');
+  requireExpectedLeaf(msg, body);
+
+  const removed = db
+    .prepare(
+      `DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
+       AND generation_kind = 'speculative' AND status IN ('error', 'stopped')`,
+    )
+    .run(msg.conversationId, msg.parentId, msg.id);
+  if (removed.changes) broadcastTree(msg.conversationId);
+
+  const nextRow = db
+    .prepare(
+      `SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
+       ORDER BY id LIMIT 1`,
+    )
+    .get(msg.conversationId, msg.parentId, msg.id) as { id: number } | undefined;
+
+  if (nextRow) {
+    if (hasActiveGeneration(msg.conversationId)) {
+      if (isBackgroundGeneration(nextRow.id)) promoteBackgroundGeneration(nextRow.id);
+      else if (!stopGeneration(msg.id)) {
+        throw new HttpError(409, 'a different generation is already running');
+      }
+    }
+    markSwipeRead(nextRow.id);
+    const leaf = activateMessage(nextRow.id);
+    broadcastTree(msg.conversationId);
+    prepareNextSwipe(leaf);
+    return { activeLeafId: leaf, assistantMessageId: null };
+  }
+
+  if (hasActiveGeneration(msg.conversationId) && !stopGeneration(msg.id)) {
+    throw new HttpError(409, 'a different generation is already running');
+  }
+  const mid = spawnAssistantReply(getConversation(msg.conversationId), msg.parentId, msg.name);
+  return { activeLeafId: mid, assistantMessageId: mid };
+});
+
 /** In-place edit (typo fixes, tweaking an AI reply) — no branch created. */
 route.patch('/api/messages/:id', ({ params, body }) => {
-  const msg = requireMessage(Number(params.id));
-  const b = (body ?? {}) as { content?: string };
+  const msg = requireMessage(positiveId(params.id));
+  const b = objectBody(body);
   if (typeof b.content !== 'string') throw new HttpError(400, 'content is required');
+  const content = b.content.trim();
+  if (!content) throw new HttpError(400, 'content is required');
+  requireExpectedActiveLeaf(msg.conversationId, optionalNullableId(b, 'expectedActiveLeafId'));
   if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
-  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(b.content, msg.id);
+  if (hasForegroundGeneration(msg.conversationId)) {
+    throw new HttpError(409, 'a generation is already running in this conversation');
+  }
+  discardSpeculativeSwipes(msg.conversationId);
+  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
   return getMessage(msg.id);
@@ -61,10 +126,11 @@ route.patch('/api/messages/:id', ({ params, body }) => {
 
 /** Edit-as-branch: new sibling with the edited content; for user messages a reply is generated. */
 route.post('/api/messages/:id/edit-branch', ({ params, body }) => {
-  const msg = requireMessage(Number(params.id));
-  const b = (body ?? {}) as { content?: string };
-  const content = (b.content ?? '').trim();
+  const msg = requireMessage(positiveId(params.id));
+  const b = objectBody(body);
+  const content = (typeof b.content === 'string' ? b.content : '').trim();
   if (!content) throw new HttpError(400, 'content is required');
+  requireExpectedActiveLeaf(msg.conversationId, optionalNullableId(b, 'expectedActiveLeafId'));
   requireIdle(msg.conversationId);
   const sibling = appendMessage(
     msg.conversationId,
@@ -86,16 +152,27 @@ route.post('/api/messages/:id/edit-branch', ({ params, body }) => {
 });
 
 /** Branch switch: activate this sibling and restore its remembered descendant chain. */
-route.post('/api/messages/:id/activate', ({ params }) => {
-  const msg = requireMessage(Number(params.id));
+route.post('/api/messages/:id/activate', ({ params, body }) => {
+  const msg = requireMessage(positiveId(params.id));
+  requireExpectedLeaf(msg, body);
+  if (hasActiveGeneration(msg.conversationId)) {
+    if (isBackgroundGeneration(msg.id)) promoteBackgroundGeneration(msg.id);
+    else requireIdle(msg.conversationId);
+  }
+  markSwipeRead(msg.id);
   const leaf = activateMessage(msg.id);
   broadcastTree(msg.conversationId);
+  prepareNextSwipe(leaf);
   return { activeLeafId: leaf };
 });
 
-route.del('/api/messages/:id', ({ params }) => {
-  const msg = requireMessage(Number(params.id));
-  stopGeneration(msg.id);
+route.del('/api/messages/:id', ({ params, req }) => {
+  const msg = requireMessage(positiveId(params.id));
+  const rawExpected = new URL(req.url ?? '/', 'http://x').searchParams.get('expectedActiveLeafId');
+  const expected =
+    rawExpected === 'null' ? null : rawExpected == null ? undefined : Number(rawExpected);
+  requireExpectedActiveLeaf(msg.conversationId, expected);
+  requireIdle(msg.conversationId);
   deleteMessage(msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
@@ -103,7 +180,10 @@ route.del('/api/messages/:id', ({ params }) => {
 });
 
 route.post('/api/generations/:id/stop', ({ params }) => {
-  const mid = Number(params.id);
+  const mid = positiveId(params.id);
+  if (isBackgroundGeneration(mid)) {
+    throw new HttpError(409, 'inactive background swipes cannot be stopped directly');
+  }
   const stopped = stopGeneration(mid);
   if (!stopped) throw new HttpError(404, 'no active generation for this message');
   return { stopped: true };

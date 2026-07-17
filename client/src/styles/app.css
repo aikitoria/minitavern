@@ -453,6 +453,27 @@ textarea.mono {
   color: var(--text-dim);
 }
 
+.conv-item.search-result {
+  align-items: flex-start;
+  padding-block: 10px;
+}
+
+.conv-item.search-result .avatar,
+.conv-item.search-result .avatar-fallback {
+  margin-top: 2px;
+}
+
+.conv-item.search-result .conv-snippet {
+  display: -webkit-box;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+  line-clamp: 4;
+}
+
 .search-wrap {
   padding: 0 12px 10px;
 }

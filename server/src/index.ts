@@ -3,15 +3,21 @@ import https from 'node:https';
 import net from 'node:net';
 import { existsSync, readFileSync, watch } from 'node:fs';
 import { stat, readFile } from 'node:fs/promises';
-import { join, normalize, extname } from 'node:path';
+import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AVATAR_DIR } from './db.ts';
 import { dispatch } from './router.ts';
-import { initWebSocket, setSubscribeHandler } from './events.ts';
+import { initWebSocket, setSubscribeHandler, subscribedConversationIds } from './events.ts';
 import { sendTreeTo } from './sync.ts';
-import './routes/conversations.ts';
+import { prepareActiveSwipe } from './routes/conversations.ts';
+import { configuredIpAllowlist, isRequestIpAllowed, requestIp } from './ipAccess.ts';
+import { setSpeculativeRefillHandler } from './speculation.ts';
 import './routes/messages.ts';
-import './routes/entities.ts';
+import './routes/presets.ts';
+import './routes/templates.ts';
+import './routes/personas.ts';
+import './routes/characters.ts';
+import './routes/endpoints.ts';
 import './routes/settings.ts';
 
 const PORT = Number(process.env.PORT ?? 5487);
@@ -49,11 +55,20 @@ async function serveFile(res: ServerResponse, path: string, immutable: boolean):
 }
 
 function safeJoin(root: string, urlPath: string): string | null {
-  const path = normalize(join(root, urlPath));
-  return path.startsWith(root) ? path : null;
+  const base = resolve(root);
+  const path = resolve(base, urlPath.replace(/^\/+/, ''));
+  const rel = relative(base, path);
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel) ? path : null;
 }
 
 async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (!isRequestIpAllowed(req)) {
+    res
+      .writeHead(403, { 'content-type': 'application/json' })
+      .end(JSON.stringify({ error: 'IP address is not allowed' }));
+    console.warn(`[access] rejected ${requestIp(req) ?? 'unknown address'}`);
+    return;
+  }
   const url = new URL(req.url ?? '/', 'http://x');
   const pathname = url.pathname;
 
@@ -149,11 +164,25 @@ if (certPath && keyPath) {
   listener = server;
 }
 
-setSubscribeHandler(sendTreeTo);
+setSubscribeHandler((ws, conversationId) => {
+  sendTreeTo(ws, conversationId);
+  prepareActiveSwipe(conversationId);
+});
+setSpeculativeRefillHandler((conversationId) => {
+  const subscribed = subscribedConversationIds();
+  const targets =
+    conversationId == null
+      ? subscribed
+      : subscribed.includes(conversationId)
+        ? [conversationId]
+        : [];
+  for (const id of targets) prepareActiveSwipe(id);
+});
 initWebSocket(server as http.Server);
 
 listener.listen(PORT, () => {
   console.log(
     `minitavern server listening on ${certPath && keyPath ? 'https' : 'http'}://0.0.0.0:${PORT}`,
   );
+  console.log(`IP allowlist: ${configuredIpAllowlist()}`);
 });

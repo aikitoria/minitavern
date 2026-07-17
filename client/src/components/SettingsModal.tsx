@@ -1,5 +1,6 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, createSignal } from 'solid-js';
 import type { Component } from 'solid-js';
+import { Dynamic } from 'solid-js/web';
 import Modal from './Modal.tsx';
 import GeneralTab from './tabs/GeneralTab.tsx';
 import EndpointsTab from './tabs/EndpointsTab.tsx';
@@ -19,6 +20,7 @@ const TABS: { key: string; label: string; component: Component }[] = [
 
 export default function SettingsModal() {
   const [tab, setTab] = createSignal('general');
+  const activeTab = () => TABS.find((item) => item.key === tab()) ?? TABS[0]!;
 
   return (
     <Modal
@@ -39,13 +41,7 @@ export default function SettingsModal() {
         </div>
       }
     >
-      <For each={TABS}>
-        {(t) => (
-          <Show when={tab() === t.key}>
-            <t.component />
-          </Show>
-        )}
-      </For>
+      <Dynamic component={activeTab().component} />
     </Modal>
   );
 }

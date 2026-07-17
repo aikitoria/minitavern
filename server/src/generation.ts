@@ -1,6 +1,6 @@
 import type { Conversation, GenMeta, Message } from '@minitavern/shared';
 import { db, toEndpoint } from './db.ts';
-import { getActivePath, getMessage } from './tree.ts';
+import { getMessage, getPathToMessage } from './tree.ts';
 import { buildChatMessages } from './prompt.ts';
 import { getSettings } from './settingsStore.ts';
 import { broadcastConv, invalidate } from './events.ts';
@@ -15,6 +15,9 @@ interface ActiveGen {
   abort: AbortController;
   flushTimer: NodeJS.Timeout;
   meta: GenMeta;
+  background: boolean;
+  onDone?: () => void;
+  onError?: () => void;
 }
 
 const active = new Map<number, ActiveGen>();
@@ -22,6 +25,47 @@ const active = new Map<number, ActiveGen>();
 export function hasActiveGeneration(conversationId: number): boolean {
   for (const gen of active.values()) if (gen.conversationId === conversationId) return true;
   return false;
+}
+
+export function hasForegroundGeneration(conversationId: number): boolean {
+  for (const gen of active.values()) {
+    if (gen.conversationId === conversationId && !gen.background) return true;
+  }
+  return false;
+}
+
+export function isBackgroundGeneration(mid: number): boolean {
+  return active.get(mid)?.background === true;
+}
+
+/** Marks a speculative stream as foreground once the user activates it. */
+export function promoteBackgroundGeneration(mid: number): boolean {
+  const gen = active.get(mid);
+  if (!gen?.background) return false;
+  gen.background = false;
+  db.prepare("UPDATE messages SET generation_kind = 'normal' WHERE id = ?").run(mid);
+  return true;
+}
+
+/** Stops the conversation's speculative generation, if any, and returns its message id. */
+export function stopBackgroundGeneration(conversationId: number): number | null {
+  const gen = [...active.values()].find(
+    (candidate) => candidate.conversationId === conversationId && candidate.background,
+  );
+  if (!gen) return null;
+  stopGeneration(gen.mid);
+  return gen.mid;
+}
+
+/** Used when the global setting is disabled. */
+export function stopAllBackgroundGenerations(): { mid: number; conversationId: number }[] {
+  const stopped: { mid: number; conversationId: number }[] = [];
+  for (const gen of [...active.values()]) {
+    if (!gen.background) continue;
+    stopped.push({ mid: gen.mid, conversationId: gen.conversationId });
+    stopGeneration(gen.mid);
+  }
+  return stopped;
 }
 
 /** Overlays in-flight stream buffers onto persisted rows so snapshots are current. */
@@ -51,6 +95,8 @@ function flushToDb(gen: ActiveGen): void {
 function finalize(gen: ActiveGen, status: 'done' | 'error' | 'stopped'): void {
   if (!active.delete(gen.mid)) return;
   clearInterval(gen.flushTimer);
+  gen.content = gen.content.trim();
+  gen.reasoning = gen.reasoning.trim();
   // The message may have been deleted mid-stream (cascade or explicit delete).
   const exists = db.prepare('SELECT id FROM messages WHERE id = ?').get(gen.mid);
   if (exists) {
@@ -64,6 +110,24 @@ function finalize(gen: ActiveGen, status: 'done' | 'error' | 'stopped'): void {
     });
   }
   invalidate('conversations');
+  if (status === 'done' && gen.onDone) {
+    queueMicrotask(() => {
+      try {
+        gen.onDone?.();
+      } catch (err) {
+        console.error('[generation] completion callback failed:', err);
+      }
+    });
+  }
+  if (status === 'error' && gen.onError) {
+    queueMicrotask(() => {
+      try {
+        gen.onError?.();
+      } catch (err) {
+        console.error('[generation] error callback failed:', err);
+      }
+    });
+  }
 }
 
 export function stopGeneration(mid: number): boolean {
@@ -102,6 +166,7 @@ export function startGeneration(
   conversation: Conversation,
   mid: number,
   resumeFrom?: { content: string; reasoning: string },
+  options?: { background?: boolean; onDone?: () => void; onError?: () => void },
 ): void {
   const gen: ActiveGen = {
     mid,
@@ -112,6 +177,9 @@ export function startGeneration(
     abort: new AbortController(),
     flushTimer: setInterval(() => flushToDb(gen), 500),
     meta: {},
+    background: options?.background ?? false,
+    onDone: options?.onDone,
+    onError: options?.onError,
   };
   active.set(mid, gen);
   run(conversation, gen, resumeFrom != null).catch((err: unknown) => {
@@ -142,8 +210,10 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
   }
   gen.model = endpoint.model;
 
-  // History = active path minus the streaming placeholder itself (filtered in buildChatMessages).
-  const history = getActivePath(conversation.id).filter((m) => m.id !== gen.mid);
+  // A reply is based on its ancestors, not whichever sibling happens to be active.
+  // This matters for speculative siblings, which deliberately stay inactive.
+  const target = getMessage(gen.mid);
+  const history = getPathToMessage(target?.parentId ?? null);
   // The reply speaks as the name it was stamped with (regenerations keep their sibling's name).
   const stampedName = getMessage(gen.mid)?.name ?? null;
   const { messages, namePrefill } = buildChatMessages(conversation, history, stampedName);
@@ -242,50 +312,58 @@ async function consumeStream(
 
   const decoder = new TextDecoder();
   let buffer = '';
+  const processLine = (rawLine: string): void => {
+    const line = rawLine.replace(/\r$/, '');
+    if (!line.startsWith('data:')) return;
+    const data = line.slice(5).trim();
+    if (!data || data === '[DONE]') return;
+    let parsed: {
+      choices?: { delta?: SseDelta; finish_reason?: string | null }[];
+      usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
+    };
+    try {
+      parsed = JSON.parse(data);
+    } catch {
+      return;
+    }
+    const choice = parsed.choices?.[0];
+    const delta = choice?.delta;
+    const d = delta?.content ?? undefined;
+    const r = delta?.reasoning_content ?? delta?.reasoning ?? undefined;
+    if (choice?.finish_reason) gen.meta.finishReason = choice.finish_reason;
+    if (parsed.usage) {
+      gen.meta.usage = {
+        promptTokens: parsed.usage.prompt_tokens,
+        completionTokens: parsed.usage.completion_tokens,
+      };
+    }
+    if (d == null && r == null) return;
+    const dOut = d != null ? passContent(d) : '';
+    if (dOut) gen.content += dOut;
+    if (r) gen.reasoning += r;
+    if (!active.has(gen.mid) || (!dOut && !r)) return;
+    // Latency first: forward each delta the moment it arrives.
+    broadcastConv(gen.conversationId, {
+      t: 'delta',
+      mid: gen.mid,
+      ...(dOut ? { d: dOut } : {}),
+      ...(r ? { r } : {}),
+    });
+  };
   for await (const chunk of body) {
     resetIdle();
     buffer += decoder.decode(chunk as Uint8Array, { stream: true });
     let idx: number;
     while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx).replace(/\r$/, '');
+      const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
-      if (!line.startsWith('data:')) continue;
-      const data = line.slice(5).trim();
-      if (data === '[DONE]') continue;
-      let parsed: {
-        choices?: { delta?: SseDelta; finish_reason?: string | null }[];
-        usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
-      };
-      try {
-        parsed = JSON.parse(data);
-      } catch {
-        continue;
-      }
-      const choice = parsed.choices?.[0];
-      const delta = choice?.delta;
-      const d = delta?.content ?? undefined;
-      const r = delta?.reasoning_content ?? delta?.reasoning ?? undefined;
-      if (choice?.finish_reason) gen.meta.finishReason = choice.finish_reason;
-      if (parsed.usage) {
-        gen.meta.usage = {
-          promptTokens: parsed.usage.prompt_tokens,
-          completionTokens: parsed.usage.completion_tokens,
-        };
-      }
-      if (d == null && r == null) continue;
-      const dOut = d != null ? passContent(d) : '';
-      if (dOut) gen.content += dOut;
-      if (r) gen.reasoning += r;
+      processLine(line);
       if (!active.has(gen.mid)) return; // stopped while iterating
-      if (!dOut && !r) continue;
-      // Latency first: forward each delta the moment it arrives.
-      broadcastConv(gen.conversationId, {
-        t: 'delta',
-        mid: gen.mid,
-        ...(dOut ? { d: dOut } : {}),
-        ...(r ? { r } : {}),
-      });
     }
+  }
+  buffer += decoder.decode();
+  if (buffer) {
+    for (const line of buffer.split('\n')) processLine(line);
   }
   // A reply shorter than the name prefix may still be held back — flush it.
   if (holdback?.trim() && active.has(gen.mid)) {

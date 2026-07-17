@@ -1,16 +1,12 @@
 import { For, Show, createSignal } from 'solid-js';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
-import { createSavedFlash, createDetailNav, download } from '../../util.ts';
+import { createEntityEditor, download, errorMessage } from '../../util.ts';
 import Avatar from '../Avatar.tsx';
 import MacroHelp from '../MacroHelp.tsx';
 
 export default function CharactersTab() {
-  const [selectedId, setSelectedId] = createSignal<number | 'new'>('new');
   const [customPrompt, setCustomPrompt] = createSignal(false);
-  const [saved, flashSaved] = createSavedFlash();
-  const nav = createDetailNav();
-  const [status, setStatus] = createSignal('');
   let nameEl!: HTMLInputElement;
   let personalityEl!: HTMLTextAreaElement;
   let scenarioEl!: HTMLTextAreaElement;
@@ -21,86 +17,69 @@ export default function CharactersTab() {
   let avatarInput!: HTMLInputElement;
   let cardInput!: HTMLInputElement;
 
-  const selected = () => state.characters.find((c) => c.id === selectedId());
-
-  const select = (id: number | 'new') => {
-    nav.openDetail();
-    setSelectedId(id);
-    setStatus('');
-    const c = state.characters.find((ch) => ch.id === id);
-    nameEl.value = c?.name ?? '';
-    personalityEl.value = c?.personality ?? '';
-    scenarioEl.value = c?.scenario ?? '';
-    firstMessageEl.value = c?.firstMessage ?? '';
-    presetEl.value = c?.customPrompt != null ? 'custom' : String(c?.presetId ?? '');
-    customEl.value = c?.customPrompt ?? '';
-    templateEl.value = String(c?.templateId ?? '');
-    setCustomPrompt(c?.customPrompt != null);
-  };
-
-  const data = () => {
-    const promptChoice = presetEl.value;
-    return {
-      name: nameEl.value,
-      personality: personalityEl.value,
-      scenario: scenarioEl.value,
-      firstMessage: firstMessageEl.value,
-      presetId: promptChoice && promptChoice !== 'custom' ? Number(promptChoice) : null,
-      customPrompt: promptChoice === 'custom' ? customEl.value : null,
-      templateId: templateEl.value ? Number(templateEl.value) : null,
-    };
-  };
-
-  const save = async () => {
-    try {
-      const id = selectedId();
-      const saved =
-        id === 'new' ? await api.createCharacter(data()) : await api.patchCharacter(id, data());
-      setSelectedId(saved.id);
-      setStatus('');
-      flashSaved();
-    } catch (err) {
-      setStatus(String(err));
-    }
-  };
-
-  const remove = async () => {
-    const id = selectedId();
-    if (id === 'new' || !confirm('Delete this character?')) return;
-    await api.deleteCharacter(id);
-    select('new');
-    nav.closeDetail(); // mobile: back to the list after deleting
-  };
+  const editor = createEntityEditor({
+    items: () => state.characters,
+    load: (character) => {
+      nameEl.value = character?.name ?? '';
+      personalityEl.value = character?.personality ?? '';
+      scenarioEl.value = character?.scenario ?? '';
+      firstMessageEl.value = character?.firstMessage ?? '';
+      presetEl.value =
+        character?.customPrompt != null ? 'custom' : String(character?.presetId ?? '');
+      customEl.value = character?.customPrompt ?? '';
+      templateEl.value = String(character?.templateId ?? '');
+      setCustomPrompt(character?.customPrompt != null);
+    },
+    data: () => {
+      const promptChoice = presetEl.value;
+      return {
+        name: nameEl.value,
+        personality: personalityEl.value,
+        scenario: scenarioEl.value,
+        firstMessage: firstMessageEl.value,
+        presetId: promptChoice && promptChoice !== 'custom' ? Number(promptChoice) : null,
+        customPrompt: promptChoice === 'custom' ? customEl.value : null,
+        templateId: templateEl.value ? Number(templateEl.value) : null,
+      };
+    },
+    create: api.createCharacter,
+    patch: api.patchCharacter,
+    remove: api.deleteCharacter,
+    deletePrompt: 'Delete this character?',
+  });
 
   const uploadAvatar = async (file: File | undefined) => {
-    const id = selectedId();
+    const id = editor.selectedId();
     if (!file || id === 'new') return;
     try {
       await api.uploadCharacterAvatar(id, file);
-      flashSaved();
+      editor.flashSaved();
     } catch (err) {
-      setStatus(String(err));
+      editor.setStatus(errorMessage(err));
     }
   };
 
   const importCard = async (file: File | undefined) => {
     if (!file) return;
-    setStatus('Importing…');
+    editor.setStatus('Importing…');
     try {
       const character = await api.importCard(file);
-      setStatus(`Imported ${character.name}.`);
+      editor.setStatus(`Imported ${character.name}.`);
       // The characters list refreshes via WS invalidate; select once present.
-      setTimeout(() => select(character.id), 150);
+      setTimeout(() => editor.select(character.id), 150);
     } catch (err) {
-      setStatus(String(err));
+      editor.setStatus(errorMessage(err));
     }
   };
 
   return (
-    <div class="master-detail" classList={{ 'detail-open': nav.detailOpen() }}>
+    <div class="master-detail" classList={{ 'detail-open': editor.nav.detailOpen() }}>
       <div class="entity-list">
         <div class="entity-list-actions">
-          <button classList={{ active: selectedId() === 'new' }} onClick={() => select('new')}>
+          <button
+            classList={{ active: editor.selectedId() === 'new' }}
+            onClick={() => editor.select('new')}
+          >
             + New
           </button>
           <button onClick={() => cardInput.click()}>⇪ Import PNG</button>
@@ -115,8 +94,8 @@ export default function CharactersTab() {
         <For each={state.characters}>
           {(character) => (
             <button
-              classList={{ active: selectedId() === character.id }}
-              onClick={() => select(character.id)}
+              classList={{ active: editor.selectedId() === character.id }}
+              onClick={() => editor.select(character.id)}
             >
               <Avatar src={character.avatar} name={character.name} /> {character.name}
             </button>
@@ -124,12 +103,12 @@ export default function CharactersTab() {
         </For>
       </div>
       <div class="form">
-        <button class="detail-back" onClick={nav.closeDetail}>
+        <button class="detail-back" onClick={editor.nav.closeDetail}>
           ‹ Back to list
         </button>
-        <Show when={selectedId() !== 'new'}>
+        <Show when={editor.selectedId() !== 'new'}>
           <div class="avatar-row">
-            <Avatar src={selected()?.avatar} name={selected()?.name ?? '?'} />
+            <Avatar src={editor.selected()?.avatar} name={editor.selected()?.name ?? '?'} />
             <button onClick={() => avatarInput.click()}>Change avatar</button>
             <input
               ref={avatarInput}
@@ -188,24 +167,24 @@ export default function CharactersTab() {
         </select>
 
         <div class="form-actions">
-          <button class="primary-btn" onClick={() => void save()}>
-            {selectedId() === 'new' ? 'Create' : 'Save'}
+          <button class="primary-btn" onClick={() => void editor.save()}>
+            {editor.selectedId() === 'new' ? 'Create' : 'Save'}
           </button>
-          <button onClick={() => select(selectedId())}>Discard</button>
-          <Show when={selectedId() !== 'new'}>
-            <button onClick={() => download(`/api/characters/${selectedId()}/card`)}>
+          <button onClick={() => editor.select(editor.selectedId())}>Discard</button>
+          <Show when={editor.selectedId() !== 'new'}>
+            <button onClick={() => download(`/api/characters/${editor.selectedId()}/card`)}>
               Export PNG
             </button>
-            <button class="danger-btn" onClick={() => void remove()}>
+            <button class="danger-btn" onClick={() => void editor.remove()}>
               Delete
             </button>
           </Show>
-          <Show when={saved()}>
+          <Show when={editor.saved()}>
             <span class="saved-flash">✓ Saved</span>
           </Show>
         </div>
-        <Show when={status()}>
-          <p class="hint">{status()}</p>
+        <Show when={editor.status()}>
+          <p class="hint">{editor.status()}</p>
         </Show>
       </div>
     </div>

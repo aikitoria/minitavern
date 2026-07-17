@@ -1,16 +1,40 @@
 import type { Conversation } from '@minitavern/shared';
 import { db, toConversation, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
-import { activateMessage, appendMessage, getActivePath, getTreeMessages } from '../tree.ts';
+import {
+  activateMessage,
+  appendMessage,
+  deleteMessage,
+  getActivePath,
+  getMessage,
+  getTreeMessages,
+  setActiveLeaf,
+} from '../tree.ts';
 import { buildChatMessages, getCharacter, getPersona, substituteMacros } from '../prompt.ts';
-import { getSettings } from '../settingsStore.ts';
+import { clearSettingReference, getSettings } from '../settingsStore.ts';
 import {
   hasActiveGeneration,
+  hasForegroundGeneration,
   startGeneration,
+  stopBackgroundGeneration,
   stopConversationGenerations,
 } from '../generation.ts';
 import { broadcastTree, treeSnapshot } from '../sync.ts';
 import { invalidate } from '../events.ts';
+import {
+  cancelSpeculativeRetries,
+  discardSpeculativeSwipes,
+  scheduleSpeculativeRetry,
+} from '../speculation.ts';
+import { requireExpectedActiveLeaf } from '../concurrency.ts';
+import {
+  objectBody,
+  optionalNullableId,
+  optionalNullableString,
+  optionalString,
+  positiveId,
+  requiredString,
+} from '../validation.ts';
 
 export function getConversation(id: number): Conversation {
   const row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as
@@ -21,6 +45,76 @@ export function getConversation(id: number): Conversation {
 
 export function touchConversation(id: number): void {
   db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(Date.now(), id);
+}
+
+/** Removes an in-flight speculative sibling before a foreground action takes over. */
+export function cancelBackgroundSwipe(conversationId: number): boolean {
+  const mid = stopBackgroundGeneration(conversationId);
+  if (mid == null) return false;
+  deleteMessage(mid);
+  return true;
+}
+
+/** Ensures the active assistant reply has one unread sibling ready or in progress. */
+export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
+  const message = getMessage(messageId);
+  if (!message || message.role !== 'assistant' || message.status !== 'done') return;
+  const conversation = getConversation(message.conversationId);
+  if (conversation.activeLeafId !== message.id) return;
+  if (!getSettings().backgroundSwipeGeneration || hasActiveGeneration(conversation.id)) return;
+
+  const removed = db
+    .prepare(
+      `DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
+       AND generation_kind = 'speculative' AND status IN ('error', 'stopped')`,
+    )
+    .run(conversation.id, message.parentId, message.id);
+  if (removed.changes) broadcastTree(conversation.id);
+
+  const next = db
+    .prepare(
+      `SELECT id FROM messages
+       WHERE conversation_id = ? AND parent_id IS ? AND id > ?
+       ORDER BY id LIMIT 1`,
+    )
+    .get(conversation.id, message.parentId, message.id);
+  if (next) return;
+
+  cancelSpeculativeRetries(conversation.id);
+
+  const speculative = appendMessage(
+    conversation.id,
+    'assistant',
+    '',
+    message.parentId,
+    'streaming',
+    null,
+    message.name,
+    false,
+    'speculative',
+  );
+  broadcastTree(conversation.id);
+  startGeneration(getConversation(conversation.id), speculative.id, undefined, {
+    background: true,
+    onDone: () => prepareNextSwipe(speculative.id),
+    onError: () => {
+      const row = getMessage(speculative.id);
+      if (row?.generationKind !== 'speculative') return;
+      deleteMessage(speculative.id);
+      broadcastTree(conversation.id);
+      scheduleSpeculativeRetry(conversation.id, retryAttempt + 1, () =>
+        prepareNextSwipe(message.id, retryAttempt + 1),
+      );
+    },
+  });
+}
+
+export function prepareActiveSwipe(conversationId: number): void {
+  const row = db
+    .prepare('SELECT active_leaf_id FROM conversations WHERE id = ?')
+    .get(conversationId) as { active_leaf_id: number | null } | undefined;
+  const leaf = row?.active_leaf_id ?? null;
+  if (leaf != null) prepareNextSwipe(leaf);
 }
 
 /**
@@ -43,7 +137,9 @@ export function spawnAssistantReply(
     speakerName,
   );
   broadcastTree(conversation.id);
-  startGeneration(getConversation(conversation.id), msg.id);
+  startGeneration(getConversation(conversation.id), msg.id, undefined, {
+    onDone: () => prepareNextSwipe(msg.id),
+  });
   return msg.id;
 }
 
@@ -69,9 +165,17 @@ route.get('/api/conversations', () => {
 });
 
 route.post('/api/conversations', ({ body }) => {
-  const b = (body ?? {}) as { characterId?: number | null };
+  const b = objectBody(body);
+  const characterId = optionalNullableId(b, 'characterId') ?? null;
   const settings = getSettings();
-  const character = getCharacter(b.characterId ?? null);
+  const character = getCharacter(characterId);
+  if (characterId != null && !character) throw new HttpError(400, 'characterId does not exist');
+  // Settings are JSON rather than foreign-keyed rows, so tolerate and repair a stale default.
+  const persona = getPersona(settings.defaultPersonaId);
+  if (settings.defaultPersonaId != null && !persona) {
+    clearSettingReference('defaultPersonaId', settings.defaultPersonaId);
+    invalidate('settings');
+  }
   const now = Date.now();
   const id = transaction(() => {
     const result = db
@@ -82,13 +186,12 @@ route.post('/api/conversations', ({ body }) => {
       .run(
         character ? character.name : 'New chat',
         character?.id ?? null,
-        settings.defaultPersonaId,
+        persona?.id ?? null,
         now,
         now,
       );
     const convId = Number(result.lastInsertRowid);
     if (character?.firstMessage.trim()) {
-      const persona = getPersona(settings.defaultPersonaId);
       const sub = (text: string) => substituteMacros(text, character.name, persona?.name ?? 'User');
       const primary = appendMessage(convId, 'assistant', sub(character.firstMessage), null);
       // Imported cards may carry alternate greetings — seed them as root
@@ -105,22 +208,35 @@ route.post('/api/conversations', ({ body }) => {
 });
 
 route.patch('/api/conversations/:id', ({ params, body }) => {
-  const id = Number(params.id);
+  const id = positiveId(params.id);
   const conv = getConversation(id);
-  const b = (body ?? {}) as Partial<{
-    title: string;
-    characterId: number | null;
-    personaId: number | null;
-    speakerName: string | null;
-  }>;
+  const b = objectBody(body);
+  const title = optionalString(b, 'title');
+  if (title !== undefined && !title.trim()) throw new HttpError(400, 'title is required');
+  const characterId = optionalNullableId(b, 'characterId');
+  const personaId = optionalNullableId(b, 'personaId');
+  const speakerName = optionalNullableString(b, 'speakerName');
+  if (characterId != null && !getCharacter(characterId)) {
+    throw new HttpError(400, 'characterId does not exist');
+  }
+  if (personaId != null && !getPersona(personaId)) {
+    throw new HttpError(400, 'personaId does not exist');
+  }
+  const contextChanged =
+    (characterId !== undefined && characterId !== conv.characterId) ||
+    (personaId !== undefined && personaId !== conv.personaId) ||
+    (speakerName !== undefined && (speakerName?.trim() || null) !== conv.speakerName);
+  if (hasForegroundGeneration(id))
+    throw new HttpError(409, 'a generation is already running in this conversation');
+  if (contextChanged) discardSpeculativeSwipes(id);
   db.prepare(
     `UPDATE conversations SET title = ?, character_id = ?, persona_id = ?, speaker_name = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
-    b.title !== undefined ? b.title : conv.title,
-    b.characterId !== undefined ? b.characterId : conv.characterId,
-    b.personaId !== undefined ? b.personaId : conv.personaId,
-    b.speakerName !== undefined ? b.speakerName?.trim() || null : conv.speakerName,
+    title !== undefined ? title.trim() : conv.title,
+    characterId !== undefined ? characterId : conv.characterId,
+    personaId !== undefined ? personaId : conv.personaId,
+    speakerName !== undefined ? speakerName?.trim() || null : conv.speakerName,
     Date.now(),
     id,
   );
@@ -129,7 +245,7 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
 });
 
 route.del('/api/conversations/:id', ({ params }) => {
-  const id = Number(params.id);
+  const id = positiveId(params.id);
   getConversation(id);
   stopConversationGenerations(id);
   db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
@@ -137,14 +253,21 @@ route.del('/api/conversations/:id', ({ params }) => {
 });
 
 route.get('/api/conversations/:id/tree', ({ params }) => {
-  const id = Number(params.id);
+  const id = positiveId(params.id);
   getConversation(id);
   return treeSnapshot(id);
 });
 
+route.post('/api/conversations/:id/prepare-swipe', ({ params }) => {
+  const id = positiveId(params.id);
+  getConversation(id);
+  prepareActiveSwipe(id);
+  return { prepared: true };
+});
+
 /** The exact upstream request messages a generation on the current branch would send. */
 route.get('/api/conversations/:id/trace', ({ params }) => {
-  const conv = getConversation(Number(params.id));
+  const conv = getConversation(positiveId(params.id));
   const history = getActivePath(conv.id);
   const { messages, namePrefill } = buildChatMessages(conv, history);
   return { messages, namePrefill };
@@ -152,7 +275,7 @@ route.get('/api/conversations/:id/trace', ({ params }) => {
 
 /** Download the full conversation (all branches) as JSON. */
 route.get('/api/conversations/:id/export', ({ params, res }) => {
-  const conv = getConversation(Number(params.id));
+  const conv = getConversation(positiveId(params.id));
   const payload = JSON.stringify(
     { exportedAt: Date.now(), conversation: conv, messages: getTreeMessages(conv.id) },
     null,
@@ -188,22 +311,26 @@ route.get('/api/search', ({ req }) => {
     let snippet: string | null = null;
     if (match) {
       const idx = match.content.toLowerCase().indexOf(q.toLowerCase());
-      const start = Math.max(0, idx - 32);
+      const contextBefore = 96;
+      const contextAfter = 180;
+      const start = Math.max(0, idx - contextBefore);
+      const end = idx + q.length + contextAfter;
       snippet =
         (start > 0 ? '…' : '') +
-        match.content.slice(start, idx + q.length + 48) +
-        (idx + q.length + 48 < match.content.length ? '…' : '');
+        match.content.slice(start, end) +
+        (end < match.content.length ? '…' : '');
     }
     return { conversation: conv, snippet };
   });
 });
 
 route.post('/api/conversations/:id/messages', ({ params, body }) => {
-  const id = Number(params.id);
+  const id = positiveId(params.id);
   const conv = getConversation(id);
-  const b = (body ?? {}) as { content?: string };
-  const content = (b.content ?? '').trim();
-  if (!content) throw new HttpError(400, 'content is required');
+  const b = objectBody(body);
+  const content = requiredString(b, 'content');
+  requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
+  cancelBackgroundSwipe(id);
   if (hasActiveGeneration(id))
     throw new HttpError(409, 'a generation is already running in this conversation');
 
@@ -215,4 +342,34 @@ route.post('/api/conversations/:id/messages', ({ params, body }) => {
   const mid = spawnAssistantReply(conv, userMsg.id);
   invalidate('conversations');
   return { userMessageId: userMsg.id, assistantMessageId: mid };
+});
+
+/** Delete the active-path tail, including sibling alternatives and every descendant tree. */
+route.post('/api/conversations/:id/delete-tail', ({ params, body }) => {
+  const id = positiveId(params.id);
+  getConversation(id);
+  const b = objectBody(body);
+  const count = b.count;
+  if (!Number.isSafeInteger(count) || (count as number) <= 0) {
+    throw new HttpError(400, 'count must be a positive integer');
+  }
+  requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
+  const path = getActivePath(id);
+  if (path.length === 0) throw new HttpError(400, 'conversation has no messages to delete');
+  const cutoff = path[Math.max(0, path.length - (count as number))]!;
+
+  cancelSpeculativeRetries(id);
+  stopConversationGenerations(id);
+  const deleted = transaction(() => {
+    const result = db
+      .prepare('DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ?')
+      .run(id, cutoff.parentId);
+    setActiveLeaf(id, cutoff.parentId);
+    return result.changes;
+  });
+  touchConversation(id);
+  broadcastTree(id);
+  prepareActiveSwipe(id);
+  invalidate('conversations');
+  return { activeLeafId: cutoff.parentId, deletedSiblingRoots: deleted };
 });

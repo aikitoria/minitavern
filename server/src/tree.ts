@@ -1,4 +1,4 @@
-import type { Message, MessageStatus, Role } from '@minitavern/shared';
+import type { GenerationKind, Message, MessageStatus, Role } from '@minitavern/shared';
 import { db, toMessage, transaction } from './db.ts';
 
 interface MsgRow {
@@ -36,8 +36,13 @@ export function getActiveLeafId(conversationId: number): number | null {
 
 /** Active path, root -> leaf, computed by walking parent pointers up from the leaf. */
 export function getActivePath(conversationId: number): Message[] {
+  return getPathToMessage(getActiveLeafId(conversationId));
+}
+
+/** Path from the root through a specific message, independent of the active branch. */
+export function getPathToMessage(messageId: number | null): Message[] {
   const path: Message[] = [];
-  let cur = getActiveLeafId(conversationId);
+  let cur = messageId;
   while (cur != null) {
     const msg = getMessage(cur);
     if (!msg) break;
@@ -99,16 +104,29 @@ export function appendMessage(
   status: MessageStatus = 'done',
   model: string | null = null,
   name: string | null = null,
+  activate = true,
+  generationKind: GenerationKind = 'normal',
 ): Message {
   return transaction(() => {
     const result = db
       .prepare(
-        `INSERT INTO messages (conversation_id, parent_id, role, content, status, model, name, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO messages
+         (conversation_id, parent_id, role, content, status, model, name, generation_kind, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(conversationId, parentId, role, content, status, model, name, Date.now());
+      .run(
+        conversationId,
+        parentId,
+        role,
+        content ? content.trim() : '',
+        status,
+        model,
+        name,
+        generationKind,
+        Date.now(),
+      );
     const id = Number(result.lastInsertRowid);
-    setActiveLeaf(conversationId, id);
+    if (activate) setActiveLeaf(conversationId, id);
     return getMessage(id)!;
   });
 }

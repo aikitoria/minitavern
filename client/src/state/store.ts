@@ -13,7 +13,7 @@ import type {
   Template,
 } from '@minitavern/shared';
 import { DEFAULT_SETTINGS } from '@minitavern/shared';
-import { api } from './api.ts';
+import { api, ApiError } from './api.ts';
 import { subscribe } from './ws.ts';
 
 export type ModalKind = 'settings' | 'conversation' | null;
@@ -39,6 +39,7 @@ interface AppState {
   modal: ModalKind;
   /** 'trace' replaces the timeline with the assembled upstream request. */
   viewMode: 'chat' | 'trace';
+  treeNavigationPending: boolean;
   toasts: { id: number; text: string }[];
   tree: TreeState;
 }
@@ -57,6 +58,7 @@ export const [state, setState] = createStore<AppState>({
   sidebarOpen: false,
   modal: null,
   viewMode: 'chat',
+  treeNavigationPending: false,
   toasts: [],
   tree: { conversationId: null, messages: {}, activeLeafId: null },
 });
@@ -122,7 +124,7 @@ export function siblingsOf(message: Message): Message[] {
 }
 
 export const streamingMessage = createMemo<Message | null>(() => {
-  for (const msg of Object.values(state.tree.messages)) {
+  for (const msg of activePath()) {
     if (msg.status === 'streaming') return msg;
   }
   return null;
@@ -130,9 +132,35 @@ export const streamingMessage = createMemo<Message | null>(() => {
 
 // ---- Loaders ----
 
+const LAST_CONVERSATION_KEY = 'minitavern.lastConversationId';
+let conversationsLoaded = false;
+let selectionRestored = false;
+
+function persistSelectedConversation(id: number | null): void {
+  try {
+    if (id == null) localStorage.removeItem(LAST_CONVERSATION_KEY);
+    else localStorage.setItem(LAST_CONVERSATION_KEY, String(id));
+  } catch {
+    /* Storage may be unavailable in hardened/private browser contexts. */
+  }
+}
+
+async function loadConversations(): Promise<void> {
+  const conversations = await api.conversations();
+  conversationsLoaded = true;
+  setState('conversations', reconcile(conversations, { key: 'id' }));
+  if (
+    selectionRestored &&
+    state.selectedId != null &&
+    !conversations.some((conversation) => conversation.id === state.selectedId)
+  ) {
+    selectConversation(null);
+    toast('This conversation was deleted on another device.');
+  }
+}
+
 const loaders: Record<InvalidateEntity, () => Promise<void>> = {
-  conversations: async () =>
-    setState('conversations', reconcile(await api.conversations(), { key: 'id' })),
+  conversations: loadConversations,
   characters: async () => setState('characters', reconcile(await api.characters(), { key: 'id' })),
   presets: async () => setState('presets', reconcile(await api.presets(), { key: 'id' })),
   templates: async () => setState('templates', reconcile(await api.templates(), { key: 'id' })),
@@ -143,6 +171,7 @@ const loaders: Record<InvalidateEntity, () => Promise<void>> = {
 
 export async function loadAll(): Promise<void> {
   await Promise.all(Object.values(loaders).map((load) => load().catch(console.error)));
+  if (!selectionRestored && conversationsLoaded) restoreConversationSelection();
   setState('booted', true);
 }
 
@@ -203,7 +232,30 @@ export function selectConversation(id: number | null): void {
     setState('tree', { conversationId: null, messages: {}, activeLeafId: null });
   });
   subscribe(id);
+  persistSelectedConversation(id);
   history.replaceState(null, '', id != null ? `#${id}` : '#');
+}
+
+export async function navigateTree(action: () => Promise<unknown>): Promise<boolean> {
+  if (state.treeNavigationPending) return false;
+  setState('treeNavigationPending', true);
+  try {
+    await action();
+    return true;
+  } catch (err) {
+    toast(err instanceof Error ? err.message : String(err));
+    if (err instanceof ApiError && err.status === 409 && state.selectedId != null) {
+      try {
+        const snapshot = await api.tree(state.selectedId);
+        handleServerEvent({ t: 'tree', ...snapshot });
+      } catch {
+        /* WebSocket invalidation remains the fallback. */
+      }
+    }
+    return false;
+  } finally {
+    setState('treeNavigationPending', false);
+  }
 }
 
 export async function newConversation(characterId: number | null): Promise<void> {
@@ -211,9 +263,23 @@ export async function newConversation(characterId: number | null): Promise<void>
   selectConversation(conv.id);
 }
 
-export function restoreFromHash(): void {
-  const id = Number(location.hash.slice(1));
-  if (Number.isInteger(id) && id > 0) selectConversation(id);
+export function restoreConversationSelection(): void {
+  selectionRestored = true;
+  const exists = (id: number) => state.conversations.some((conversation) => conversation.id === id);
+  const hashId = Number(location.hash.slice(1));
+  let storedId = 0;
+  try {
+    storedId = Number(localStorage.getItem(LAST_CONVERSATION_KEY));
+  } catch {
+    /* Ignore unavailable storage. */
+  }
+  const id =
+    Number.isSafeInteger(hashId) && hashId > 0 && exists(hashId)
+      ? hashId
+      : Number.isSafeInteger(storedId) && storedId > 0 && exists(storedId)
+        ? storedId
+        : null;
+  selectConversation(id);
 }
 
 export function openModal(modal: ModalKind): void {

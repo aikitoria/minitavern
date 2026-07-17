@@ -118,9 +118,12 @@ export function buildChatMessages(
   if (prologue) messages.push({ role: 'user', content: prologue });
   for (const msg of history) {
     if (msg.status === 'streaming') continue;
-    if (msg.content.length === 0 && msg.role !== 'user') continue;
+    const trimmedContent = msg.content.trim();
+    if (trimmedContent.length === 0) continue;
     const content =
-      prefixNames && msg.role !== 'system' ? `${speakerFor(msg)}: ${msg.content}` : msg.content;
+      prefixNames && msg.role !== 'system'
+        ? `${speakerFor(msg).trim()}: ${trimmedContent}`
+        : trimmedContent;
     messages.push({ role: msg.role, content });
   }
 

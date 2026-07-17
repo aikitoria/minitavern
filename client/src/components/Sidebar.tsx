@@ -3,6 +3,7 @@ import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { newConversation, openModal, selectConversation, setState, state } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
+import GearIcon from './GearIcon.tsx';
 
 interface SearchResult {
   conversation: Conversation;
@@ -48,10 +49,13 @@ export default function Sidebar() {
   const characterOf = (characterId: number | null) =>
     characterId != null ? state.characters.find((c) => c.id === characterId) : undefined;
 
-  const ConvItem = (props: { conv: Conversation; snippet?: string | null }) => (
+  const ConvItem = (props: { conv: Conversation; snippet?: string | null; expanded?: boolean }) => (
     <div
       class="conv-item"
-      classList={{ active: props.conv.id === state.selectedId }}
+      classList={{
+        active: props.conv.id === state.selectedId,
+        'search-result': props.expanded,
+      }}
       onClick={() => selectConversation(props.conv.id)}
     >
       <Show
@@ -88,7 +92,7 @@ export default function Sidebar() {
           />
         </span>
         <button class="icon-btn" title="Settings" onClick={() => openModal('settings')}>
-          ⚙
+          <GearIcon />
         </button>
       </div>
 
@@ -132,7 +136,7 @@ export default function Sidebar() {
                 <p class="hint search-empty">No matches.</p>
               </Show>
               <For each={found()}>
-                {(r) => <ConvItem conv={r.conversation} snippet={r.snippet} />}
+                {(r) => <ConvItem conv={r.conversation} snippet={r.snippet} expanded />}
               </For>
             </>
           )}
