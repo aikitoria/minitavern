@@ -7,6 +7,7 @@ Small but mighty self-hosted chat frontend for OpenAI-compatible LLM APIs.
 - Characters (with SillyTavern PNG card import/export), system prompt presets, prompt templates (fake first user message, speaker-name prefixing, per-template persona opt-out), user personas — all with live-highlighted `{{char}}`/`{{user}}`/`{{system}}`/`{{#if}}` macros. Characters can inline a custom prompt or a full custom template instead of referencing one.
 - Multiple named API endpoints, each with its own model and sampling settings; conversations can override the global active endpoint. Transient upstream failures (5xx, network blips, stalls) retry automatically with the partial reply as prefill; real API errors (e.g. context length exceeded) surface as toasts.
 - Optional background swipe generation: one unread reply alternative is always prepared ahead of the one you're reading.
+- Plugin interface: plugins add buttons to the composer's tools menu, slash commands, and pages in Settings → Tools. Ships with an Image Generation plugin — `/image [instruction]` asks the model to describe the current scene as an image prompt (configurable prompts with an `{{instruction}}` macro), streamed into the chat as a distinct tool message that never enters later prompt history.
 - Full-text message search (SQLite FTS5) with snippets, plus title search.
 - Responsive: desktop two-pane layout, mobile PWA with bottom composer and swipe gestures.
 
@@ -60,6 +61,7 @@ WebSockets automatically become `wss://`. Certificates are hot-reloaded on renew
 - **↑** in an empty composer edits your last message in place; **Ctrl/Cmd+Enter** in any message editor submits as a new branch, **Escape** cancels.
 - **←/→** swipe the last assistant reply between siblings (→ past the end regenerates); on touch, swipe the reply horizontally.
 - `/char <name>` sets the assistant speaker name, `/del <n>` deletes the last n messages including their swipes and descendants, `/delchat` deletes the conversation.
+- `/image [instruction]` generates an image description from the chat context (Image Generation plugin; prompts configurable in Settings → Tools).
 
 ## Development
 
