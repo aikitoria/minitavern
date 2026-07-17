@@ -33,6 +33,7 @@ function genParams(value: unknown, current: GenParams = {}): GenParams {
   const next: GenParams = {};
   const temperature = optionalNumber(b, 'temperature');
   const topP = optionalNumber(b, 'topP');
+  const minP = optionalNumber(b, 'minP');
   const maxTokens = optionalNumber(b, 'maxTokens');
   const frequencyPenalty = optionalNumber(b, 'frequencyPenalty');
   const presencePenalty = optionalNumber(b, 'presencePenalty');
@@ -40,6 +41,8 @@ function genParams(value: unknown, current: GenParams = {}): GenParams {
     throw new HttpError(400, 'temperature must be between 0 and 2');
   if (topP != null && (topP < 0 || topP > 1))
     throw new HttpError(400, 'topP must be between 0 and 1');
+  if (minP != null && (minP < 0 || minP > 1))
+    throw new HttpError(400, 'minP must be between 0 and 1');
   if (maxTokens != null && (!Number.isInteger(maxTokens) || maxTokens < 1))
     throw new HttpError(400, 'maxTokens must be a positive integer');
   for (const [key, number] of [
@@ -52,6 +55,7 @@ function genParams(value: unknown, current: GenParams = {}): GenParams {
   }
   if (temperature != null) next.temperature = temperature;
   if (topP != null) next.topP = topP;
+  if (minP != null) next.minP = minP;
   if (maxTokens != null) next.maxTokens = maxTokens;
   if (frequencyPenalty != null) next.frequencyPenalty = frequencyPenalty;
   if (presencePenalty != null) next.presencePenalty = presencePenalty;

@@ -315,6 +315,7 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
         stream: true,
         ...(p.temperature != null ? { temperature: p.temperature } : {}),
         ...(p.topP != null ? { top_p: p.topP } : {}),
+        ...(p.minP != null ? { min_p: p.minP } : {}),
         ...(p.maxTokens != null ? { max_tokens: p.maxTokens } : {}),
         ...(p.frequencyPenalty != null ? { frequency_penalty: p.frequencyPenalty } : {}),
         ...(p.presencePenalty != null ? { presence_penalty: p.presencePenalty } : {}),

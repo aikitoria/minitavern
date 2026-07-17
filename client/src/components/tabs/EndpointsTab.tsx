@@ -16,6 +16,7 @@ export default function EndpointsTab() {
   let keyEl!: HTMLInputElement;
   let tempEl!: HTMLInputElement;
   let topPEl!: HTMLInputElement;
+  let minPEl!: HTMLInputElement;
   let maxTokEl!: HTMLInputElement;
   let freqEl!: HTMLInputElement;
   let presEl!: HTMLInputElement;
@@ -32,6 +33,7 @@ export default function EndpointsTab() {
       setModel(endpoint?.model ?? '');
       tempEl.value = String(endpoint?.genParams.temperature ?? '');
       topPEl.value = String(endpoint?.genParams.topP ?? '');
+      minPEl.value = String(endpoint?.genParams.minP ?? '');
       maxTokEl.value = String(endpoint?.genParams.maxTokens ?? '');
       freqEl.value = String(endpoint?.genParams.frequencyPenalty ?? '');
       presEl.value = String(endpoint?.genParams.presencePenalty ?? '');
@@ -41,6 +43,7 @@ export default function EndpointsTab() {
       const genParams: GenParams = {};
       if (tempEl.value !== '') genParams.temperature = Number(tempEl.value);
       if (topPEl.value !== '') genParams.topP = Number(topPEl.value);
+      if (minPEl.value !== '') genParams.minP = Number(minPEl.value);
       if (maxTokEl.value !== '') genParams.maxTokens = Number(maxTokEl.value);
       if (freqEl.value !== '') genParams.frequencyPenalty = Number(freqEl.value);
       if (presEl.value !== '') genParams.presencePenalty = Number(presEl.value);
@@ -157,6 +160,10 @@ export default function EndpointsTab() {
         <div>
           <label>Top P</label>
           <input ref={topPEl} type="number" step="0.05" min="0" max="1" />
+        </div>
+        <div>
+          <label>Min P</label>
+          <input ref={minPEl} type="number" step="0.01" min="0" max="1" />
         </div>
         <div>
           <label>Max tokens</label>

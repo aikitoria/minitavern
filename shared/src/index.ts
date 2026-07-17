@@ -6,6 +6,7 @@ export type GenerationKind = 'normal' | 'speculative';
 export interface GenParams {
   temperature?: number;
   topP?: number;
+  minP?: number;
   maxTokens?: number;
   frequencyPenalty?: number;
   presencePenalty?: number;
