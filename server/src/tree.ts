@@ -99,11 +99,9 @@ export function getPathToMessage(messageId: number | null): Message[] {
  * the deep chain that was active beneath any node.
  */
 export function setActiveLeaf(conversationId: number, leafId: number | null): void {
-  stmt('UPDATE conversations SET active_leaf_id = ?, updated_at = ? WHERE id = ?').run(
-    leafId,
-    Date.now(),
-    conversationId,
-  );
+  // Deliberately does NOT touch updated_at: branch switching is reading, not
+  // writing — content-creating routes bump the timestamp themselves.
+  stmt('UPDATE conversations SET active_leaf_id = ? WHERE id = ?').run(leafId, conversationId);
   if (leafId == null) return;
   // One statement: each ancestor's active_child_id points at its child on the leaf's path.
   stmt(

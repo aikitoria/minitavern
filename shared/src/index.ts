@@ -57,7 +57,17 @@ export interface Character {
   presetId: number | null;
   customPrompt: string | null;
   templateId: number | null;
+  /** Inline template override; replaces templateId with the same three settings. */
+  customTemplate: CustomTemplate | null;
   createdAt: number;
+}
+
+/** The settings a template entity has, inlined on a character. */
+export interface CustomTemplate {
+  content: string;
+  userPrologue: string;
+  prefixNames: boolean;
+  usesPersonas: boolean;
 }
 
 export interface Preset {
@@ -76,6 +86,8 @@ export interface Template {
   userPrologue: string;
   /** Prefix speaker names into message contents ("User: …", "Char: …") and prefill "Char:" for the reply. */
   prefixNames: boolean;
+  /** When false, chats using this template ignore personas entirely ({{user}} = "User"). */
+  usesPersonas: boolean;
   createdAt: number;
 }
 

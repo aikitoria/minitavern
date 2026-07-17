@@ -3,6 +3,7 @@ import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createEntityEditor } from '../../util.ts';
 import MacroHelp from '../MacroHelp.tsx';
+import MacroTextarea from '../MacroTextarea.tsx';
 
 export default function PresetsTab() {
   let nameEl!: HTMLInputElement;
@@ -49,7 +50,7 @@ export default function PresetsTab() {
         <label>
           System prompt <MacroHelp />
         </label>
-        <textarea ref={contentEl} rows="10" placeholder="You are {{char}}, …" />
+        <MacroTextarea ref={contentEl} placeholder="You are {{char}}, …" />
         <div class="form-actions">
           <button class="primary-btn" onClick={() => void editor.save()}>
             {editor.selectedId() === 'new' ? 'Create' : 'Save'}

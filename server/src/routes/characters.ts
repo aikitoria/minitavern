@@ -1,12 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { Character } from '@minitavern/shared';
+import type { Character, CustomTemplate } from '@minitavern/shared';
 import { AVATAR_DIR, stmt, toCharacter } from '../db.ts';
 import { invalidate } from '../events.ts';
 import { buildCharacterCard, makePlaceholderPng, parseCharacterCard } from '../pngCard.ts';
 import { route, HttpError } from '../router.ts';
 import type { Ctx } from '../router.ts';
-import { positiveId } from '../validation.ts';
+import { optionalBoolean, optionalString, positiveId } from '../validation.ts';
+import type { JsonObject } from '../validation.ts';
 import { deleteAvatarFiles, saveAvatar } from './avatarStore.ts';
 import {
   defineEntityRoutes,
@@ -28,6 +29,26 @@ defineEntityRoutes<Character>({
     refIdField('presetId', 'preset_id', 'presets', (cur) => cur.presetId),
     nullableTextField('customPrompt', 'custom_prompt', (cur) => cur.customPrompt),
     refIdField('templateId', 'template_id', 'templates', (cur) => cur.templateId),
+    {
+      column: 'custom_template',
+      value: (b, cur) => {
+        const raw = b.customTemplate;
+        if (raw === undefined)
+          return cur?.customTemplate ? JSON.stringify(cur.customTemplate) : null;
+        if (raw === null) return null;
+        if (typeof raw !== 'object' || Array.isArray(raw)) {
+          throw new HttpError(400, 'customTemplate must be an object or null');
+        }
+        const t = raw as JsonObject;
+        const custom: CustomTemplate = {
+          content: optionalString(t, 'content') ?? '',
+          userPrologue: optionalString(t, 'userPrologue') ?? '',
+          prefixNames: optionalBoolean(t, 'prefixNames') ?? false,
+          usesPersonas: optionalBoolean(t, 'usesPersonas') ?? true,
+        };
+        return JSON.stringify(custom);
+      },
+    },
   ],
   invalidateOnDelete: ['conversations'],
   onDelete: (id) => deleteAvatarFiles('character', id),

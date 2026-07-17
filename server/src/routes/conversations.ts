@@ -123,6 +123,7 @@ export function spawnAssistantReply(
     null,
     speakerName,
   );
+  touchConversation(conversation.id);
   broadcastTree(conversation.id);
   startGeneration(getConversation(conversation.id), msg.id, undefined, {
     onDone: () => prepareNextSwipe(msg.id),
@@ -169,7 +170,9 @@ route.post('/api/conversations', ({ body }) => {
       `INSERT INTO conversations (title, character_id, persona_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?)`,
     ).run(
-      character ? character.name : 'New chat',
+      // Greeting-less chats (assistants) start as 'New chat' so the first
+      // message auto-titles them; greeting characters keep their name.
+      character?.firstMessage.trim() ? character.name : 'New chat',
       character?.id ?? null,
       persona?.id ?? null,
       now,

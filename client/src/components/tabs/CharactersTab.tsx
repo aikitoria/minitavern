@@ -1,19 +1,28 @@
 import { For, Show, createSignal } from 'solid-js';
+import { DEFAULT_PROMPT_TEMPLATE } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createEntityEditor, download, errorMessage } from '../../util.ts';
 import Avatar from '../Avatar.tsx';
 import MacroHelp from '../MacroHelp.tsx';
+import MacroTextarea from '../MacroTextarea.tsx';
+import Select from '../Select.tsx';
+import type { SelectHandle } from '../Select.tsx';
 
 export default function CharactersTab() {
   const [customPrompt, setCustomPrompt] = createSignal(false);
+  const [customTemplate, setCustomTemplate] = createSignal(false);
   let nameEl!: HTMLInputElement;
   let personalityEl!: HTMLTextAreaElement;
   let scenarioEl!: HTMLTextAreaElement;
   let firstMessageEl!: HTMLTextAreaElement;
-  let presetEl!: HTMLSelectElement;
+  let presetEl!: SelectHandle;
   let customEl!: HTMLTextAreaElement;
-  let templateEl!: HTMLSelectElement;
+  let templateEl!: SelectHandle;
+  let customTemplateEl!: HTMLTextAreaElement;
+  let customPrologueEl!: HTMLTextAreaElement;
+  let customPrefixEl!: HTMLInputElement;
+  let customUsesPersonasEl!: HTMLInputElement;
   let avatarInput!: HTMLInputElement;
   let cardInput!: HTMLInputElement;
 
@@ -27,11 +36,18 @@ export default function CharactersTab() {
       presetEl.value =
         character?.customPrompt != null ? 'custom' : String(character?.presetId ?? '');
       customEl.value = character?.customPrompt ?? '';
-      templateEl.value = String(character?.templateId ?? '');
+      templateEl.value =
+        character?.customTemplate != null ? 'custom' : String(character?.templateId ?? '');
+      customTemplateEl.value = character?.customTemplate?.content ?? '';
+      customPrologueEl.value = character?.customTemplate?.userPrologue ?? '';
+      customPrefixEl.checked = character?.customTemplate?.prefixNames ?? false;
+      customUsesPersonasEl.checked = character?.customTemplate?.usesPersonas ?? true;
       setCustomPrompt(character?.customPrompt != null);
+      setCustomTemplate(character?.customTemplate != null);
     },
     data: () => {
       const promptChoice = presetEl.value;
+      const templateChoice = templateEl.value;
       return {
         name: nameEl.value,
         personality: personalityEl.value,
@@ -39,7 +55,16 @@ export default function CharactersTab() {
         firstMessage: firstMessageEl.value,
         presetId: promptChoice && promptChoice !== 'custom' ? Number(promptChoice) : null,
         customPrompt: promptChoice === 'custom' ? customEl.value : null,
-        templateId: templateEl.value ? Number(templateEl.value) : null,
+        templateId: templateChoice && templateChoice !== 'custom' ? Number(templateChoice) : null,
+        customTemplate:
+          templateChoice === 'custom'
+            ? {
+                content: customTemplateEl.value,
+                userPrologue: customPrologueEl.value,
+                prefixNames: customPrefixEl.checked,
+                usesPersonas: customUsesPersonasEl.checked,
+              }
+            : null,
       };
     },
     create: api.createCharacter,
@@ -125,46 +150,93 @@ export default function CharactersTab() {
         <label>
           Personality <MacroHelp />
         </label>
-        <textarea ref={personalityEl} rows="5" placeholder="Who is {{char}}?" />
+        <MacroTextarea ref={personalityEl} placeholder="Who is {{char}}?" />
         <label>
           Scenario <MacroHelp />
         </label>
-        <textarea ref={scenarioEl} rows="3" placeholder="Setting / situation (optional)" />
+        <MacroTextarea ref={scenarioEl} placeholder="Setting / situation (optional)" />
         <label>
           First message <MacroHelp />
         </label>
-        <textarea
+        <MacroTextarea
           ref={firstMessageEl}
-          rows="3"
+
           placeholder="Greeting sent when a chat starts (optional)"
         />
 
         <label>System prompt</label>
-        <select
+        <Select
           ref={presetEl}
-          onChange={(e) => setCustomPrompt(e.currentTarget.value === 'custom')}
-        >
-          <option value="">Global default</option>
-          <For each={state.presets}>{(p) => <option value={p.id}>Preset: {p.name}</option>}</For>
-          <option value="custom">Custom prompt…</option>
-        </select>
+          onChange={(value) => setCustomPrompt(value === 'custom')}
+          options={[
+            { value: '', label: 'Global default' },
+            ...state.presets.map((p) => ({ value: String(p.id), label: p.name })),
+            { value: 'custom', label: 'Custom prompt…' },
+          ]}
+        />
         <Show when={customPrompt()}>
           <label>
             Custom prompt text <MacroHelp />
           </label>
         </Show>
-        <textarea
+        <MacroTextarea
           ref={customEl}
-          rows="6"
+
           classList={{ hidden: !customPrompt() }}
           placeholder="Custom system prompt for this character"
         />
 
         <label>Prompt template</label>
-        <select ref={templateEl}>
-          <option value="">Global default</option>
-          <For each={state.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
-        </select>
+        <Select
+          ref={templateEl}
+          onChange={(value) => {
+            const custom = value === 'custom';
+            setCustomTemplate(custom);
+            // Start from the built-in template rather than a blank page.
+            if (custom && !customTemplateEl.value) customTemplateEl.value = DEFAULT_PROMPT_TEMPLATE;
+          }}
+          options={[
+            { value: '', label: 'Global default' },
+            ...state.templates.map((t) => ({ value: String(t.id), label: t.name })),
+            { value: 'custom', label: 'Custom template…' },
+          ]}
+        />
+        <Show when={customTemplate()}>
+          <label>
+            Custom template — system prompt <MacroHelp template />
+          </label>
+        </Show>
+        <MacroTextarea
+          ref={customTemplateEl}
+          template
+          class="mono"
+
+          classList={{ hidden: !customTemplate() }}
+        />
+        <Show when={customTemplate()}>
+          <label>
+            First user message (optional — sent as a fake user turn before the history){' '}
+            <MacroHelp template />
+          </label>
+        </Show>
+        <MacroTextarea
+          ref={customPrologueEl}
+          template
+          class="mono"
+
+          classList={{ hidden: !customTemplate() }}
+          placeholder="Leave empty to send no fake user message"
+        />
+        <label class="check-row" classList={{ hidden: !customTemplate() }}>
+          <input ref={customPrefixEl} type="checkbox" />
+          Prefix speaker names into messages ("{'{{user}}'}: …", "{'{{char}}'}: …") and prefill the
+          reply with the current speaker name (see /char)
+        </label>
+        <label class="check-row" classList={{ hidden: !customTemplate() }}>
+          <input ref={customUsesPersonasEl} type="checkbox" />
+          Uses personas — when off, chats with this character ignore the persona entirely ("
+          {'{{user}}'}" becomes "User", the persona description is not sent)
+        </label>
 
         <div class="form-actions">
           <button class="primary-btn" onClick={() => void editor.save()}>

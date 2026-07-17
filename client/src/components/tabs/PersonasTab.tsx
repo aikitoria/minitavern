@@ -4,6 +4,7 @@ import { state } from '../../state/store.ts';
 import { createEntityEditor, errorMessage } from '../../util.ts';
 import Avatar from '../Avatar.tsx';
 import MacroHelp from '../MacroHelp.tsx';
+import MacroTextarea from '../MacroTextarea.tsx';
 
 export default function PersonasTab() {
   let nameEl!: HTMLInputElement;
@@ -76,9 +77,9 @@ export default function PersonasTab() {
         <label>
           Description (injected into the prompt) <MacroHelp />
         </label>
-        <textarea
+        <MacroTextarea
           ref={descriptionEl}
-          rows="6"
+
           placeholder="A few sentences about {{user}} (optional)"
         />
         <div class="form-actions">

@@ -1,0 +1,107 @@
+import { For, createEffect, createSignal, onCleanup } from 'solid-js';
+
+const TOKEN_RE = /\{\{[^{}]*\}\}/g;
+const BASIC_KEYS = new Set(['char', 'user']);
+const TEMPLATE_KEYS = new Set(['char', 'user', 'system', 'personality', 'persona', 'scenario']);
+
+type MacroKind = 'valid' | 'invalid' | 'cond';
+
+function classify(token: string, template: boolean): MacroKind {
+  const lower = token.toLowerCase();
+  const slot = /^\{\{([a-z]+)\}\}$/.exec(lower);
+  if (slot) return (template ? TEMPLATE_KEYS : BASIC_KEYS).has(slot[1]!) ? 'valid' : 'invalid';
+  if (template) {
+    if (lower === '{{/if}}') return 'cond';
+    const cond = /^\{\{#if ([a-z]+)\}\}$/.exec(lower);
+    if (cond) return TEMPLATE_KEYS.has(cond[1]!) ? 'cond' : 'invalid';
+  }
+  return 'invalid';
+}
+
+interface Segment {
+  text: string;
+  kind: MacroKind | null;
+}
+
+function segments(text: string, template: boolean): Segment[] {
+  const out: Segment[] = [];
+  let last = 0;
+  for (const match of text.matchAll(TOKEN_RE)) {
+    if (match.index! > last) out.push({ text: text.slice(last, match.index), kind: null });
+    out.push({ text: match[0], kind: classify(match[0], template) });
+    last = match.index! + match[0].length;
+  }
+  if (last < text.length) out.push({ text: text.slice(last), kind: null });
+  return out;
+}
+
+/**
+ * Textarea with live macro highlighting: recognized macros get an orange
+ * backdrop, anything {{bracketed}} the prompt renderer won't substitute gets
+ * bright red. Rendering is a transparent-text overlay behind the (transparent
+ * background) textarea, so the caret and text metrics stay fully native.
+ */
+export default function MacroTextarea(props: {
+  ref?: HTMLTextAreaElement | ((el: HTMLTextAreaElement) => void);
+  /** Enables the template macro set ({{system}}, {{#if x}}…) on top of {{char}}/{{user}}. */
+  template?: boolean;
+  rows?: number | string;
+  class?: string;
+  classList?: { [key: string]: boolean | undefined };
+  placeholder?: string;
+}) {
+  const [text, setText] = createSignal('');
+  let overlay!: HTMLDivElement;
+  let area: HTMLTextAreaElement | undefined;
+  let observer: ResizeObserver | undefined;
+
+  // A scrolled textarea shows a scrollbar that narrows its wrap width; mirror
+  // that on the overlay (right inset = scrollbar width) and track scrollTop,
+  // otherwise the pills drift out of alignment.
+  const sync = () => {
+    if (!area) return;
+    overlay.style.right = `${Math.max(0, area.offsetWidth - area.clientWidth - 2)}px`;
+    overlay.scrollTop = area.scrollTop;
+  };
+  createEffect(() => {
+    void text();
+    queueMicrotask(sync); // after the overlay re-rendered (scrollbar may have appeared)
+  });
+  onCleanup(() => observer?.disconnect());
+
+  // The settings editors load values imperatively via el.value = …, which
+  // fires no event; intercept the property so those writes re-render too.
+  const attach = (el: HTMLTextAreaElement) => {
+    area = el;
+    const base = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!;
+    Object.defineProperty(el, 'value', {
+      get: () => base.get!.call(el) as string,
+      set: (next: unknown) => {
+        base.set!.call(el, next);
+        setText(String(next ?? ''));
+      },
+    });
+    observer = new ResizeObserver(sync); // manual resize handle, layout changes
+    observer.observe(el);
+    (props.ref as ((el: HTMLTextAreaElement) => void) | undefined)?.(el);
+  };
+
+  return (
+    <div class="macro-box" classList={props.classList}>
+      <div class={`macro-overlay ${props.class ?? ''}`} ref={overlay} aria-hidden="true">
+        <For each={segments(text(), props.template === true)}>
+          {(seg) => (seg.kind ? <mark class={`macro-${seg.kind}`}>{seg.text}</mark> : seg.text)}
+        </For>
+        {'\n'}
+      </div>
+      <textarea
+        ref={attach}
+        rows={props.rows ?? 6}
+        class={props.class}
+        placeholder={props.placeholder}
+        onInput={(e) => setText(e.currentTarget.value)}
+        onScroll={sync}
+      />
+    </div>
+  );
+}

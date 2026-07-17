@@ -769,6 +769,37 @@ async function main() {
   );
   await putSettings({ defaultTemplateId: prevSettings.defaultTemplateId });
 
+  console.log('== character inline custom template ==');
+  const inlineChar = await req<{ id: number }>('POST', '/api/characters', {
+    name: 'Inline Hero',
+    customTemplate: {
+      content: '{{system}} INLINE {{char}} + {{user}}',
+      userPrologue: 'Inline prologue for {{char}}.',
+      prefixNames: true,
+      usesPersonas: false,
+    },
+  });
+  const inlineConv = await req<{ id: number }>('POST', '/api/conversations', {
+    characterId: inlineChar.id,
+  });
+  const inlineTrace = await req<{
+    messages: { role: string; content: string }[];
+    namePrefill: string | null;
+  }>('GET', `/api/conversations/${inlineConv.id}/trace`);
+  assert(
+    inlineTrace.messages.some(
+      (m) => m.role === 'system' && m.content.endsWith('INLINE Inline Hero + User'),
+    ),
+    'inline template renders its content; usesPersonas=false ignores the persona',
+  );
+  assert(
+    inlineTrace.messages.some(
+      (m) => m.role === 'user' && m.content === 'Inline prologue for Inline Hero.',
+    ),
+    'inline template emits its prologue',
+  );
+  assert(inlineTrace.namePrefill === 'Inline Hero:', 'inline template enables name prefixing');
+
   console.log('== terminal SSE data without a newline is preserved ==');
   await makeNextMockResponseEndWithoutNewline();
   const terminalSend = await sendMessage(conv2.id, 'terminal SSE event');

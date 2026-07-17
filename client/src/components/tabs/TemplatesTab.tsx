@@ -4,12 +4,14 @@ import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createEntityEditor } from '../../util.ts';
 import MacroHelp from '../MacroHelp.tsx';
+import MacroTextarea from '../MacroTextarea.tsx';
 
 export default function TemplatesTab() {
   let nameEl!: HTMLInputElement;
   let contentEl!: HTMLTextAreaElement;
   let prologueEl!: HTMLTextAreaElement;
   let prefixEl!: HTMLInputElement;
+  let usesPersonasEl!: HTMLInputElement;
 
   const editor = createEntityEditor({
     items: () => state.templates,
@@ -18,12 +20,14 @@ export default function TemplatesTab() {
       contentEl.value = template?.content ?? DEFAULT_PROMPT_TEMPLATE;
       prologueEl.value = template?.userPrologue ?? '';
       prefixEl.checked = template?.prefixNames ?? false;
+      usesPersonasEl.checked = template?.usesPersonas ?? true;
     },
     data: () => ({
       name: nameEl.value,
       content: contentEl.value,
       userPrologue: prologueEl.value,
       prefixNames: prefixEl.checked,
+      usesPersonas: usesPersonasEl.checked,
     }),
     create: api.createTemplate,
     patch: api.patchTemplate,
@@ -60,21 +64,27 @@ export default function TemplatesTab() {
         <label>
           System prompt template <MacroHelp template />
         </label>
-        <textarea ref={contentEl} class="mono" rows="9" />
+        <MacroTextarea ref={contentEl} template class="mono" />
         <label>
           First user message (optional — sent as a fake user turn before the history){' '}
           <MacroHelp template />
         </label>
-        <textarea
+        <MacroTextarea
           ref={prologueEl}
+          template
           class="mono"
-          rows="5"
+
           placeholder="Leave empty to send no fake user message"
         />
         <label class="check-row">
           <input ref={prefixEl} type="checkbox" />
           Prefix speaker names into messages ("{'{{user}}'}: …", "{'{{char}}'}: …") and prefill the
           reply with the current speaker name (see /char)
+        </label>
+        <label class="check-row">
+          <input ref={usesPersonasEl} type="checkbox" />
+          Uses personas — when off, chats with this template ignore the persona entirely ("
+          {'{{user}}'}" becomes "User", the persona description is not sent)
         </label>
         <div class="form-actions">
           <button class="primary-btn" onClick={() => void editor.save()}>

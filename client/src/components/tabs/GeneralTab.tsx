@@ -1,4 +1,5 @@
-import { For, Show, createEffect, createSignal, untrack } from 'solid-js';
+import { Show, createEffect, createSignal, untrack } from 'solid-js';
+import Select from '../Select.tsx';
 import { createStore, reconcile } from 'solid-js/store';
 import type { Settings } from '@minitavern/shared';
 import { api, ApiError } from '../../state/api.ts';
@@ -85,43 +86,47 @@ export default function GeneralTab() {
   return (
     <div class="form">
       <label>Active endpoint (all generations go through this)</label>
-      <select
-        value={draft.activeEndpointId ?? ''}
-        onChange={(e) => change('activeEndpointId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">— none —</option>
-        <For each={state.endpoints}>{(ep) => <option value={ep.id}>{ep.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.activeEndpointId?.toString() ?? ''}
+        onChange={(v) => change('activeEndpointId', numberOrNull(v))}
+        options={[
+          { value: '', label: '— none —' },
+          ...state.endpoints.map((ep) => ({ value: String(ep.id), label: ep.name })),
+        ]}
+      />
       <p class="hint">
         Model and sampling settings are configured per endpoint in the Endpoints tab.
       </p>
 
       <label>Default system prompt preset</label>
-      <select
-        value={draft.defaultPresetId ?? ''}
-        onChange={(e) => change('defaultPresetId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">— none —</option>
-        <For each={state.presets}>{(p) => <option value={p.id}>{p.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.defaultPresetId?.toString() ?? ''}
+        onChange={(v) => change('defaultPresetId', numberOrNull(v))}
+        options={[
+          { value: '', label: '— none —' },
+          ...state.presets.map((p) => ({ value: String(p.id), label: p.name })),
+        ]}
+      />
 
       <label>Default persona</label>
-      <select
-        value={draft.defaultPersonaId ?? ''}
-        onChange={(e) => change('defaultPersonaId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">— none —</option>
-        <For each={state.personas}>{(p) => <option value={p.id}>{p.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.defaultPersonaId?.toString() ?? ''}
+        onChange={(v) => change('defaultPersonaId', numberOrNull(v))}
+        options={[
+          { value: '', label: '— none —' },
+          ...state.personas.map((p) => ({ value: String(p.id), label: p.name })),
+        ]}
+      />
 
       <label>Default prompt template</label>
-      <select
-        value={draft.defaultTemplateId ?? ''}
-        onChange={(e) => change('defaultTemplateId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">— built-in default —</option>
-        <For each={state.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.defaultTemplateId?.toString() ?? ''}
+        onChange={(v) => change('defaultTemplateId', numberOrNull(v))}
+        options={[
+          { value: '', label: '— built-in default —' },
+          ...state.templates.map((t) => ({ value: String(t.id), label: t.name })),
+        ]}
+      />
 
       <label class="check-row">
         <input

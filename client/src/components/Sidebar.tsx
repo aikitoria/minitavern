@@ -114,9 +114,12 @@ export default function Sidebar() {
         </button>
         <Show when={newMenuOpen()}>
           <div class="new-chat-menu">
-            <button onClick={() => create(null)}>
-              <span class="avatar avatar-fallback">A</span> Assistant
-            </button>
+            {/* Characterless fallback, only when no characters exist (Assistant is normally a seeded character). */}
+            <Show when={state.characters.length === 0}>
+              <button onClick={() => create(null)}>
+                <span class="avatar avatar-fallback">A</span> Assistant
+              </button>
+            </Show>
             <For each={state.characters}>
               {(character) => (
                 <button onClick={() => create(character.id)}>

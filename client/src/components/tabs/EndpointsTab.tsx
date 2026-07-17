@@ -3,6 +3,8 @@ import type { Endpoint, GenParams } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createEntityEditor, errorMessage } from '../../util.ts';
+import Select from '../Select.tsx';
+import type { SelectHandle } from '../Select.tsx';
 
 export default function EndpointsTab() {
   const [model, setModel] = createSignal('');
@@ -16,7 +18,7 @@ export default function EndpointsTab() {
   let maxTokEl!: HTMLInputElement;
   let freqEl!: HTMLInputElement;
   let presEl!: HTMLInputElement;
-  let prefillEl!: HTMLSelectElement;
+  let prefillEl!: SelectHandle;
 
   const editor = createEntityEditor({
     items: () => state.endpoints,
@@ -127,13 +129,17 @@ export default function EndpointsTab() {
             />
           }
         >
-          <select value={model()} onChange={(e) => setModel(e.currentTarget.value)}>
-            <option value="">— none —</option>
-            <Show when={model() && !models().includes(model())}>
-              <option value={model()}>{model()} (custom)</option>
-            </Show>
-            <For each={models()}>{(m) => <option value={m}>{m}</option>}</For>
-          </select>
+          <Select
+            value={model()}
+            onChange={setModel}
+            options={[
+              { value: '', label: '— none —' },
+              ...(model() && !models().includes(model())
+                ? [{ value: model(), label: `${model()} (custom)` }]
+                : []),
+              ...models().map((m) => ({ value: m, label: m })),
+            ]}
+          />
         </Show>
 
         <label>Sampling</label>
@@ -162,11 +168,14 @@ export default function EndpointsTab() {
         <p class="hint">Empty fields are omitted from requests (backend defaults apply).</p>
 
         <label>Prefill support (for resume and speaker-name prefill)</label>
-        <select ref={prefillEl}>
-          <option value="none">Generic (trailing assistant message)</option>
-          <option value="vllm">vLLM (continue_final_message)</option>
-          <option value="deepseek">DeepSeek beta (prefix flag, needs /beta base URL)</option>
-        </select>
+        <Select
+          ref={prefillEl}
+          options={[
+            { value: 'none', label: 'Generic (trailing assistant message)' },
+            { value: 'vllm', label: 'vLLM (continue_final_message)' },
+            { value: 'deepseek', label: 'DeepSeek beta (prefix flag, needs /beta base URL)' },
+          ]}
+        />
 
         <div class="form-actions">
           <button class="primary-btn" onClick={() => void editor.save()}>

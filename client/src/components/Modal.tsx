@@ -9,8 +9,9 @@ export default function Modal(props: {
 }) {
   return (
     <Portal>
-      <div class="modal-backdrop" onClick={() => openModal(null)}>
-        <div class="modal" onClick={(e) => e.stopPropagation()}>
+      {/* No close-on-backdrop-click: modals hold unsaved form state. */}
+      <div class="modal-backdrop">
+        <div class="modal">
           <div class="modal-head">
             <span class="modal-title">{props.title}</span>
             {props.headerExtra}

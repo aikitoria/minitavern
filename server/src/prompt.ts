@@ -77,8 +77,20 @@ export function buildChatMessages(
   speakerName: string | null = conversation.speakerName,
 ): BuiltPrompt {
   const character = getCharacter(conversation.characterId);
-  const persona = getPersona(conversation.personaId);
   const settings = getSettings();
+
+  // Character-specific inline template wins, then the character's template
+  // reference, then the global default, then the built-in. An inline template
+  // carries the same settings a template entity has.
+  const custom = character?.customTemplate ?? null;
+  const template = custom
+    ? null
+    : (getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId));
+
+  // A template can opt the chat out of personas entirely: {{user}} becomes
+  // "User" and the persona description slot renders empty.
+  const usesPersonas = custom ? custom.usesPersonas : (template?.usesPersonas ?? true);
+  const persona = usesPersonas ? getPersona(conversation.personaId) : null;
   const charName = character?.name ?? 'Assistant';
   const userName = persona?.name ?? 'User';
   const sub = (text: string) => substituteMacros(text.trim(), charName, userName);
@@ -88,10 +100,6 @@ export function buildChatMessages(
     getPresetContent(character?.presetId ?? null) ??
     getPresetContent(settings.defaultPresetId) ??
     '';
-
-  // Character-specific template wins over the global default, then the built-in.
-  const template =
-    getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId);
   const vars = {
     system: sub(systemPrompt),
     personality: sub(character?.personality ?? ''),
@@ -100,11 +108,15 @@ export function buildChatMessages(
     char: charName,
     user: userName,
   };
-  const systemContent = renderTemplate(template?.content.trim() || DEFAULT_PROMPT_TEMPLATE, vars);
+  const systemContent = renderTemplate(
+    (custom ? custom.content.trim() : template?.content.trim()) || DEFAULT_PROMPT_TEMPLATE,
+    vars,
+  );
   // Optional fake first user message (e.g. introducing the character); empty = not emitted.
-  const prologue = template?.userPrologue.trim() ? renderTemplate(template.userPrologue, vars) : '';
+  const prologueSource = custom ? custom.userPrologue : (template?.userPrologue ?? '');
+  const prologue = prologueSource.trim() ? renderTemplate(prologueSource, vars) : '';
 
-  const prefixNames = template?.prefixNames ?? false;
+  const prefixNames = custom ? custom.prefixNames : (template?.prefixNames ?? false);
   const speakerFor = (msg: Message) =>
     msg.role === 'user' ? userName : msg.name?.trim() || charName;
 

@@ -58,6 +58,7 @@ route.post('/api/messages/:id/continue', ({ params, body }) => {
     throw new HttpError(400, 'only the last message on the branch can be resumed');
   requireIdle(msg.conversationId);
   stmt("UPDATE messages SET status = 'streaming' WHERE id = ?").run(msg.id);
+  touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
   startGeneration(
     conv,
@@ -141,6 +142,7 @@ route.post('/api/messages/:id/edit-branch', ({ params, body }) => {
   if (msg.role === 'user') {
     assistantMessageId = spawnAssistantReply(getConversation(msg.conversationId), sibling.id);
   } else {
+    touchConversation(msg.conversationId);
     broadcastTree(msg.conversationId);
   }
   invalidate('conversations');

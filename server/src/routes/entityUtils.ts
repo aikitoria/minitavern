@@ -4,7 +4,10 @@ import { HttpError } from '../router.ts';
 export type EntityTable = 'presets' | 'templates' | 'personas' | 'characters' | 'endpoints';
 
 export function rows(table: EntityTable): Record<string, unknown>[] {
-  return stmt(`SELECT * FROM ${table} ORDER BY id`).all() as Record<string, unknown>[];
+  return stmt(`SELECT * FROM ${table} ORDER BY name COLLATE NOCASE, id`).all() as Record<
+    string,
+    unknown
+  >[];
 }
 
 export function rowById(table: EntityTable, id: number): Record<string, unknown> {

@@ -109,6 +109,157 @@ textarea {
   resize: vertical;
 }
 
+/* ---- Macro-highlighted textareas ---- */
+
+/* The wrapper carries the field background; the textarea on top is transparent
+   so the pill overlay sandwiched between them shows through under the native
+   text and caret. */
+.macro-box {
+  position: relative;
+  background: var(--bg-raised);
+  border-radius: 8px;
+}
+
+.macro-box textarea {
+  /* block: the default inline display leaves a descender gap below the
+     textarea, making the overlay viewport taller and desyncing scroll. */
+  display: block;
+  position: relative;
+  background: transparent;
+}
+
+/* Chrome paints the native scroll-corner/resize grip with default chrome the
+   moment a scrollbar appears, which clashes with the theme. Opt into styled
+   scrollbars and draw a theme-colored grip (the resize hotspot is unaffected). */
+.macro-box textarea::-webkit-scrollbar {
+  width: 10px;
+}
+
+.macro-box textarea::-webkit-scrollbar-thumb {
+  background: var(--bg-hover);
+  border-radius: 5px;
+}
+
+.macro-box textarea::-webkit-scrollbar-track,
+.macro-box textarea::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.macro-box textarea::-webkit-resizer {
+  background: linear-gradient(
+    135deg,
+    transparent 50%,
+    var(--border) 50% 60%,
+    transparent 60% 70%,
+    var(--border) 70% 80%,
+    transparent 80%
+  );
+}
+
+.macro-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 7px 10px;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  color: transparent;
+  pointer-events: none;
+}
+
+.macro-overlay mark {
+  color: transparent;
+  border-radius: 4px;
+}
+
+.macro-valid {
+  background: rgb(255 149 0 / 0.3);
+}
+
+/* {{#if x}} / {{/if}} conditionals */
+.macro-cond {
+  background: rgb(64 156 255 / 0.32);
+}
+
+.macro-invalid {
+  background: rgb(255 32 32 / 0.42);
+}
+
+/* ---- Custom select (native popups close on scroll; this one repositions) ---- */
+
+.select-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  font: inherit;
+  color: var(--text);
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.select-btn:hover {
+  background: var(--bg-raised);
+}
+
+.select-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.select-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.select-caret {
+  color: var(--text-dim);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.select-menu {
+  position: fixed;
+  z-index: 300;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 5px;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.4);
+}
+
+.select-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.select-option.highlighted {
+  background: var(--bg-hover);
+}
+
+.select-option.selected {
+  color: var(--accent);
+  font-weight: 600;
+}
+
 /* Native number-input spinners look terrible on dark themes; type or scroll instead. */
 input[type='number'] {
   appearance: textfield;
@@ -213,7 +364,8 @@ input[type='number']::-webkit-inner-spin-button {
   margin: 0;
 }
 
-textarea.mono {
+textarea.mono,
+.macro-overlay.mono {
   font-family: ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
   font-size: 13px;
 }
@@ -1107,6 +1259,14 @@ textarea.mono {
   overflow-y: auto;
 }
 
+/* Master-detail tabs: the body stops scrolling as a whole; the entity list
+   and the detail form each get their own scrollbar instead. */
+.modal-body:has(> .master-detail) {
+  display: flex;
+  overflow: hidden;
+  padding: 0;
+}
+
 .tabs {
   display: flex;
   gap: 2px;
@@ -1285,6 +1445,14 @@ textarea.mono {
   display: grid;
   grid-template-columns: 220px 1fr;
   gap: 18px;
+  flex: 1;
+  min-height: 0;
+}
+
+.master-detail > .form {
+  overflow-y: auto;
+  min-height: 0;
+  padding: 16px 18px 16px 0;
 }
 
 /* Mobile-only "back to list" button in entity editors. */
@@ -1297,7 +1465,9 @@ textarea.mono {
   flex-direction: column;
   gap: 4px;
   border-right: 1px solid var(--border);
-  padding-right: 14px;
+  padding: 16px 14px 16px 18px;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .entity-list button {
@@ -1473,8 +1643,12 @@ textarea.mono {
   /* Entity editors page between full-width list and detail form. */
   .entity-list {
     border-right: none;
-    padding: 0;
+    padding: 14px 16px;
     gap: 6px;
+  }
+
+  .master-detail > .form {
+    padding: 14px 16px;
   }
 
   .entity-list button {

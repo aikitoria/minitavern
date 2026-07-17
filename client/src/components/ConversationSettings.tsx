@@ -1,10 +1,11 @@
-import { For, Show, createSignal } from 'solid-js';
+import { Show, createSignal } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { selectedConversation, state } from '../state/store.ts';
 import { createSavedFlash, download, errorMessage, numberOrNull } from '../util.ts';
 import Modal from './Modal.tsx';
+import Select from './Select.tsx';
 
 interface Draft {
   title: string;
@@ -51,13 +52,14 @@ function Editor(props: { conv: Conversation }) {
       <input value={draft.title} onChange={(e) => setDraft('title', e.currentTarget.value)} />
 
       <label>Character</label>
-      <select
-        value={draft.characterId ?? ''}
-        onChange={(e) => setDraft('characterId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">Assistant (none)</option>
-        <For each={state.characters}>{(ch) => <option value={ch.id}>{ch.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.characterId?.toString() ?? ''}
+        onChange={(v) => setDraft('characterId', numberOrNull(v))}
+        options={[
+          { value: '', label: 'Assistant (none)' },
+          ...state.characters.map((ch) => ({ value: String(ch.id), label: ch.name })),
+        ]}
+      />
 
       <label>Speaker name (assistant replies; empty = character's name, also set via /char)</label>
       <input
@@ -69,22 +71,24 @@ function Editor(props: { conv: Conversation }) {
       />
 
       <label>Persona</label>
-      <select
-        value={draft.personaId ?? ''}
-        onChange={(e) => setDraft('personaId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">— none —</option>
-        <For each={state.personas}>{(p) => <option value={p.id}>{p.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.personaId?.toString() ?? ''}
+        onChange={(v) => setDraft('personaId', numberOrNull(v))}
+        options={[
+          { value: '', label: '— none —' },
+          ...state.personas.map((p) => ({ value: String(p.id), label: p.name })),
+        ]}
+      />
 
       <label>Endpoint (overrides the global active endpoint for this conversation)</label>
-      <select
-        value={draft.endpointId ?? ''}
-        onChange={(e) => setDraft('endpointId', numberOrNull(e.currentTarget.value))}
-      >
-        <option value="">— global default —</option>
-        <For each={state.endpoints}>{(ep) => <option value={ep.id}>{ep.name}</option>}</For>
-      </select>
+      <Select
+        value={draft.endpointId?.toString() ?? ''}
+        onChange={(v) => setDraft('endpointId', numberOrNull(v))}
+        options={[
+          { value: '', label: '— global default —' },
+          ...state.endpoints.map((ep) => ({ value: String(ep.id), label: ep.name })),
+        ]}
+      />
 
       <div class="form-actions">
         <button class="primary-btn" onClick={() => void save()}>

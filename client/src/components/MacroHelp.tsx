@@ -40,7 +40,8 @@ export default function MacroHelp(props: { template?: boolean }) {
     document.removeEventListener('keydown', onKey);
   });
 
-  const rows = () => (props.template ? [...TEMPLATE, ...BASIC] : BASIC);
+  // Basics first, then content slots in built-in template order, syntax last.
+  const rows = () => (props.template ? [...BASIC, ...TEMPLATE] : BASIC);
 
   return (
     <span class="macro-help" ref={root}>

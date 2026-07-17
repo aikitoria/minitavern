@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import type {
   Character,
   Conversation,
+  CustomTemplate,
   Endpoint,
   Message,
   Persona,
@@ -241,6 +242,40 @@ if (version < 10) {
   `);
 }
 
+// The bare assistant becomes an editable character: new chats pick it from the
+// character list, and its preset/template overrides apply like any character's.
+// Multiple assistants are simply more characters.
+if (version < 11) {
+  db.exec('BEGIN');
+  db.prepare(
+    `INSERT INTO characters (name, personality, scenario, first_message, created_at)
+     VALUES ('Assistant', '', '', '', ?)`,
+  ).run(Date.now());
+  db.exec('PRAGMA user_version = 11');
+  db.exec('COMMIT');
+}
+
+// Inline template override on characters, parallel to custom_prompt: replaces
+// the template content (no prologue or name prefixing in custom mode).
+if (version < 12) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE characters ADD COLUMN custom_template TEXT;
+    PRAGMA user_version = 12;
+    COMMIT;
+  `);
+}
+
+// Templates can opt a chat out of the persona feature entirely.
+if (version < 13) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE templates ADD COLUMN uses_personas INTEGER NOT NULL DEFAULT 1;
+    PRAGMA user_version = 13;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(
@@ -278,6 +313,22 @@ export function transaction<T>(fn: () => T): T {
 }
 
 type Row = Record<string, unknown>;
+
+function parseCustomTemplate(raw: string | null): CustomTemplate | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<CustomTemplate>;
+    return {
+      content: typeof parsed.content === 'string' ? parsed.content : '',
+      userPrologue: typeof parsed.userPrologue === 'string' ? parsed.userPrologue : '',
+      prefixNames: parsed.prefixNames === true,
+      usesPersonas: parsed.usesPersonas !== false,
+    };
+  } catch {
+    // Tolerate pre-JSON dev builds that stored the raw template text.
+    return { content: raw, userPrologue: '', prefixNames: false, usesPersonas: true };
+  }
+}
 
 export function toMessage(r: Row): Message {
   return {
@@ -322,6 +373,7 @@ export function toCharacter(r: Row): Character {
     presetId: r.preset_id as number | null,
     customPrompt: r.custom_prompt as string | null,
     templateId: r.template_id as number | null,
+    customTemplate: parseCustomTemplate(r.custom_template as string | null),
     createdAt: r.created_at as number,
   };
 }
@@ -342,6 +394,7 @@ export function toTemplate(r: Row): Template {
     content: r.content as string,
     userPrologue: r.user_prologue as string,
     prefixNames: (r.prefix_names as number) !== 0,
+    usesPersonas: (r.uses_personas as number) !== 0,
     createdAt: r.created_at as number,
   };
 }

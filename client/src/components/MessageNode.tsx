@@ -7,6 +7,7 @@ import {
   navigateTree,
   pendingSwipe,
   selectedCharacter,
+  personasEnabled,
   selectedPersona,
   setEditRequestId,
   siblingsOf,
@@ -27,11 +28,12 @@ export default function MessageNode(props: { message: Message }) {
   let editArea: HTMLTextAreaElement | undefined;
 
   const isUser = () => props.message.role === 'user';
+  const persona = () => (personasEnabled() ? selectedPersona() : null);
   const name = () =>
     isUser()
-      ? (selectedPersona()?.name ?? 'You')
+      ? (persona()?.name ?? 'You')
       : (props.message.name ?? selectedCharacter()?.name ?? 'Assistant');
-  const avatarSrc = () => (isUser() ? selectedPersona()?.avatar : selectedCharacter()?.avatar);
+  const avatarSrc = () => (isUser() ? persona()?.avatar : selectedCharacter()?.avatar);
   const streaming = () => props.message.status === 'streaming';
 
   const siblings = () => siblingsOf(props.message);

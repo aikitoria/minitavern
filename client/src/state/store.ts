@@ -98,6 +98,16 @@ export const selectedPersona = globalMemo(() => {
     : null;
 });
 
+/** Whether the effective template of the selected chat uses personas at all. */
+export const personasEnabled = globalMemo(() => {
+  const character = selectedCharacter();
+  if (character?.customTemplate) return character.customTemplate.usesPersonas;
+  const templateId = character?.templateId ?? state.settings.defaultTemplateId;
+  const template =
+    templateId != null ? state.templates.find((t) => t.id === templateId) : undefined;
+  return template?.usesPersonas ?? true;
+});
+
 /** Active path, root -> leaf, walked up via parent pointers from the active leaf. */
 export const activePath = globalMemo<Message[]>(() => {
   const tree = state.tree;

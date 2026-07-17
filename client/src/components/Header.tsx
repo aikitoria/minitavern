@@ -4,6 +4,7 @@ import {
   openModal,
   selectedCharacter,
   selectedConversation,
+  personasEnabled,
   selectedPersona,
   setState,
   state,
@@ -94,7 +95,7 @@ export default function Header() {
                     </button>
                   )}
                 </Show>
-                <Show when={selectedPersona()}>
+                <Show when={personasEnabled() && selectedPersona()}>
                   {(persona) => (
                     <button class="chip" onClick={() => openModal('conversation')}>
                       as {persona().name}

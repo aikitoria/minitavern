@@ -107,7 +107,7 @@ route.get('/api/endpoints/:id/models', async ({ params }) => {
   const models = json.data
     .map((model) => (model && typeof model === 'object' ? (model as { id?: unknown }).id : null))
     .filter((id): id is string => typeof id === 'string')
-    .sort();
+    .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
   stmt('UPDATE endpoints SET models_json = ? WHERE id = ?').run(
     JSON.stringify(models),
     endpoint.id,

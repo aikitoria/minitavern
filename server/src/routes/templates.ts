@@ -14,6 +14,11 @@ defineEntityRoutes<Template>({
       column: 'prefix_names',
       value: (b, cur) => ((optionalBoolean(b, 'prefixNames') ?? cur?.prefixNames ?? false) ? 1 : 0),
     },
+    {
+      column: 'uses_personas',
+      value: (b, cur) =>
+        (optionalBoolean(b, 'usesPersonas') ?? cur?.usesPersonas ?? true) ? 1 : 0,
+    },
   ],
   settingsRef: 'defaultTemplateId',
   invalidateOnDelete: ['characters'],
