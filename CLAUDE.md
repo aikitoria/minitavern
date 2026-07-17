@@ -48,7 +48,8 @@ npm workspaces: `shared/` (types only), `server/` (dependency-light Node: `node:
 
 **Server-authoritative state, clients are pure viewers.** All state lives in SQLite (`server/src/db.ts`, schema migrations via `PRAGMA user_version`, WAL mode). All SQL goes through `stmt()` from db.ts — a memoized prepared-statement cache; never call `db.prepare` directly. Clients never mutate locally; they call REST endpoints under `/api/` and receive updates over the `/ws` WebSocket:
 
-- `tree` — full snapshot of a conversation's message tree (sent on subscribe and after any structural change; `broadcastTree` coalesces per microtask, so several mutations in one request emit one frame)
+- `tree` — full snapshot of a conversation's message tree (sent on subscribe; also the client's resync fallback)
+- `treePatch` — incremental structural update after mutations (`broadcastTree` coalesces per microtask): `nodes` lists every message's structure (absent ids were deleted), `messages` carries full bodies only for messages created/edited since the last frame (tracked via `markMessageDirty` in tree.ts)
 - `delta` — streaming token append (`d` = content, `r` = reasoning) for one message id
 - `final` — a message finished streaming
 - `invalidate` — an entity list (characters, endpoints, settings, …) changed; client refetches via `client/src/state/api.ts`

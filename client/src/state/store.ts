@@ -199,6 +199,45 @@ export function handleServerEvent(ev: ServerEvent): void {
         });
       }
       break;
+    case 'treePatch': {
+      // Patches only apply on top of a full snapshot for the same conversation.
+      if (ev.conversationId !== state.selectedId || state.tree.conversationId !== ev.conversationId)
+        break;
+      const bodies = new Map(ev.messages.map((m) => [m.id, m]));
+      // A node we've never seen and no body for means a missed frame — resync.
+      if (ev.nodes.some((node) => !bodies.has(node.id) && !state.tree.messages[node.id])) {
+        api
+          .tree(ev.conversationId)
+          .then((snapshot) => handleServerEvent({ t: 'tree', ...snapshot }))
+          .catch(console.error);
+        break;
+      }
+      batch(() => {
+        setState('tree', 'activeLeafId', ev.activeLeafId);
+        setState(
+          'tree',
+          'messages',
+          produce((messages) => {
+            const alive = new Set(ev.nodes.map((node) => node.id));
+            for (const key of Object.keys(messages)) {
+              if (!alive.has(Number(key))) delete messages[Number(key)];
+            }
+            for (const node of ev.nodes) {
+              const body = bodies.get(node.id);
+              if (body) {
+                messages[node.id] = body;
+              } else {
+                const msg = messages[node.id]!;
+                msg.activeChildId = node.activeChildId;
+                msg.status = node.status;
+                msg.generationKind = node.generationKind;
+              }
+            }
+          }),
+        );
+      });
+      break;
+    }
     case 'delta': {
       if (!state.tree.messages[ev.mid]) break;
       setState(
@@ -213,6 +252,11 @@ export function handleServerEvent(ev: ServerEvent): void {
       break;
     }
     case 'final':
+      // Surface upstream API failures (e.g. context length exceeded) loudly.
+      // Speculative swipes retry quietly in the background.
+      if (ev.message.status === 'error' && ev.message.generationKind !== 'speculative') {
+        toast(ev.message.genMeta?.error ?? 'Generation failed');
+      }
       if (ev.conversationId === state.selectedId && state.tree.messages[ev.message.id]) {
         setState('tree', 'messages', ev.message.id, ev.message);
       }

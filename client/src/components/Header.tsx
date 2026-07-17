@@ -19,10 +19,11 @@ export default function Header() {
   const [editing, setEditing] = createSignal(false);
   let titleInput: HTMLInputElement | undefined;
 
-  const activeEndpoint = () =>
-    state.settings.activeEndpointId != null
-      ? state.endpoints.find((e) => e.id === state.settings.activeEndpointId)
-      : undefined;
+  // The endpoint generations actually use: conversation override, else global.
+  const activeEndpoint = () => {
+    const id = selectedConversation()?.endpointId ?? state.settings.activeEndpointId;
+    return id != null ? state.endpoints.find((e) => e.id === id) : undefined;
+  };
 
   const startRename = () => {
     setEditing(true);

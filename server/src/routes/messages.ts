@@ -1,6 +1,12 @@
 import { stmt } from '../db.ts';
 import { route, HttpError } from '../router.ts';
-import { activateMessage, appendMessage, deleteMessage, getMessage } from '../tree.ts';
+import {
+  activateMessage,
+  appendMessage,
+  deleteMessage,
+  getMessage,
+  markMessageDirty,
+} from '../tree.ts';
 import {
   hasActiveGeneration,
   hasForegroundGeneration,
@@ -108,6 +114,7 @@ route.patch('/api/messages/:id', ({ params, body }) => {
   }
   discardSpeculativeSwipes(msg.conversationId);
   stmt('UPDATE messages SET content = ? WHERE id = ?').run(content, msg.id);
+  markMessageDirty(msg.conversationId, msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
   return getMessage(msg.id);

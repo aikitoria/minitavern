@@ -1,5 +1,24 @@
-import type { GenerationKind, Message, MessageStatus, Role } from '@minitavern/shared';
+import type { GenerationKind, Message, MessageStatus, Role, TreeNode } from '@minitavern/shared';
 import { stmt, toMessage, transaction } from './db.ts';
+
+// Messages created or edited since the last tree broadcast, per conversation.
+// The coalesced broadcast drains this to know which full bodies to include.
+const dirtyMessages = new Map<number, Set<number>>();
+
+export function markMessageDirty(conversationId: number, messageId: number): void {
+  let set = dirtyMessages.get(conversationId);
+  if (!set) {
+    set = new Set();
+    dirtyMessages.set(conversationId, set);
+  }
+  set.add(messageId);
+}
+
+export function takeDirtyMessageIds(conversationId: number): Set<number> {
+  const set = dirtyMessages.get(conversationId) ?? new Set<number>();
+  dirtyMessages.delete(conversationId);
+  return set;
+}
 
 interface MsgRow {
   id: number;
@@ -27,6 +46,27 @@ export function getTreeMessages(conversationId: number): Message[] {
   return rows.map(toMessage);
 }
 
+/** Structure-only view of the tree (no bodies) for incremental patches. */
+export function getTreeNodes(conversationId: number): TreeNode[] {
+  const rows = stmt(
+    `SELECT id, parent_id, active_child_id, status, generation_kind
+     FROM messages WHERE conversation_id = ? ORDER BY id`,
+  ).all(conversationId) as {
+    id: number;
+    parent_id: number | null;
+    active_child_id: number | null;
+    status: MessageStatus;
+    generation_kind: GenerationKind;
+  }[];
+  return rows.map((r) => ({
+    id: r.id,
+    parentId: r.parent_id,
+    activeChildId: r.active_child_id,
+    status: r.status,
+    generationKind: r.generation_kind,
+  }));
+}
+
 export function getActiveLeafId(conversationId: number): number | null {
   const row = stmt('SELECT active_leaf_id FROM conversations WHERE id = ?').get(conversationId) as
     { active_leaf_id: number | null } | undefined;
@@ -40,15 +80,17 @@ export function getActivePath(conversationId: number): Message[] {
 
 /** Path from the root through a specific message, independent of the active branch. */
 export function getPathToMessage(messageId: number | null): Message[] {
-  const path: Message[] = [];
-  let cur = messageId;
-  while (cur != null) {
-    const msg = getMessage(cur);
-    if (!msg) break;
-    path.push(msg);
-    cur = msg.parentId;
-  }
-  return path.reverse();
+  if (messageId == null) return [];
+  // Single recursive query, leaf -> root; reversed in JS.
+  const rows = stmt(
+    `WITH RECURSIVE path AS (
+       SELECT * FROM messages WHERE id = ?
+       UNION ALL
+       SELECT m.* FROM messages m JOIN path p ON m.id = p.parent_id
+     )
+     SELECT * FROM path`,
+  ).all(messageId) as Record<string, unknown>[];
+  return rows.map(toMessage).reverse();
 }
 
 /**
@@ -62,26 +104,33 @@ export function setActiveLeaf(conversationId: number, leafId: number | null): vo
     Date.now(),
     conversationId,
   );
-  const setChild = stmt('UPDATE messages SET active_child_id = ? WHERE id = ?');
-  let cur = leafId;
-  while (cur != null) {
-    const row = getRow(cur);
-    if (!row) break;
-    if (row.parent_id != null) setChild.run(cur, row.parent_id);
-    cur = row.parent_id;
-  }
+  if (leafId == null) return;
+  // One statement: each ancestor's active_child_id points at its child on the leaf's path.
+  stmt(
+    `WITH RECURSIVE path(id, parent_id) AS (
+       SELECT id, parent_id FROM messages WHERE id = ?
+       UNION ALL
+       SELECT m.id, m.parent_id FROM messages m JOIN path p ON m.id = p.parent_id
+     )
+     UPDATE messages
+     SET active_child_id = (SELECT p.id FROM path p WHERE p.parent_id = messages.id)
+     WHERE id IN (SELECT parent_id FROM path WHERE parent_id IS NOT NULL)`,
+  ).run(leafId);
 }
 
 /** Follows active_child_id pointers down from a node to the deepest remembered descendant. */
 export function descendToLeaf(fromId: number): number {
-  let cur = fromId;
-  for (;;) {
-    const row = getRow(cur);
-    if (!row || row.active_child_id == null) return cur;
-    const child = getRow(row.active_child_id);
-    if (!child || child.parent_id !== cur) return cur;
-    cur = child.id;
-  }
+  // The parent check guards against a stale active_child_id pointing outside the subtree.
+  const row = stmt(
+    `WITH RECURSIVE down(id, active_child_id, depth) AS (
+       SELECT id, active_child_id, 0 FROM messages WHERE id = ?
+       UNION ALL
+       SELECT m.id, m.active_child_id, d.depth + 1
+       FROM messages m JOIN down d ON m.id = d.active_child_id AND m.parent_id = d.id
+     )
+     SELECT id FROM down ORDER BY depth DESC LIMIT 1`,
+  ).get(fromId) as { id: number } | undefined;
+  return row?.id ?? fromId;
 }
 
 /** Branch switch: make `messageId` the active sibling, restoring its remembered subtree path. */
@@ -123,6 +172,7 @@ export function appendMessage(
       Date.now(),
     );
     const id = Number(result.lastInsertRowid);
+    markMessageDirty(conversationId, id);
     if (activate) setActiveLeaf(conversationId, id);
     return getMessage(id)!;
   });

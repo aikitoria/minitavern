@@ -1,6 +1,12 @@
 import type { WebSocket } from 'ws';
-import type { TreeSnapshot } from '@minitavern/shared';
-import { getActiveLeafId, getTreeMessages } from './tree.ts';
+import type { Message, TreeSnapshot } from '@minitavern/shared';
+import {
+  getActiveLeafId,
+  getMessage,
+  getTreeMessages,
+  getTreeNodes,
+  takeDirtyMessageIds,
+} from './tree.ts';
 import { mergeLiveBuffers } from './generation.ts';
 import { broadcastConv, sendTo } from './events.ts';
 
@@ -15,18 +21,30 @@ export function treeSnapshot(conversationId: number): TreeSnapshot {
 const pendingTreeBroadcasts = new Set<number>();
 
 /**
- * Push the current tree to all subscribers of a conversation (after any
- * structural change). Coalesced per microtask: a request that mutates the
- * tree several times produces a single snapshot. Safe to defer because the
- * snapshot is taken at send time and merges in-flight stream buffers, and
- * clients treat a tree frame as a full replace.
+ * Push the current tree structure to all subscribers of a conversation
+ * (after any structural change). Coalesced per microtask: a request that
+ * mutates the tree several times produces a single frame. The frame is an
+ * incremental patch — structure for every message, full bodies only for
+ * messages created/edited since the last frame (subscribers got a full
+ * snapshot on subscribe, and frames arrive in order).
  */
 export function broadcastTree(conversationId: number): void {
   if (pendingTreeBroadcasts.has(conversationId)) return;
   pendingTreeBroadcasts.add(conversationId);
   queueMicrotask(() => {
     pendingTreeBroadcasts.delete(conversationId);
-    broadcastConv(conversationId, { t: 'tree', ...treeSnapshot(conversationId) });
+    const bodies: Message[] = [];
+    for (const id of takeDirtyMessageIds(conversationId)) {
+      const msg = getMessage(id); // dirty id may have been deleted in the same batch
+      if (msg) bodies.push(msg);
+    }
+    broadcastConv(conversationId, {
+      t: 'treePatch',
+      conversationId,
+      activeLeafId: getActiveLeafId(conversationId),
+      nodes: getTreeNodes(conversationId),
+      messages: mergeLiveBuffers(bodies),
+    });
   });
 }
 

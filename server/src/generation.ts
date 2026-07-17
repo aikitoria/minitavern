@@ -190,21 +190,58 @@ export function startGeneration(
     onError: options?.onError,
   };
   active.set(mid, gen);
-  run(conversation, gen, resumeFrom != null).catch((err: unknown) => {
-    if (active.get(mid) !== gen) return; // already stopped/finalized (or superseded by a resume)
-    // May already carry a specific message (e.g. idle timeout).
-    gen.meta.error ??= err instanceof Error ? err.message : String(err);
-    finalize(gen, 'error');
-  });
+  const isResumeInitially = resumeFrom != null;
+  const launch = (attempt: number): void => {
+    run(conversation, gen, isResumeInitially || gen.content.length > 0).catch((err: unknown) => {
+      if (active.get(mid) !== gen) return; // already stopped/finalized (or superseded by a resume)
+      // Transient upstream failures on foreground generations are retried in
+      // place, resuming from the partial content. Background swipes have
+      // their own retry loop in speculation.ts. Permanent errors (4xx, e.g.
+      // context length exceeded) surface immediately.
+      if (!gen.background && attempt < MAX_UPSTREAM_RETRIES && isTransientFailure(err, gen)) {
+        const reason = gen.meta.error ?? (err instanceof Error ? err.message : String(err));
+        console.warn(
+          `[generation] transient upstream failure for message ${mid} (${reason}), retry ${attempt + 1}/${MAX_UPSTREAM_RETRIES}`,
+        );
+        gen.meta.error = undefined;
+        gen.abort = new AbortController();
+        setTimeout(
+          () => {
+            if (active.get(mid) === gen) launch(attempt + 1);
+          },
+          1000 * (attempt + 1),
+        );
+        return;
+      }
+      // May already carry a specific message (e.g. idle timeout).
+      gen.meta.error ??= err instanceof Error ? err.message : String(err);
+      finalize(gen, 'error');
+    });
+  };
+  launch(0);
 }
 
 /** A wedged backend must not leave a message spinning forever. */
 const IDLE_TIMEOUT_MS = 120_000;
+const MAX_UPSTREAM_RETRIES = 2;
+
+/** Retryable: network failures, upstream 5xx/429, and idle timeouts — not 4xx. */
+function isTransientFailure(err: unknown, gen: ActiveGen): boolean {
+  if (gen.meta.error?.startsWith('Upstream idle timeout')) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  const status = message.match(/^Upstream error (\d{3})/);
+  if (status) {
+    const code = Number(status[1]);
+    return code >= 500 || code === 429;
+  }
+  return err instanceof TypeError; // fetch network-level failure
+}
 
 async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean): Promise<void> {
-  const settings = getSettings();
-  const endpointRow = settings.activeEndpointId
-    ? (stmt('SELECT * FROM endpoints WHERE id = ?').get(settings.activeEndpointId) as
+  // Per-conversation override first, then the global active endpoint.
+  const endpointId = conversation.endpointId ?? getSettings().activeEndpointId;
+  const endpointRow = endpointId
+    ? (stmt('SELECT * FROM endpoints WHERE id = ?').get(endpointId) as
         Record<string, unknown> | undefined)
     : undefined;
   if (!endpointRow) {

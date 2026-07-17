@@ -9,7 +9,9 @@ import {
   getMessage,
   getTreeMessages,
   setActiveLeaf,
+  takeDirtyMessageIds,
 } from '../tree.ts';
+import { requireReference } from './entityUtils.ts';
 import { buildChatMessages, getCharacter, getPersona, substituteMacros } from '../prompt.ts';
 import { clearSettingReference, getSettings } from '../settingsStore.ts';
 import {
@@ -198,6 +200,7 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
   if (title !== undefined && !title.trim()) throw new HttpError(400, 'title is required');
   const characterId = optionalNullableId(b, 'characterId');
   const personaId = optionalNullableId(b, 'personaId');
+  const endpointId = optionalNullableId(b, 'endpointId');
   const speakerName = optionalNullableString(b, 'speakerName');
   if (characterId != null && !getCharacter(characterId)) {
     throw new HttpError(400, 'characterId does not exist');
@@ -205,20 +208,23 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
   if (personaId != null && !getPersona(personaId)) {
     throw new HttpError(400, 'personaId does not exist');
   }
+  requireReference('endpoints', endpointId, 'endpointId');
   const contextChanged =
     (characterId !== undefined && characterId !== conv.characterId) ||
     (personaId !== undefined && personaId !== conv.personaId) ||
+    (endpointId !== undefined && endpointId !== conv.endpointId) ||
     (speakerName !== undefined && (speakerName?.trim() || null) !== conv.speakerName);
   if (hasForegroundGeneration(id))
     throw new HttpError(409, 'a generation is already running in this conversation');
   if (contextChanged) discardSpeculativeSwipes(id);
   stmt(
-    `UPDATE conversations SET title = ?, character_id = ?, persona_id = ?, speaker_name = ?, updated_at = ?
+    `UPDATE conversations SET title = ?, character_id = ?, persona_id = ?, endpoint_id = ?, speaker_name = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
     title !== undefined ? title.trim() : conv.title,
     characterId !== undefined ? characterId : conv.characterId,
     personaId !== undefined ? personaId : conv.personaId,
+    endpointId !== undefined ? endpointId : conv.endpointId,
     speakerName !== undefined ? speakerName?.trim() || null : conv.speakerName,
     Date.now(),
     id,
@@ -232,6 +238,7 @@ route.del('/api/conversations/:id', ({ params }) => {
   getConversation(id);
   stopConversationGenerations(id);
   stmt('DELETE FROM conversations WHERE id = ?').run(id);
+  takeDirtyMessageIds(id); // drop pending patch state for the deleted tree
   invalidate('conversations');
 });
 
@@ -272,38 +279,58 @@ route.get('/api/conversations/:id/export', ({ params, res }) => {
     .end(payload);
 });
 
-/** Search conversation titles and message contents. */
+/**
+ * Search: FTS5 word/prefix match over message contents (with generated
+ * snippets), plus a substring match over conversation titles.
+ */
 route.get('/api/search', ({ req }) => {
   const q = new URL(req.url ?? '/', 'http://x').searchParams.get('q')?.trim() ?? '';
   if (!q) return [];
-  // The query is a literal, not a pattern: escape LIKE wildcards.
+
+  // Titles: the query is a literal, not a pattern — escape LIKE wildcards.
   const like = `%${q.replace(/[\\%_]/g, '\\$&')}%`;
-  const convRows = stmt(
-    `SELECT DISTINCT c.* FROM conversations c
-       LEFT JOIN messages m ON m.conversation_id = c.id
-       WHERE c.title LIKE ?1 ESCAPE '\\' OR m.content LIKE ?1 ESCAPE '\\'
-       ORDER BY c.updated_at DESC LIMIT 50`,
-  ).all(like) as Record<string, unknown>[];
-  const snippetStmt = stmt(
-    "SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1",
-  );
-  return convRows.map((row) => {
-    const conv = toConversation(row);
-    const match = snippetStmt.get(conv.id, like) as { content: string } | undefined;
-    let snippet: string | null = null;
-    if (match) {
-      const idx = match.content.toLowerCase().indexOf(q.toLowerCase());
-      const contextBefore = 96;
-      const contextAfter = 180;
-      const start = Math.max(0, idx - contextBefore);
-      const end = idx + q.length + contextAfter;
-      snippet =
-        (start > 0 ? '…' : '') +
-        match.content.slice(start, end) +
-        (end < match.content.length ? '…' : '');
+  const titleRows = stmt("SELECT * FROM conversations WHERE title LIKE ? ESCAPE '\\'").all(
+    like,
+  ) as Record<string, unknown>[];
+
+  // Contents: quote each token as an FTS phrase (user input is not FTS
+  // syntax); the last token matches as a prefix for search-as-you-type.
+  const tokens = q.split(/\s+/).filter(Boolean);
+  const ftsQuery = tokens
+    .map((token, i) => `"${token.replaceAll('"', '""')}"${i === tokens.length - 1 ? '*' : ''}`)
+    .join(' ');
+  // snippet() only works in a plain FTS select (SQLite flattens subqueries,
+  // so even a wrapped aggregate breaks) — rank in SQL, dedupe per
+  // conversation in JS keeping the best-ranked hit.
+  const contentRows = ftsQuery
+    ? (stmt(
+        `SELECT m.conversation_id AS cid,
+                snippet(messages_fts, 0, '', '', '…', 24) AS snip
+         FROM messages_fts
+         JOIN messages m ON m.id = messages_fts.rowid
+         WHERE messages_fts MATCH ?
+         ORDER BY rank
+         LIMIT 500`,
+      ).all(ftsQuery) as { cid: number; snip: string }[])
+    : [];
+  const snippets = new Map<number, string>();
+  for (const row of contentRows) {
+    if (!snippets.has(row.cid)) snippets.set(row.cid, row.snip);
+  }
+
+  const byId = new Map(titleRows.map((row) => [row.id as number, row]));
+  const convById = stmt('SELECT * FROM conversations WHERE id = ?');
+  for (const cid of snippets.keys()) {
+    if (!byId.has(cid)) {
+      const row = convById.get(cid) as Record<string, unknown> | undefined;
+      if (row) byId.set(cid, row);
     }
-    return { conversation: conv, snippet };
-  });
+  }
+  return [...byId.values()]
+    .map(toConversation)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 50)
+    .map((conversation) => ({ conversation, snippet: snippets.get(conversation.id) ?? null }));
 });
 
 route.post('/api/conversations/:id/messages', ({ params, body }) => {

@@ -10,6 +10,7 @@ interface Draft {
   title: string;
   characterId: number | null;
   personaId: number | null;
+  endpointId: number | null;
   speakerName: string | null;
 }
 
@@ -18,6 +19,7 @@ function snapshot(conv: Conversation): Draft {
     title: conv.title,
     characterId: conv.characterId,
     personaId: conv.personaId,
+    endpointId: conv.endpointId,
     speakerName: conv.speakerName,
   };
 }
@@ -73,6 +75,15 @@ function Editor(props: { conv: Conversation }) {
       >
         <option value="">— none —</option>
         <For each={state.personas}>{(p) => <option value={p.id}>{p.name}</option>}</For>
+      </select>
+
+      <label>Endpoint (overrides the global active endpoint for this conversation)</label>
+      <select
+        value={draft.endpointId ?? ''}
+        onChange={(e) => setDraft('endpointId', numberOrNull(e.currentTarget.value))}
+      >
+        <option value="">— global default —</option>
+        <For each={state.endpoints}>{(ep) => <option value={ep.id}>{ep.name}</option>}</For>
       </select>
 
       <div class="form-actions">

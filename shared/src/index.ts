@@ -38,6 +38,8 @@ export interface Conversation {
   title: string;
   characterId: number | null;
   personaId: number | null;
+  /** Endpoint override for this conversation; null = the global active endpoint. */
+  endpointId: number | null;
   /** Current assistant speaker name (set via /char); null = character's name. */
   speakerName: string | null;
   activeLeafId: number | null;
@@ -152,11 +154,33 @@ export interface TreeSnapshot {
 export type InvalidateEntity =
   'conversations' | 'characters' | 'presets' | 'templates' | 'personas' | 'endpoints' | 'settings';
 
+/** Structural view of a message; body fields travel separately in tree patches. */
+export interface TreeNode {
+  id: number;
+  parentId: number | null;
+  activeChildId: number | null;
+  status: MessageStatus;
+  generationKind: GenerationKind;
+}
+
 /** Server -> client WebSocket events. Delta frames are deliberately terse. */
 export type ServerEvent =
   | { t: 'hello' }
   | { t: 'invalidate'; entity: InvalidateEntity }
+  /** Full snapshot; sent on subscribe (and used as the client's resync fallback). */
   | { t: 'tree'; conversationId: number; messages: Message[]; activeLeafId: number | null }
+  /**
+   * Incremental structural update: `nodes` lists every message in the tree
+   * (absent ids were deleted); `messages` carries full bodies only for
+   * messages created or edited since the last frame.
+   */
+  | {
+      t: 'treePatch';
+      conversationId: number;
+      activeLeafId: number | null;
+      nodes: TreeNode[];
+      messages: Message[];
+    }
   | { t: 'delta'; mid: number; d?: string; r?: string }
   | { t: 'final'; conversationId: number; message: Message };
 

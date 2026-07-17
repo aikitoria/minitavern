@@ -207,6 +207,40 @@ if (version < 8) {
   `);
 }
 
+// model/gen_params_json were superseded by endpoint-owned settings and never read.
+// endpoint_id stays: it becomes the per-conversation endpoint override.
+if (version < 9) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE conversations DROP COLUMN model;
+    ALTER TABLE conversations DROP COLUMN gen_params_json;
+    PRAGMA user_version = 9;
+    COMMIT;
+  `);
+}
+
+// Full-text search over message contents (external-content FTS5, kept in sync
+// by triggers so the message body is stored only once).
+if (version < 10) {
+  db.exec(`
+    BEGIN;
+    CREATE VIRTUAL TABLE messages_fts USING fts5(content, content='messages', content_rowid='id');
+    CREATE TRIGGER messages_fts_insert AFTER INSERT ON messages BEGIN
+      INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+    CREATE TRIGGER messages_fts_delete AFTER DELETE ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+    END;
+    CREATE TRIGGER messages_fts_update AFTER UPDATE OF content ON messages BEGIN
+      INSERT INTO messages_fts(messages_fts, rowid, content) VALUES ('delete', old.id, old.content);
+      INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    END;
+    INSERT INTO messages_fts(rowid, content) SELECT id, content FROM messages;
+    PRAGMA user_version = 10;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(
@@ -269,6 +303,7 @@ export function toConversation(r: Row): Conversation {
     title: r.title as string,
     characterId: r.character_id as number | null,
     personaId: r.persona_id as number | null,
+    endpointId: r.endpoint_id as number | null,
     speakerName: r.speaker_name as string | null,
     activeLeafId: r.active_leaf_id as number | null,
     createdAt: r.created_at as number,

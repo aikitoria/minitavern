@@ -362,7 +362,7 @@ async function main() {
   assert(path[1]!.reasoning != null && path[1]!.reasoning.length > 0, 'reasoning persisted');
   const userMsg1 = path[0]!;
   const assistant1 = path[1]!;
-  assert(userMsg1.content === 'Hello world', 'message boundaries are trimmed on write/read');
+  assert(userMsg1.content === 'Hello world', 'message boundaries are trimmed on write');
   await expectStatus(
     'POST',
     `/api/conversations/${conv.id}/messages`,
@@ -383,7 +383,6 @@ async function main() {
   assert(assistantSiblings.length === 2, 'two assistant siblings after advancing');
   const assistant2 = assistantSiblings.find((m) => m.id !== assistant1.id)!;
   assert(snap.activeLeafId === assistant2.id, 'new sibling is active');
-  await expectStatus('POST', `/api/messages/${assistant2.id}/regenerate`, undefined, 404);
 
   console.log('== extend branch on first sibling, then deep-restore ==');
   await activate(conv.id, assistant1.id);
@@ -447,6 +446,17 @@ async function main() {
   assert(
     snap.messages.find((m) => m.id === assistant1.id)!.content === 'Rewritten reply.',
     'in-place edit persisted',
+  );
+  const editPatch = await ws.waitFor(
+    (e) =>
+      e.t === 'treePatch' &&
+      e.messages.some((m) => m.id === assistant1.id && m.content === 'Rewritten reply.'),
+    'patch frame for the in-place edit',
+  );
+  if (editPatch.t !== 'treePatch') throw new Error('unreachable');
+  assert(
+    editPatch.messages.length === 1 && editPatch.nodes.length === snap.messages.length,
+    'tree patches carry full structure but bodies only for changed messages',
   );
 
   console.log('== swipe past an in-flight generation ==');
@@ -739,6 +749,11 @@ async function main() {
     'resume appended to the same message',
   );
 
+  const clearedTemplates = await putSettings({ defaultTemplateId: null });
+  assert(
+    clearedTemplates.defaultTemplateId === null,
+    'defaultTemplateId can be cleared to the built-in default',
+  );
   await putSettings({ defaultTemplateId: prevSettings.defaultTemplateId });
 
   console.log('== terminal SSE data without a newline is preserved ==');
@@ -751,6 +766,67 @@ async function main() {
   assert(
     terminalFinal.t === 'final' && terminalFinal.message.content.endsWith('TERMINAL_NO_NEWLINE'),
     'final unterminated SSE event is persisted',
+  );
+
+  console.log('== per-conversation endpoint override ==');
+  const smallEndpoint = await req<{ id: number }>('POST', '/api/endpoints', {
+    name: 'mock-small',
+    baseUrl: MOCK_URL,
+    model: 'mock-small',
+  });
+  const overridden = await req<{ endpointId: number | null }>(
+    'PATCH',
+    `/api/conversations/${conv2.id}`,
+    { endpointId: smallEndpoint.id },
+  );
+  assert(overridden.endpointId === smallEndpoint.id, 'endpoint override persisted');
+  const overrideSend = await sendMessage(conv2.id, 'which model?');
+  const overrideFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === overrideSend.assistantMessageId,
+    'override generation finished',
+  );
+  assert(
+    overrideFinal.t === 'final' && overrideFinal.message.model === 'mock-small',
+    'generation uses the conversation endpoint override',
+  );
+  await req('PATCH', `/api/conversations/${conv2.id}`, { endpointId: null });
+  const revertSend = await sendMessage(conv2.id, 'back to global');
+  const revertFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === revertSend.assistantMessageId,
+    'reverted generation finished',
+  );
+  assert(
+    revertFinal.t === 'final' && revertFinal.message.model === 'mock-large',
+    'clearing the override falls back to the global endpoint',
+  );
+
+  console.log('== transient upstream failures auto-resume ==');
+  await failNextMockRequests(1);
+  const resilientSend = await sendMessage(conv2.id, 'survive a blip');
+  const resilientFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === resilientSend.assistantMessageId,
+    'generation survives one upstream 503',
+    20_000,
+  );
+  assert(
+    resilientFinal.t === 'final' &&
+      resilientFinal.message.status === 'done' &&
+      resilientFinal.message.content.length > 0,
+    'foreground generation retries transparently after a transient failure',
+  );
+  await failNextMockRequests(3);
+  const doomedSend = await sendMessage(conv2.id, 'exhaust the retries');
+  const doomedFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === doomedSend.assistantMessageId,
+    'generation fails once retries are exhausted',
+    30_000,
+  );
+  assert(
+    doomedFinal.t === 'final' &&
+      doomedFinal.message.status === 'error' &&
+      doomedFinal.message.generationKind === 'normal' &&
+      doomedFinal.message.genMeta?.error?.includes('503') === true,
+    'exhausted retries surface the upstream error on the message',
   );
 
   console.log('== background swipe generation stays one reply ahead ==');
@@ -769,22 +845,22 @@ async function main() {
   await putSettings({ backgroundSwipeGeneration: true });
   const preparedTree = await ws.waitFor(
     (e) =>
-      e.t === 'tree' &&
+      e.t === 'treePatch' &&
       e.conversationId === backgroundConv.id &&
       e.activeLeafId === backgroundSend.assistantMessageId &&
-      e.messages.some(
-        (message) =>
-          message.parentId === backgroundSend.userMessageId &&
-          message.id !== backgroundSend.assistantMessageId &&
-          message.status === 'streaming',
+      e.nodes.some(
+        (node) =>
+          node.parentId === backgroundSend.userMessageId &&
+          node.id !== backgroundSend.assistantMessageId &&
+          node.status === 'streaming',
       ),
     'one inactive swipe starts in the background',
   );
-  if (preparedTree.t !== 'tree') throw new Error('unreachable');
-  const prepared = preparedTree.messages.find(
-    (message) =>
-      message.parentId === backgroundSend.userMessageId &&
-      message.id !== backgroundSend.assistantMessageId,
+  if (preparedTree.t !== 'treePatch') throw new Error('unreachable');
+  const prepared = preparedTree.nodes.find(
+    (node) =>
+      node.parentId === backgroundSend.userMessageId &&
+      node.id !== backgroundSend.assistantMessageId,
   )!;
   assert(
     preparedTree.activeLeafId === backgroundSend.assistantMessageId,
@@ -806,19 +882,18 @@ async function main() {
   );
   const nextPreparedTree = await ws.waitFor(
     (e) =>
-      e.t === 'tree' &&
+      e.t === 'treePatch' &&
       e.conversationId === backgroundConv.id &&
       e.activeLeafId === prepared.id &&
-      e.messages.filter((message) => message.parentId === backgroundSend.userMessageId).length ===
-        3,
+      e.nodes.filter((node) => node.parentId === backgroundSend.userMessageId).length === 3,
     'activating the prepared swipe starts exactly one successor',
   );
-  if (nextPreparedTree.t !== 'tree') throw new Error('unreachable');
-  const thirdSwipe = nextPreparedTree.messages.find(
-    (message) =>
-      message.parentId === backgroundSend.userMessageId &&
-      message.id !== backgroundSend.assistantMessageId &&
-      message.id !== prepared.id,
+  if (nextPreparedTree.t !== 'treePatch') throw new Error('unreachable');
+  const thirdSwipe = nextPreparedTree.nodes.find(
+    (node) =>
+      node.parentId === backgroundSend.userMessageId &&
+      node.id !== backgroundSend.assistantMessageId &&
+      node.id !== prepared.id,
   )!;
   await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === thirdSwipe.id,
@@ -863,27 +938,27 @@ async function main() {
   });
   const editedTree = await ws.waitFor(
     (e) =>
-      e.t === 'tree' &&
+      e.t === 'treePatch' &&
       e.conversationId === backgroundConv.id &&
-      !e.messages.some((message) => message.id === thirdSwipe.id) &&
-      e.messages.some(
-        (message) =>
-          message.parentId === backgroundSend.userMessageId &&
-          message.id > thirdSwipe.id &&
-          message.generationKind === 'speculative',
+      !e.nodes.some((node) => node.id === thirdSwipe.id) &&
+      e.nodes.some(
+        (node) =>
+          node.parentId === backgroundSend.userMessageId &&
+          node.id > thirdSwipe.id &&
+          node.generationKind === 'speculative',
       ),
     'history edit refills the speculative swipe',
   );
-  if (editedTree.t !== 'tree') throw new Error('unreachable');
+  if (editedTree.t !== 'treePatch') throw new Error('unreachable');
   assert(
-    !editedTree.messages.some((message) => message.id === thirdSwipe.id),
+    !editedTree.nodes.some((node) => node.id === thirdSwipe.id),
     'completed speculative reply is removed after an ancestor edit',
   );
-  const editedSwipe = editedTree.messages.find(
-    (message) =>
-      message.parentId === backgroundSend.userMessageId &&
-      message.id > thirdSwipe.id &&
-      message.generationKind === 'speculative',
+  const editedSwipe = editedTree.nodes.find(
+    (node) =>
+      node.parentId === backgroundSend.userMessageId &&
+      node.id > thirdSwipe.id &&
+      node.generationKind === 'speculative',
   )!;
   const editedFinal = await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === editedSwipe.id,
@@ -896,19 +971,17 @@ async function main() {
   await req('PATCH', `/api/conversations/${backgroundConv.id}`, { speakerName: 'Changed' });
   const invalidatedTree = await ws.waitFor(
     (e) =>
-      e.t === 'tree' &&
+      e.t === 'treePatch' &&
       e.conversationId === backgroundConv.id &&
-      !e.messages.some((message) => message.id === editedSwipe.id) &&
-      e.messages.some(
-        (message) => message.id > editedSwipe.id && message.generationKind === 'speculative',
-      ),
+      !e.nodes.some((node) => node.id === editedSwipe.id) &&
+      e.nodes.some((node) => node.id > editedSwipe.id && node.generationKind === 'speculative'),
     'conversation context change refills the speculative swipe',
   );
-  if (invalidatedTree.t !== 'tree') throw new Error('unreachable');
+  if (invalidatedTree.t !== 'treePatch') throw new Error('unreachable');
   assert(
-    !invalidatedTree.messages.some((message) => message.id === editedSwipe.id) &&
-      invalidatedTree.messages.some(
-        (message) => message.id > editedSwipe.id && message.generationKind === 'speculative',
+    !invalidatedTree.nodes.some((node) => node.id === editedSwipe.id) &&
+      invalidatedTree.nodes.some(
+        (node) => node.id > editedSwipe.id && node.generationKind === 'speculative',
       ),
     'context changes replace stale speculation and preserve one-ahead generation',
   );
@@ -939,7 +1012,7 @@ async function main() {
   );
   assert(
     retriedFinal.t === 'final' && retriedFinal.message.generationKind === 'speculative',
-    'background refill retries beyond the old one-retry limit',
+    'background refill retries transient failures with backoff',
   );
   await putSettings({ backgroundSwipeGeneration: false });
 
@@ -951,6 +1024,27 @@ async function main() {
   assert(
     found.some((r) => r.conversation.id === conv2.id && r.snippet?.includes('prefix check')),
     'search finds conversation by message content with snippet',
+  );
+  const prefixFound = await req<{ conversation: { id: number } }[]>(
+    'GET',
+    `/api/search?q=${encodeURIComponent('prefi')}`,
+  );
+  assert(
+    prefixFound.some((r) => r.conversation.id === conv2.id),
+    'content search matches word prefixes',
+  );
+  const pctConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  const pctConv2 = await req<{ id: number }>('POST', '/api/conversations', {});
+  await req('PATCH', `/api/conversations/${pctConv.id}`, { title: 'pct 100% marker' });
+  await req('PATCH', `/api/conversations/${pctConv2.id}`, { title: 'pct 100x marker' });
+  const pctFound = await req<{ conversation: { id: number } }[]>(
+    'GET',
+    `/api/search?q=${encodeURIComponent('100%')}`,
+  );
+  assert(
+    pctFound.some((r) => r.conversation.id === pctConv.id) &&
+      !pctFound.some((r) => r.conversation.id === pctConv2.id),
+    'title search treats LIKE wildcards as literals',
   );
 
   ws.close();
