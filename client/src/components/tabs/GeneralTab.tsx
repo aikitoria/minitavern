@@ -119,6 +119,7 @@ export default function GeneralTab() {
         value={draft.defaultTemplateId ?? ''}
         onChange={(e) => change('defaultTemplateId', numberOrNull(e.currentTarget.value))}
       >
+        <option value="">— built-in default —</option>
         <For each={state.templates}>{(t) => <option value={t.id}>{t.name}</option>}</For>
       </select>
 

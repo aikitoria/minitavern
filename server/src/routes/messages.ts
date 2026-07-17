@@ -1,4 +1,4 @@
-import { db } from '../db.ts';
+import { stmt } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import { activateMessage, appendMessage, deleteMessage, getMessage } from '../tree.ts';
 import {
@@ -21,7 +21,7 @@ import {
 import { objectBody, positiveId } from '../validation.ts';
 import { optionalNullableId } from '../validation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
-import { discardSpeculativeSwipes, markSwipeRead } from '../speculation.ts';
+import { discardSpeculativeSwipes, markSwipeRead, nextUnreadSibling } from '../speculation.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -51,7 +51,7 @@ route.post('/api/messages/:id/continue', ({ params, body }) => {
   if (conv.activeLeafId !== msg.id)
     throw new HttpError(400, 'only the last message on the branch can be resumed');
   requireIdle(msg.conversationId);
-  db.prepare("UPDATE messages SET status = 'streaming' WHERE id = ?").run(msg.id);
+  stmt("UPDATE messages SET status = 'streaming' WHERE id = ?").run(msg.id);
   broadcastTree(msg.conversationId);
   startGeneration(
     conv,
@@ -69,32 +69,20 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
   if (msg.role !== 'assistant') throw new HttpError(400, 'only assistant messages can advance');
   requireExpectedLeaf(msg, body);
 
-  const removed = db
-    .prepare(
-      `DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
-       AND generation_kind = 'speculative' AND status IN ('error', 'stopped')`,
-    )
-    .run(msg.conversationId, msg.parentId, msg.id);
-  if (removed.changes) broadcastTree(msg.conversationId);
+  const nextId = nextUnreadSibling(msg);
 
-  const nextRow = db
-    .prepare(
-      `SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
-       ORDER BY id LIMIT 1`,
-    )
-    .get(msg.conversationId, msg.parentId, msg.id) as { id: number } | undefined;
-
-  if (nextRow) {
+  if (nextId != null) {
     if (hasActiveGeneration(msg.conversationId)) {
-      if (isBackgroundGeneration(nextRow.id)) promoteBackgroundGeneration(nextRow.id);
+      if (isBackgroundGeneration(nextId)) promoteBackgroundGeneration(nextId);
       else if (!stopGeneration(msg.id)) {
         throw new HttpError(409, 'a different generation is already running');
       }
     }
-    markSwipeRead(nextRow.id);
-    const leaf = activateMessage(nextRow.id);
+    markSwipeRead(nextId);
+    const leaf = activateMessage(nextId);
     broadcastTree(msg.conversationId);
     prepareNextSwipe(leaf);
+    invalidate('conversations');
     return { activeLeafId: leaf, assistantMessageId: null };
   }
 
@@ -102,6 +90,7 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
     throw new HttpError(409, 'a different generation is already running');
   }
   const mid = spawnAssistantReply(getConversation(msg.conversationId), msg.parentId, msg.name);
+  invalidate('conversations');
   return { activeLeafId: mid, assistantMessageId: mid };
 });
 
@@ -118,7 +107,7 @@ route.patch('/api/messages/:id', ({ params, body }) => {
     throw new HttpError(409, 'a generation is already running in this conversation');
   }
   discardSpeculativeSwipes(msg.conversationId);
-  db.prepare('UPDATE messages SET content = ? WHERE id = ?').run(content, msg.id);
+  stmt('UPDATE messages SET content = ? WHERE id = ?').run(content, msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
   return getMessage(msg.id);
@@ -163,6 +152,7 @@ route.post('/api/messages/:id/activate', ({ params, body }) => {
   const leaf = activateMessage(msg.id);
   broadcastTree(msg.conversationId);
   prepareNextSwipe(leaf);
+  invalidate('conversations');
   return { activeLeafId: leaf };
 });
 

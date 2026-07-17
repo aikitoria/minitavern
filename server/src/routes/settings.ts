@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS } from '@minitavern/shared';
 import { route, HttpError } from '../router.ts';
 import { getSettings, putSettings } from '../settingsStore.ts';
 import { invalidate } from '../events.ts';
-import { db } from '../db.ts';
+import { stmt } from '../db.ts';
 import { objectBody, optionalBoolean, optionalNullableId, optionalNumber } from '../validation.ts';
 import { discardSpeculativeSwipes } from '../speculation.ts';
 import { subscribedConversationIds } from '../events.ts';
@@ -33,7 +33,7 @@ route.put('/api/settings', ({ body }) => {
   };
   for (const key of Object.keys(ids) as (keyof typeof ids)[]) {
     const id = ids[key];
-    if (id != null && !db.prepare(`SELECT id FROM ${tables[key]} WHERE id = ?`).get(id)) {
+    if (id != null && !stmt(`SELECT id FROM ${tables[key]} WHERE id = ?`).get(id)) {
       throw new HttpError(400, `${key} does not exist`);
     }
   }

@@ -1,4 +1,5 @@
-import { db } from './db.ts';
+import type { Message } from '@minitavern/shared';
+import { stmt } from './db.ts';
 import { stopAllBackgroundGenerations, stopBackgroundGeneration } from './generation.ts';
 import { broadcastTree } from './sync.ts';
 
@@ -22,6 +23,11 @@ export function cancelSpeculativeRetries(conversationId?: number): void {
   retryTimers.clear();
 }
 
+/** A speculative swipe is a convenience; a persistently failing endpoint must
+ * not be hammered forever. The budget resets on any explicit user action
+ * (send, activate, advance, subscribe) since those restart at attempt 0. */
+const MAX_RETRY_ATTEMPTS = 8;
+
 /** Keeps retrying failed background requests without creating concurrent refills. */
 export function scheduleSpeculativeRetry(
   conversationId: number,
@@ -29,6 +35,12 @@ export function scheduleSpeculativeRetry(
   retry: () => void,
 ): void {
   cancelSpeculativeRetries(conversationId);
+  if (attempt > MAX_RETRY_ATTEMPTS) {
+    console.warn(
+      `[speculation] giving up on background swipe for conversation ${conversationId} after ${MAX_RETRY_ATTEMPTS} attempts`,
+    );
+    return;
+  }
   const delay = Math.min(500 * 2 ** Math.min(Math.max(attempt - 1, 0), 6), 30_000);
   retryTimers.set(
     conversationId,
@@ -45,19 +57,17 @@ export function discardSpeculativeSwipes(conversationId?: number): number[] {
   if (conversationId == null) stopAllBackgroundGenerations();
   else stopBackgroundGeneration(conversationId);
 
-  const rows = db
-    .prepare(
-      `SELECT DISTINCT conversation_id FROM messages
+  const rows = stmt(
+    `SELECT DISTINCT conversation_id FROM messages
        WHERE generation_kind = 'speculative'
        ${conversationId == null ? '' : 'AND conversation_id = ?'}`,
-    )
-    .all(...(conversationId == null ? [] : [conversationId])) as { conversation_id: number }[];
+  ).all(...(conversationId == null ? [] : [conversationId])) as { conversation_id: number }[];
   if (conversationId == null) {
-    db.prepare("DELETE FROM messages WHERE generation_kind = 'speculative'").run();
+    stmt("DELETE FROM messages WHERE generation_kind = 'speculative'").run();
   } else {
-    db.prepare(
-      "DELETE FROM messages WHERE generation_kind = 'speculative' AND conversation_id = ?",
-    ).run(conversationId);
+    stmt("DELETE FROM messages WHERE generation_kind = 'speculative' AND conversation_id = ?").run(
+      conversationId,
+    );
   }
   for (const row of rows) broadcastTree(row.conversation_id);
   queueMicrotask(() => refillHandler?.(conversationId));
@@ -65,5 +75,22 @@ export function discardSpeculativeSwipes(conversationId?: number): number[] {
 }
 
 export function markSwipeRead(messageId: number): void {
-  db.prepare("UPDATE messages SET generation_kind = 'normal' WHERE id = ?").run(messageId);
+  stmt("UPDATE messages SET generation_kind = 'normal' WHERE id = ?").run(messageId);
+}
+
+/**
+ * Prunes failed (error/stopped) speculative siblings after `message` and
+ * returns the id of the next sibling to advance to, if one remains.
+ */
+export function nextUnreadSibling(message: Message): number | null {
+  const removed = stmt(
+    `DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
+     AND generation_kind = 'speculative' AND status IN ('error', 'stopped')`,
+  ).run(message.conversationId, message.parentId, message.id);
+  if (removed.changes) broadcastTree(message.conversationId);
+  const next = stmt(
+    `SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
+     ORDER BY id LIMIT 1`,
+  ).get(message.conversationId, message.parentId, message.id) as { id: number } | undefined;
+  return next?.id ?? null;
 }

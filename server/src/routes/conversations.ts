@@ -1,5 +1,5 @@
 import type { Conversation } from '@minitavern/shared';
-import { db, toConversation, transaction } from '../db.ts';
+import { stmt, toConversation, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import {
   activateMessage,
@@ -24,6 +24,7 @@ import { invalidate } from '../events.ts';
 import {
   cancelSpeculativeRetries,
   discardSpeculativeSwipes,
+  nextUnreadSibling,
   scheduleSpeculativeRetry,
 } from '../speculation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
@@ -37,14 +38,14 @@ import {
 } from '../validation.ts';
 
 export function getConversation(id: number): Conversation {
-  const row = db.prepare('SELECT * FROM conversations WHERE id = ?').get(id) as
+  const row = stmt('SELECT * FROM conversations WHERE id = ?').get(id) as
     Record<string, unknown> | undefined;
   if (!row) throw new HttpError(404, `conversation ${id} not found`);
   return toConversation(row);
 }
 
 export function touchConversation(id: number): void {
-  db.prepare('UPDATE conversations SET updated_at = ? WHERE id = ?').run(Date.now(), id);
+  stmt('UPDATE conversations SET updated_at = ? WHERE id = ?').run(Date.now(), id);
 }
 
 /** Removes an in-flight speculative sibling before a foreground action takes over. */
@@ -63,22 +64,7 @@ export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
   if (conversation.activeLeafId !== message.id) return;
   if (!getSettings().backgroundSwipeGeneration || hasActiveGeneration(conversation.id)) return;
 
-  const removed = db
-    .prepare(
-      `DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
-       AND generation_kind = 'speculative' AND status IN ('error', 'stopped')`,
-    )
-    .run(conversation.id, message.parentId, message.id);
-  if (removed.changes) broadcastTree(conversation.id);
-
-  const next = db
-    .prepare(
-      `SELECT id FROM messages
-       WHERE conversation_id = ? AND parent_id IS ? AND id > ?
-       ORDER BY id LIMIT 1`,
-    )
-    .get(conversation.id, message.parentId, message.id);
-  if (next) return;
+  if (nextUnreadSibling(message) != null) return;
 
   cancelSpeculativeRetries(conversation.id);
 
@@ -110,9 +96,8 @@ export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
 }
 
 export function prepareActiveSwipe(conversationId: number): void {
-  const row = db
-    .prepare('SELECT active_leaf_id FROM conversations WHERE id = ?')
-    .get(conversationId) as { active_leaf_id: number | null } | undefined;
+  const row = stmt('SELECT active_leaf_id FROM conversations WHERE id = ?').get(conversationId) as
+    { active_leaf_id: number | null } | undefined;
   const leaf = row?.active_leaf_id ?? null;
   if (leaf != null) prepareNextSwipe(leaf);
 }
@@ -144,7 +129,7 @@ export function spawnAssistantReply(
 }
 
 function getAlternateGreetings(characterId: number): string[] {
-  const row = db.prepare('SELECT card_json FROM characters WHERE id = ?').get(characterId) as
+  const row = stmt('SELECT card_json FROM characters WHERE id = ?').get(characterId) as
     { card_json: string | null } | undefined;
   if (!row?.card_json) return [];
   try {
@@ -157,7 +142,7 @@ function getAlternateGreetings(characterId: number): string[] {
 }
 
 route.get('/api/conversations', () => {
-  const rows = db.prepare('SELECT * FROM conversations ORDER BY updated_at DESC').all() as Record<
+  const rows = stmt('SELECT * FROM conversations ORDER BY updated_at DESC').all() as Record<
     string,
     unknown
   >[];
@@ -178,18 +163,16 @@ route.post('/api/conversations', ({ body }) => {
   }
   const now = Date.now();
   const id = transaction(() => {
-    const result = db
-      .prepare(
-        `INSERT INTO conversations (title, character_id, persona_id, created_at, updated_at)
+    const result = stmt(
+      `INSERT INTO conversations (title, character_id, persona_id, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?)`,
-      )
-      .run(
-        character ? character.name : 'New chat',
-        character?.id ?? null,
-        persona?.id ?? null,
-        now,
-        now,
-      );
+    ).run(
+      character ? character.name : 'New chat',
+      character?.id ?? null,
+      persona?.id ?? null,
+      now,
+      now,
+    );
     const convId = Number(result.lastInsertRowid);
     if (character?.firstMessage.trim()) {
       const sub = (text: string) => substituteMacros(text, character.name, persona?.name ?? 'User');
@@ -229,7 +212,7 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
   if (hasForegroundGeneration(id))
     throw new HttpError(409, 'a generation is already running in this conversation');
   if (contextChanged) discardSpeculativeSwipes(id);
-  db.prepare(
+  stmt(
     `UPDATE conversations SET title = ?, character_id = ?, persona_id = ?, speaker_name = ?, updated_at = ?
      WHERE id = ?`,
   ).run(
@@ -248,7 +231,7 @@ route.del('/api/conversations/:id', ({ params }) => {
   const id = positiveId(params.id);
   getConversation(id);
   stopConversationGenerations(id);
-  db.prepare('DELETE FROM conversations WHERE id = ?').run(id);
+  stmt('DELETE FROM conversations WHERE id = ?').run(id);
   invalidate('conversations');
 });
 
@@ -293,17 +276,16 @@ route.get('/api/conversations/:id/export', ({ params, res }) => {
 route.get('/api/search', ({ req }) => {
   const q = new URL(req.url ?? '/', 'http://x').searchParams.get('q')?.trim() ?? '';
   if (!q) return [];
-  const like = `%${q}%`;
-  const convRows = db
-    .prepare(
-      `SELECT DISTINCT c.* FROM conversations c
+  // The query is a literal, not a pattern: escape LIKE wildcards.
+  const like = `%${q.replace(/[\\%_]/g, '\\$&')}%`;
+  const convRows = stmt(
+    `SELECT DISTINCT c.* FROM conversations c
        LEFT JOIN messages m ON m.conversation_id = c.id
-       WHERE c.title LIKE ?1 OR m.content LIKE ?1
+       WHERE c.title LIKE ?1 ESCAPE '\\' OR m.content LIKE ?1 ESCAPE '\\'
        ORDER BY c.updated_at DESC LIMIT 50`,
-    )
-    .all(like) as Record<string, unknown>[];
-  const snippetStmt = db.prepare(
-    'SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ORDER BY id DESC LIMIT 1',
+  ).all(like) as Record<string, unknown>[];
+  const snippetStmt = stmt(
+    "SELECT content FROM messages WHERE conversation_id = ? AND content LIKE ? ESCAPE '\\' ORDER BY id DESC LIMIT 1",
   );
   return convRows.map((row) => {
     const conv = toConversation(row);
@@ -337,7 +319,7 @@ route.post('/api/conversations/:id/messages', ({ params, body }) => {
   const userMsg = appendMessage(id, 'user', content, conv.activeLeafId);
   if (conv.title === 'New chat') {
     const title = content.length > 60 ? `${content.slice(0, 57)}…` : content;
-    db.prepare('UPDATE conversations SET title = ? WHERE id = ?').run(title, id);
+    stmt('UPDATE conversations SET title = ? WHERE id = ?').run(title, id);
   }
   const mid = spawnAssistantReply(conv, userMsg.id);
   invalidate('conversations');
@@ -361,9 +343,10 @@ route.post('/api/conversations/:id/delete-tail', ({ params, body }) => {
   cancelSpeculativeRetries(id);
   stopConversationGenerations(id);
   const deleted = transaction(() => {
-    const result = db
-      .prepare('DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ?')
-      .run(id, cutoff.parentId);
+    const result = stmt('DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ?').run(
+      id,
+      cutoff.parentId,
+    );
     setActiveLeaf(id, cutoff.parentId);
     return result.changes;
   });

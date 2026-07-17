@@ -1,18 +1,10 @@
 import type { Endpoint, GenParams } from '@minitavern/shared';
-import { db, toEndpoint } from '../db.ts';
+import { stmt, toEndpoint } from '../db.ts';
 import { invalidate } from '../events.ts';
 import { route, HttpError } from '../router.ts';
-import { clearSettingReference } from '../settingsStore.ts';
-import {
-  objectBody,
-  optionalNullableString,
-  optionalNumber,
-  optionalString,
-  positiveId,
-  requiredString,
-} from '../validation.ts';
-import { optionalName, rowById, rows } from './entityUtils.ts';
-import { discardSpeculativeSwipes } from '../speculation.ts';
+import { objectBody, optionalNumber, optionalString, positiveId } from '../validation.ts';
+import { defineEntityRoutes, nameField, nullableTextField } from './entityRoutes.ts';
+import { rowById } from './entityUtils.ts';
 
 const PREFILL_MODES = new Set<Endpoint['prefillMode']>(['none', 'vllm', 'deepseek']);
 
@@ -74,55 +66,25 @@ function prefillMode(value: unknown, current: Endpoint['prefillMode']): Endpoint
   return value as Endpoint['prefillMode'];
 }
 
-route.get('/api/endpoints', () => rows('endpoints').map(toEndpoint).map(publicEndpoint));
-
-route.post('/api/endpoints', ({ body }) => {
-  const b = objectBody(body);
-  const result = db
-    .prepare(
-      'INSERT INTO endpoints (name, base_url, api_key, model, gen_params_json, prefill_mode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    )
-    .run(
-      requiredString(b, 'name'),
-      baseUrl(requiredString(b, 'baseUrl')),
-      optionalString(b, 'apiKey') ?? '',
-      optionalNullableString(b, 'model') ?? null,
-      JSON.stringify(genParams(b.genParams)),
-      prefillMode(b.prefillMode, 'none'),
-      Date.now(),
-    );
-  invalidate('endpoints');
-  return publicEndpoint(toEndpoint(rowById('endpoints', Number(result.lastInsertRowid))));
-});
-
-route.patch('/api/endpoints/:id', ({ params, body }) => {
-  const id = positiveId(params.id);
-  const cur = toEndpoint(rowById('endpoints', id));
-  const b = objectBody(body);
-  const model = optionalNullableString(b, 'model');
-  db.prepare(
-    'UPDATE endpoints SET name = ?, base_url = ?, api_key = ?, model = ?, gen_params_json = ?, prefill_mode = ? WHERE id = ?',
-  ).run(
-    optionalName(optionalString(b, 'name'), cur.name),
-    baseUrl(optionalString(b, 'baseUrl'), cur.baseUrl),
-    optionalString(b, 'apiKey') ?? cur.apiKey,
-    model === undefined ? cur.model : model,
-    JSON.stringify(genParams(b.genParams, cur.genParams)),
-    prefillMode(b.prefillMode, cur.prefillMode),
-    id,
-  );
-  invalidate('endpoints');
-  discardSpeculativeSwipes();
-  return publicEndpoint(toEndpoint(rowById('endpoints', id)));
-});
-
-route.del('/api/endpoints/:id', ({ params }) => {
-  const id = positiveId(params.id);
-  rowById('endpoints', id);
-  db.prepare('DELETE FROM endpoints WHERE id = ?').run(id);
-  discardSpeculativeSwipes();
-  invalidate('endpoints');
-  if (clearSettingReference('activeEndpointId', id)) invalidate('settings');
+defineEntityRoutes<Endpoint>({
+  table: 'endpoints',
+  toDto: toEndpoint,
+  toPublic: publicEndpoint,
+  fields: [
+    nameField((cur) => cur.name),
+    { column: 'base_url', value: (b, cur) => baseUrl(optionalString(b, 'baseUrl'), cur?.baseUrl) },
+    { column: 'api_key', value: (b, cur) => optionalString(b, 'apiKey') ?? cur?.apiKey ?? '' },
+    nullableTextField('model', 'model', (cur) => cur.model),
+    {
+      column: 'gen_params_json',
+      value: (b, cur) => JSON.stringify(genParams(b.genParams, cur?.genParams)),
+    },
+    {
+      column: 'prefill_mode',
+      value: (b, cur) => prefillMode(b.prefillMode, cur?.prefillMode ?? 'none'),
+    },
+  ],
+  settingsRef: 'activeEndpointId',
 });
 
 route.get('/api/endpoints/:id/models', async ({ params }) => {
@@ -146,7 +108,7 @@ route.get('/api/endpoints/:id/models', async ({ params }) => {
     .map((model) => (model && typeof model === 'object' ? (model as { id?: unknown }).id : null))
     .filter((id): id is string => typeof id === 'string')
     .sort();
-  db.prepare('UPDATE endpoints SET models_json = ? WHERE id = ?').run(
+  stmt('UPDATE endpoints SET models_json = ? WHERE id = ?').run(
     JSON.stringify(models),
     endpoint.id,
   );

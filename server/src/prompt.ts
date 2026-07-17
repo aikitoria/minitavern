@@ -1,6 +1,6 @@
-import type { Character, Conversation, Message, Persona, Role } from '@minitavern/shared';
+import type { Character, Conversation, Message, Persona, Role, Template } from '@minitavern/shared';
 import { DEFAULT_PROMPT_TEMPLATE } from '@minitavern/shared';
-import { db, toCharacter, toPersona, toPreset } from './db.ts';
+import { stmt, toCharacter, toPersona, toPreset, toTemplate } from './db.ts';
 import { getSettings } from './settingsStore.ts';
 
 export interface ChatMessage {
@@ -10,33 +10,30 @@ export interface ChatMessage {
 
 export function getCharacter(id: number | null): Character | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT * FROM characters WHERE id = ?').get(id) as
+  const row = stmt('SELECT * FROM characters WHERE id = ?').get(id) as
     Record<string, unknown> | undefined;
   return row ? toCharacter(row) : null;
 }
 
 export function getPersona(id: number | null): Persona | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT * FROM personas WHERE id = ?').get(id) as
+  const row = stmt('SELECT * FROM personas WHERE id = ?').get(id) as
     Record<string, unknown> | undefined;
   return row ? toPersona(row) : null;
 }
 
 function getPresetContent(id: number | null): string | null {
   if (id == null) return null;
-  const row = db.prepare('SELECT * FROM presets WHERE id = ?').get(id) as
+  const row = stmt('SELECT * FROM presets WHERE id = ?').get(id) as
     Record<string, unknown> | undefined;
   return row ? toPreset(row).content : null;
 }
 
-function getTemplate(
-  id: number | null,
-): { content: string; user_prologue: string; prefix_names: number } | null {
+function getTemplate(id: number | null): Template | null {
   if (id == null) return null;
-  const row = db
-    .prepare('SELECT content, user_prologue, prefix_names FROM templates WHERE id = ?')
-    .get(id) as { content: string; user_prologue: string; prefix_names: number } | undefined;
-  return row ?? null;
+  const row = stmt('SELECT * FROM templates WHERE id = ?').get(id) as
+    Record<string, unknown> | undefined;
+  return row ? toTemplate(row) : null;
 }
 
 export function substituteMacros(text: string, charName: string, userName: string): string {
@@ -105,11 +102,9 @@ export function buildChatMessages(
   };
   const systemContent = renderTemplate(template?.content.trim() || DEFAULT_PROMPT_TEMPLATE, vars);
   // Optional fake first user message (e.g. introducing the character); empty = not emitted.
-  const prologue = template?.user_prologue.trim()
-    ? renderTemplate(template.user_prologue, vars)
-    : '';
+  const prologue = template?.userPrologue.trim() ? renderTemplate(template.userPrologue, vars) : '';
 
-  const prefixNames = template != null && template.prefix_names !== 0;
+  const prefixNames = template?.prefixNames ?? false;
   const speakerFor = (msg: Message) =>
     msg.role === 'user' ? userName : msg.name?.trim() || charName;
 

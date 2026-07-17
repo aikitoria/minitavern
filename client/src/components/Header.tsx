@@ -7,8 +7,10 @@ import {
   selectedPersona,
   setState,
   state,
+  toast,
   toggleSidebar,
 } from '../state/store.ts';
+import { errorMessage } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
 import TraceIcon from './TraceIcon.tsx';
@@ -33,10 +35,11 @@ export default function Header() {
   };
 
   const commitRename = () => {
+    if (!editing()) return; // Enter commits and the input's blur would commit again
     const conv = selectedConversation();
     const title = titleInput?.value.trim();
     if (conv && title && title !== conv.title) {
-      void api.patchConversation(conv.id, { title }).catch(console.error);
+      void api.patchConversation(conv.id, { title }).catch((err) => toast(errorMessage(err)));
     }
     setEditing(false);
   };

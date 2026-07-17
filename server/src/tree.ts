@@ -1,5 +1,5 @@
 import type { GenerationKind, Message, MessageStatus, Role } from '@minitavern/shared';
-import { db, toMessage, transaction } from './db.ts';
+import { stmt, toMessage, transaction } from './db.ts';
 
 interface MsgRow {
   id: number;
@@ -9,28 +9,27 @@ interface MsgRow {
 }
 
 function getRow(id: number): MsgRow | undefined {
-  return db
-    .prepare('SELECT id, conversation_id, parent_id, active_child_id FROM messages WHERE id = ?')
-    .get(id) as MsgRow | undefined;
+  return stmt(
+    'SELECT id, conversation_id, parent_id, active_child_id FROM messages WHERE id = ?',
+  ).get(id) as MsgRow | undefined;
 }
 
 export function getMessage(id: number): Message | undefined {
-  const row = db.prepare('SELECT * FROM messages WHERE id = ?').get(id) as
+  const row = stmt('SELECT * FROM messages WHERE id = ?').get(id) as
     Record<string, unknown> | undefined;
   return row ? toMessage(row) : undefined;
 }
 
 export function getTreeMessages(conversationId: number): Message[] {
-  const rows = db
-    .prepare('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id')
-    .all(conversationId) as Record<string, unknown>[];
+  const rows = stmt('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id').all(
+    conversationId,
+  ) as Record<string, unknown>[];
   return rows.map(toMessage);
 }
 
 export function getActiveLeafId(conversationId: number): number | null {
-  const row = db
-    .prepare('SELECT active_leaf_id FROM conversations WHERE id = ?')
-    .get(conversationId) as { active_leaf_id: number | null } | undefined;
+  const row = stmt('SELECT active_leaf_id FROM conversations WHERE id = ?').get(conversationId) as
+    { active_leaf_id: number | null } | undefined;
   return row?.active_leaf_id ?? null;
 }
 
@@ -58,12 +57,12 @@ export function getPathToMessage(messageId: number | null): Message[] {
  * the deep chain that was active beneath any node.
  */
 export function setActiveLeaf(conversationId: number, leafId: number | null): void {
-  db.prepare('UPDATE conversations SET active_leaf_id = ?, updated_at = ? WHERE id = ?').run(
+  stmt('UPDATE conversations SET active_leaf_id = ?, updated_at = ? WHERE id = ?').run(
     leafId,
     Date.now(),
     conversationId,
   );
-  const setChild = db.prepare('UPDATE messages SET active_child_id = ? WHERE id = ?');
+  const setChild = stmt('UPDATE messages SET active_child_id = ? WHERE id = ?');
   let cur = leafId;
   while (cur != null) {
     const row = getRow(cur);
@@ -108,23 +107,21 @@ export function appendMessage(
   generationKind: GenerationKind = 'normal',
 ): Message {
   return transaction(() => {
-    const result = db
-      .prepare(
-        `INSERT INTO messages
+    const result = stmt(
+      `INSERT INTO messages
          (conversation_id, parent_id, role, content, status, model, name, generation_kind, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        conversationId,
-        parentId,
-        role,
-        content ? content.trim() : '',
-        status,
-        model,
-        name,
-        generationKind,
-        Date.now(),
-      );
+    ).run(
+      conversationId,
+      parentId,
+      role,
+      content ? content.trim() : '',
+      status,
+      model,
+      name,
+      generationKind,
+      Date.now(),
+    );
     const id = Number(result.lastInsertRowid);
     if (activate) setActiveLeaf(conversationId, id);
     return getMessage(id)!;
@@ -132,11 +129,9 @@ export function appendMessage(
 }
 
 function newestChildId(conversationId: number, parentId: number | null): number | null {
-  const row = db
-    .prepare(
-      'SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? ORDER BY id DESC LIMIT 1',
-    )
-    .get(conversationId, parentId) as { id: number } | undefined;
+  const row = stmt(
+    'SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? ORDER BY id DESC LIMIT 1',
+  ).get(conversationId, parentId) as { id: number } | undefined;
   return row?.id ?? null;
 }
 
@@ -147,7 +142,7 @@ export function deleteMessage(messageId: number): void {
   const { conversation_id: conversationId, parent_id: parentId } = row;
   const onActivePath = getActivePath(conversationId).some((m) => m.id === messageId);
   transaction(() => {
-    db.prepare('DELETE FROM messages WHERE id = ?').run(messageId);
+    stmt('DELETE FROM messages WHERE id = ?').run(messageId);
     if (!onActivePath) return;
     const sibling = newestChildId(conversationId, parentId);
     const newLeaf = sibling != null ? descendToLeaf(sibling) : parentId;

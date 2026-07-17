@@ -1,14 +1,14 @@
-import { db } from '../db.ts';
+import { stmt } from '../db.ts';
 import { HttpError } from '../router.ts';
 
 export type EntityTable = 'presets' | 'templates' | 'personas' | 'characters' | 'endpoints';
 
 export function rows(table: EntityTable): Record<string, unknown>[] {
-  return db.prepare(`SELECT * FROM ${table} ORDER BY id`).all() as Record<string, unknown>[];
+  return stmt(`SELECT * FROM ${table} ORDER BY id`).all() as Record<string, unknown>[];
 }
 
 export function rowById(table: EntityTable, id: number): Record<string, unknown> {
-  const row = db.prepare(`SELECT * FROM ${table} WHERE id = ?`).get(id) as
+  const row = stmt(`SELECT * FROM ${table} WHERE id = ?`).get(id) as
     Record<string, unknown> | undefined;
   if (!row) throw new HttpError(404, `${table.slice(0, -1)} ${id} not found`);
   return row;
@@ -19,7 +19,7 @@ export function requireReference(
   id: number | null | undefined,
   key: string,
 ): void {
-  if (id != null && !db.prepare(`SELECT id FROM ${table} WHERE id = ?`).get(id)) {
+  if (id != null && !stmt(`SELECT id FROM ${table} WHERE id = ?`).get(id)) {
     throw new HttpError(400, `${key} does not exist`);
   }
 }

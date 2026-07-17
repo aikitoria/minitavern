@@ -1,84 +1,36 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AVATAR_DIR, db, toCharacter } from '../db.ts';
+import type { Character } from '@minitavern/shared';
+import { AVATAR_DIR, stmt, toCharacter } from '../db.ts';
 import { invalidate } from '../events.ts';
 import { buildCharacterCard, makePlaceholderPng, parseCharacterCard } from '../pngCard.ts';
 import { route, HttpError } from '../router.ts';
-import {
-  objectBody,
-  optionalNullableId,
-  optionalNullableString,
-  optionalString,
-  positiveId,
-  requiredString,
-} from '../validation.ts';
 import type { Ctx } from '../router.ts';
+import { positiveId } from '../validation.ts';
 import { deleteAvatarFiles, saveAvatar } from './avatarStore.ts';
-import { optionalName, requireReference, rowById, rows } from './entityUtils.ts';
-import { discardSpeculativeSwipes } from '../speculation.ts';
+import {
+  defineEntityRoutes,
+  nameField,
+  nullableTextField,
+  refIdField,
+  textField,
+} from './entityRoutes.ts';
+import { rowById } from './entityUtils.ts';
 
-route.get('/api/characters', () => rows('characters').map(toCharacter));
-
-route.post('/api/characters', ({ body }) => {
-  const b = objectBody(body);
-  const presetId = optionalNullableId(b, 'presetId') ?? null;
-  const templateId = optionalNullableId(b, 'templateId') ?? null;
-  requireReference('presets', presetId, 'presetId');
-  requireReference('templates', templateId, 'templateId');
-  const result = db
-    .prepare(
-      `INSERT INTO characters (name, personality, scenario, first_message, preset_id, custom_prompt, template_id, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    )
-    .run(
-      requiredString(b, 'name'),
-      optionalString(b, 'personality') ?? '',
-      optionalString(b, 'scenario') ?? '',
-      optionalString(b, 'firstMessage') ?? '',
-      presetId,
-      optionalNullableString(b, 'customPrompt') ?? null,
-      templateId,
-      Date.now(),
-    );
-  invalidate('characters');
-  return toCharacter(rowById('characters', Number(result.lastInsertRowid)));
-});
-
-route.patch('/api/characters/:id', ({ params, body }) => {
-  const id = positiveId(params.id);
-  const cur = toCharacter(rowById('characters', id));
-  const b = objectBody(body);
-  const presetId = optionalNullableId(b, 'presetId');
-  const templateId = optionalNullableId(b, 'templateId');
-  const customPrompt = optionalNullableString(b, 'customPrompt');
-  requireReference('presets', presetId, 'presetId');
-  requireReference('templates', templateId, 'templateId');
-  db.prepare(
-    `UPDATE characters SET name = ?, personality = ?, scenario = ?, first_message = ?,
-     preset_id = ?, custom_prompt = ?, template_id = ? WHERE id = ?`,
-  ).run(
-    optionalName(optionalString(b, 'name'), cur.name),
-    optionalString(b, 'personality') ?? cur.personality,
-    optionalString(b, 'scenario') ?? cur.scenario,
-    optionalString(b, 'firstMessage') ?? cur.firstMessage,
-    presetId === undefined ? cur.presetId : presetId,
-    customPrompt === undefined ? cur.customPrompt : customPrompt,
-    templateId === undefined ? cur.templateId : templateId,
-    id,
-  );
-  invalidate('characters');
-  discardSpeculativeSwipes();
-  return toCharacter(rowById('characters', id));
-});
-
-route.del('/api/characters/:id', ({ params }) => {
-  const id = positiveId(params.id);
-  rowById('characters', id);
-  db.prepare('DELETE FROM characters WHERE id = ?').run(id);
-  discardSpeculativeSwipes();
-  deleteAvatarFiles('character', id);
-  invalidate('characters');
-  invalidate('conversations');
+defineEntityRoutes<Character>({
+  table: 'characters',
+  toDto: toCharacter,
+  fields: [
+    nameField((cur) => cur.name),
+    textField('personality', 'personality', (cur) => cur.personality),
+    textField('scenario', 'scenario', (cur) => cur.scenario),
+    textField('firstMessage', 'first_message', (cur) => cur.firstMessage),
+    refIdField('presetId', 'preset_id', 'presets', (cur) => cur.presetId),
+    nullableTextField('customPrompt', 'custom_prompt', (cur) => cur.customPrompt),
+    refIdField('templateId', 'template_id', 'templates', (cur) => cur.templateId),
+  ],
+  invalidateOnDelete: ['conversations'],
+  onDelete: (id) => deleteAvatarFiles('character', id),
 });
 
 route.put(
@@ -88,7 +40,7 @@ route.put(
     rowById('characters', id);
     if (!raw?.length) throw new HttpError(400, 'image body is required');
     const avatar = saveAvatar('character', id, raw, req.headers['content-type'] ?? '');
-    db.prepare('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
+    stmt('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
     invalidate('characters');
     return toCharacter(rowById('characters', id));
   },
@@ -105,29 +57,27 @@ route.post(
     } catch (err) {
       throw new HttpError(400, err instanceof Error ? err.message : 'invalid character card');
     }
-    const result = db
-      .prepare(
-        `INSERT INTO characters (name, personality, scenario, first_message, custom_prompt, card_json, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        card.name,
-        card.personality,
-        card.scenario,
-        card.firstMessage,
-        card.systemPrompt,
-        JSON.stringify(card.raw),
-        Date.now(),
-      );
+    const result = stmt(
+      `INSERT INTO characters (name, personality, scenario, first_message, custom_prompt, card_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      card.name,
+      card.personality,
+      card.scenario,
+      card.firstMessage,
+      card.systemPrompt,
+      JSON.stringify(card.raw),
+      Date.now(),
+    );
     const id = Number(result.lastInsertRowid);
     let avatar: string;
     try {
       avatar = saveAvatar('character', id, raw, 'image/png');
     } catch (err) {
-      db.prepare('DELETE FROM characters WHERE id = ?').run(id);
+      stmt('DELETE FROM characters WHERE id = ?').run(id);
       throw err;
     }
-    db.prepare('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
+    stmt('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
     invalidate('characters');
     return toCharacter(rowById('characters', id));
   },

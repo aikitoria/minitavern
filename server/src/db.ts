@@ -1,4 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
+import type { StatementSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
@@ -21,6 +22,26 @@ mkdirSync(AVATAR_DIR, { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA foreign_keys = ON');
+// WAL avoids a full journal cycle (two fsyncs) per write — this matters for
+// the periodic streaming flushes. NORMAL is durable enough under WAL: a crash
+// can only lose the last transactions, never corrupt the database.
+db.exec('PRAGMA journal_mode = WAL');
+db.exec('PRAGMA synchronous = NORMAL');
+// Auto-checkpointing (default: every ~4MB) keeps the WAL bounded; this only
+// truncates the file back after a large write burst instead of leaving it at
+// its high-water mark.
+db.exec('PRAGMA journal_size_limit = 67108864');
+
+/** Memoized prepare: every query in the codebase is one of a bounded set of SQL strings. */
+const stmtCache = new Map<string, StatementSync>();
+export function stmt(sql: string): StatementSync {
+  let prepared = stmtCache.get(sql);
+  if (!prepared) {
+    prepared = db.prepare(sql);
+    stmtCache.set(sql, prepared);
+  }
+  return prepared;
+}
 
 // Schema migrations (DDL + seeds only). Settings that move between scopes are
 // not carried over — they reset to defaults and get re-picked in the UI.
@@ -230,8 +251,8 @@ export function toMessage(r: Row): Message {
     conversationId: r.conversation_id as number,
     parentId: r.parent_id as number | null,
     role: r.role as Message['role'],
-    content: (r.content as string).trim(),
-    reasoning: r.reasoning ? (r.reasoning as string).trim() || null : null,
+    content: r.content as string,
+    reasoning: (r.reasoning as string | null) ?? null,
     name: r.name as string | null,
     status: r.status as Message['status'],
     activeChildId: r.active_child_id as number | null,

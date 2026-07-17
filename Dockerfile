@@ -6,6 +6,8 @@ COPY server/package.json server/
 COPY client/package.json client/
 RUN npm ci
 COPY shared shared
+# vite.config.ts imports the IP allowlist parser from server/src (single source of truth)
+COPY server server
 COPY client client
 RUN npm run build -w client
 

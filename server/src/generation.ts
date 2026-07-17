@@ -1,5 +1,5 @@
 import type { Conversation, GenMeta, Message } from '@minitavern/shared';
-import { db, toEndpoint } from './db.ts';
+import { stmt, toEndpoint } from './db.ts';
 import { getMessage, getPathToMessage } from './tree.ts';
 import { buildChatMessages } from './prompt.ts';
 import { getSettings } from './settingsStore.ts';
@@ -16,6 +16,8 @@ interface ActiveGen {
   flushTimer: NodeJS.Timeout;
   meta: GenMeta;
   background: boolean;
+  /** New tokens since the last periodic DB flush. */
+  dirty: boolean;
   onDone?: () => void;
   onError?: () => void;
 }
@@ -43,7 +45,7 @@ export function promoteBackgroundGeneration(mid: number): boolean {
   const gen = active.get(mid);
   if (!gen?.background) return false;
   gen.background = false;
-  db.prepare("UPDATE messages SET generation_kind = 'normal' WHERE id = ?").run(mid);
+  stmt("UPDATE messages SET generation_kind = 'normal' WHERE id = ?").run(mid);
   return true;
 }
 
@@ -84,7 +86,9 @@ export function mergeLiveBuffers(messages: Message[]): Message[] {
 }
 
 function flushToDb(gen: ActiveGen): void {
-  db.prepare('UPDATE messages SET content = ?, reasoning = ?, model = ? WHERE id = ?').run(
+  if (!gen.dirty) return;
+  gen.dirty = false;
+  stmt('UPDATE messages SET content = ?, reasoning = ?, model = ? WHERE id = ?').run(
     gen.content,
     gen.reasoning || null,
     gen.model,
@@ -93,14 +97,17 @@ function flushToDb(gen: ActiveGen): void {
 }
 
 function finalize(gen: ActiveGen, status: 'done' | 'error' | 'stopped'): void {
-  if (!active.delete(gen.mid)) return;
+  // Identity check, not just key presence: `continue` reuses the message id,
+  // so a late abort from a stopped generation must not touch its successor.
+  if (active.get(gen.mid) !== gen) return;
+  active.delete(gen.mid);
   clearInterval(gen.flushTimer);
   gen.content = gen.content.trim();
   gen.reasoning = gen.reasoning.trim();
   // The message may have been deleted mid-stream (cascade or explicit delete).
-  const exists = db.prepare('SELECT id FROM messages WHERE id = ?').get(gen.mid);
+  const exists = stmt('SELECT id FROM messages WHERE id = ?').get(gen.mid);
   if (exists) {
-    db.prepare(
+    stmt(
       'UPDATE messages SET content = ?, reasoning = ?, model = ?, status = ?, gen_meta_json = ? WHERE id = ?',
     ).run(gen.content, gen.reasoning || null, gen.model, status, JSON.stringify(gen.meta), gen.mid);
     broadcastConv(gen.conversationId, {
@@ -178,12 +185,13 @@ export function startGeneration(
     flushTimer: setInterval(() => flushToDb(gen), 500),
     meta: {},
     background: options?.background ?? false,
+    dirty: false,
     onDone: options?.onDone,
     onError: options?.onError,
   };
   active.set(mid, gen);
   run(conversation, gen, resumeFrom != null).catch((err: unknown) => {
-    if (!active.has(mid)) return; // already stopped/finalized
+    if (active.get(mid) !== gen) return; // already stopped/finalized (or superseded by a resume)
     // May already carry a specific message (e.g. idle timeout).
     gen.meta.error ??= err instanceof Error ? err.message : String(err);
     finalize(gen, 'error');
@@ -196,7 +204,7 @@ const IDLE_TIMEOUT_MS = 120_000;
 async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean): Promise<void> {
   const settings = getSettings();
   const endpointRow = settings.activeEndpointId
-    ? (db.prepare('SELECT * FROM endpoints WHERE id = ?').get(settings.activeEndpointId) as
+    ? (stmt('SELECT * FROM endpoints WHERE id = ?').get(settings.activeEndpointId) as
         Record<string, unknown> | undefined)
     : undefined;
   if (!endpointRow) {
@@ -341,7 +349,8 @@ async function consumeStream(
     const dOut = d != null ? passContent(d) : '';
     if (dOut) gen.content += dOut;
     if (r) gen.reasoning += r;
-    if (!active.has(gen.mid) || (!dOut && !r)) return;
+    if (dOut || r) gen.dirty = true;
+    if (active.get(gen.mid) !== gen || (!dOut && !r)) return;
     // Latency first: forward each delta the moment it arrives.
     broadcastConv(gen.conversationId, {
       t: 'delta',
@@ -358,7 +367,7 @@ async function consumeStream(
       const line = buffer.slice(0, idx);
       buffer = buffer.slice(idx + 1);
       processLine(line);
-      if (!active.has(gen.mid)) return; // stopped while iterating
+      if (active.get(gen.mid) !== gen) return; // stopped while iterating
     }
   }
   buffer += decoder.decode();
@@ -366,9 +375,9 @@ async function consumeStream(
     for (const line of buffer.split('\n')) processLine(line);
   }
   // A reply shorter than the name prefix may still be held back — flush it.
-  if (holdback?.trim() && active.has(gen.mid)) {
+  if (holdback?.trim() && active.get(gen.mid) === gen) {
     gen.content += holdback;
     broadcastConv(gen.conversationId, { t: 'delta', mid: gen.mid, d: holdback });
   }
-  if (active.has(gen.mid)) finalize(gen, 'done');
+  finalize(gen, 'done'); // no-op if already stopped/superseded
 }

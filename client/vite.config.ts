@@ -1,38 +1,14 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { BlockList, isIP } from 'node:net';
 import { defineConfig } from 'vite';
 import type { Plugin } from 'vite';
 import solid from 'vite-plugin-solid';
+// The vite config runs under Node (outside the client tsconfig), so it can
+// share the server's allowlist parser instead of duplicating it.
+import { createIpAllowlist } from '../server/src/ipAccess.ts';
 
 const target = process.env.VITE_PROXY_TARGET ?? 'http://localhost:5487';
-const allowlistConfig =
-  process.env.MINITAVERN_IP_ALLOWLIST ??
-  '127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10';
-const allowlist = new BlockList();
-
-const normalizeAddress = (address: string) =>
-  address.toLowerCase().startsWith('::ffff:') ? address.slice(7) : address;
-
-for (const rawEntry of allowlistConfig.split(',')) {
-  const entry = rawEntry.trim();
-  if (!entry) continue;
-  const slash = entry.lastIndexOf('/');
-  const address = normalizeAddress(slash === -1 ? entry : entry.slice(0, slash));
-  const family = isIP(address);
-  if (!family) throw new Error(`Invalid address in MINITAVERN_IP_ALLOWLIST: ${entry}`);
-  const maxPrefix = family === 4 ? 32 : 128;
-  const prefix = slash === -1 ? maxPrefix : Number(entry.slice(slash + 1));
-  if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) {
-    throw new Error(`Invalid prefix in MINITAVERN_IP_ALLOWLIST: ${entry}`);
-  }
-  allowlist.addSubnet(address, prefix, family === 4 ? 'ipv4' : 'ipv6');
-}
-
-const ipAllowed = (address?: string) => {
-  const normalized = address ? normalizeAddress(address) : '';
-  const family = isIP(normalized);
-  return family !== 0 && allowlist.check(normalized, family === 4 ? 'ipv4' : 'ipv6');
-};
+const allowlist = createIpAllowlist(process.env.MINITAVERN_IP_ALLOWLIST);
+const ipAllowed = (address?: string) => allowlist.isAllowed(address);
 
 const ipAllowlistPlugin: Plugin = {
   name: 'minitavern-ip-allowlist',
