@@ -677,11 +677,12 @@ textarea.mono {
   }
 }
 
-.msg-swipe.swipe-in-next {
+/* Applied to .msg-swipe (swipe position: content only) or .msg-body (revealed descendants). */
+.swipe-in-next {
   animation: swipe-in-next 0.18s ease-out;
 }
 
-.msg-swipe.swipe-in-prev {
+.swipe-in-prev {
   animation: swipe-in-prev 0.18s ease-out;
 }
 

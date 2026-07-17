@@ -1,5 +1,6 @@
 import { Show, createEffect, createSignal } from 'solid-js';
 import type { Message } from '@minitavern/shared';
+import type { PendingSwipe } from '../state/store.ts';
 import { api } from '../state/api.ts';
 import {
   editRequestId,
@@ -36,20 +37,48 @@ export default function MessageNode(props: { message: Message }) {
   const siblings = () => siblingsOf(props.message);
   const siblingIndex = () => siblings().findIndex((m) => m.id === props.message.id);
 
-  // Mount-time swipe context: when this node mounts as the incoming sibling
-  // of an in-flight swipe, it slides in from the side the swipe came from.
-  const swipeAtMount = pendingSwipe();
-  const enterDir =
-    swipeAtMount &&
-    swipeAtMount.outgoingId !== props.message.id &&
-    (props.message.parentId ?? -1) === swipeAtMount.parentKey
-      ? swipeAtMount.dir
-      : 0;
+  // Whether this message sits below the swiped sibling group, on the outgoing
+  // (requireOutgoing) or incoming side. Walks the ancestor chain up to the
+  // sibling group of the swipe.
+  const isBelowSwipe = (p: PendingSwipe, requireOutgoing: boolean): boolean => {
+    let cur = props.message.parentId;
+    while (cur != null) {
+      const ancestor = state.tree.messages[cur];
+      if (!ancestor) return false;
+      if ((ancestor.parentId ?? -1) === p.parentKey) {
+        return requireOutgoing ? ancestor.id === p.outgoingId : ancestor.id !== p.outgoingId;
+      }
+      cur = ancestor.parentId;
+    }
+    return false;
+  };
 
-  // While this node is the outgoing side of a swipe it slides fully out (and
-  // holds offscreen until the replacing tree frame unmounts it). A failed
-  // swipe clears pendingSwipe, springing it back.
-  const exitDir = () => (pendingSwipe()?.outgoingId === props.message.id ? pendingSwipe()!.dir : 0);
+  // Mount-time swipe context: the incoming sibling slides its content in from
+  // the side the swipe came from; a freshly revealed descendant of it slides
+  // in whole (name row and tools included).
+  const swipeAtMount = pendingSwipe();
+  const enterAs =
+    swipeAtMount && swipeAtMount.outgoingId !== props.message.id
+      ? (props.message.parentId ?? -1) === swipeAtMount.parentKey
+        ? 'sibling'
+        : isBelowSwipe(swipeAtMount, false)
+          ? 'descendant'
+          : null
+      : null;
+  const enterDir = enterAs ? swipeAtMount!.dir : 0;
+
+  // While this node is on the outgoing side of a swipe it slides fully out
+  // (content-only at the swipe position, whole message for descendants) and
+  // holds offscreen until the replacing tree frame unmounts it. A failed
+  // swipe clears pendingSwipe, springing everything back.
+  const exitInfo = (): { dir: 1 | -1; whole: boolean } | null => {
+    const p = pendingSwipe();
+    if (!p) return null;
+    if (p.outgoingId === props.message.id) return { dir: p.dir, whole: false };
+    if (isBelowSwipe(p, true)) return { dir: p.dir, whole: true };
+    return null;
+  };
+  const slideOut = (dir: 1 | -1) => `translateX(${dir === 1 ? -105 : 105}%)`;
 
   // SillyTavern-style swipe gesture on the last assistant message: swipe left
   // for the next sibling (generating a new one past the end), right for the previous.
@@ -202,7 +231,22 @@ export default function MessageNode(props: { message: Message }) {
       onTouchCancel={onTouchEnd}
     >
       <Avatar src={avatarSrc()} name={name()} />
-      <div class="msg-body">
+      <div
+        class="msg-body"
+        classList={{
+          'swipe-in-next': enterAs === 'descendant' && enterDir === 1,
+          'swipe-in-prev': enterAs === 'descendant' && enterDir === -1,
+        }}
+        style={
+          exitInfo()?.whole
+            ? {
+                transform: slideOut(exitInfo()!.dir),
+                opacity: 0,
+                transition: 'transform 0.18s ease-out, opacity 0.18s ease-out',
+              }
+            : undefined
+        }
+      >
         <div class="msg-head">
           <span class="msg-name">{name()}</span>
           <Show when={props.message.status === 'stopped'}>
@@ -228,18 +272,21 @@ export default function MessageNode(props: { message: Message }) {
           </span>
         </div>
 
-        {/* Only the content region slides on swipes; the name row and tools stay put. */}
+        {/* At the swipe position only the content region slides; the name row and tools stay put. */}
         <div
           class="msg-swipe"
-          classList={{ 'swipe-in-next': enterDir === 1, 'swipe-in-prev': enterDir === -1 }}
+          classList={{
+            'swipe-in-next': enterAs === 'sibling' && enterDir === 1,
+            'swipe-in-prev': enterAs === 'sibling' && enterDir === -1,
+          }}
           style={{
             transform:
-              exitDir() !== 0
-                ? `translateX(${exitDir() === 1 ? -105 : 105}%)`
+              exitInfo() && !exitInfo()!.whole
+                ? slideOut(exitInfo()!.dir)
                 : dragX() !== 0
                   ? `translateX(${dragX()}px)`
                   : undefined,
-            opacity: exitDir() !== 0 ? 0 : undefined,
+            opacity: exitInfo() && !exitInfo()!.whole ? 0 : undefined,
             transition: dragging() ? 'none' : 'transform 0.18s ease-out, opacity 0.18s ease-out',
           }}
         >
