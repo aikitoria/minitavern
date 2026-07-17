@@ -2,7 +2,6 @@ import type { Conversation } from '@minitavern/shared';
 import { stmt, toConversation, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import {
-  activateMessage,
   appendMessage,
   deleteMessage,
   getActiveLeafId,
@@ -68,6 +67,10 @@ export function cancelBackgroundSwipe(conversationId: number): boolean {
   const mid = stopBackgroundGenerations(conversationId);
   if (mid == null) return false;
   deleteMessage(mid);
+  // Callers may still 400 before their own broadcast (duplicate/move guards);
+  // the deleted sibling must never linger on screen. Coalesced per microtask,
+  // so successful routes pay nothing extra.
+  broadcastTree(conversationId);
   return true;
 }
 
@@ -192,13 +195,13 @@ route.post('/api/conversations', ({ body }) => {
     const convId = Number(result.lastInsertRowid);
     if (character?.firstMessage.trim()) {
       const sub = (text: string) => substituteMacros(text, character.name, persona?.name ?? 'User');
-      const primary = appendMessage(convId, 'assistant', sub(character.firstMessage), null);
+      appendMessage(convId, 'assistant', sub(character.firstMessage), null);
       // Imported cards may carry alternate greetings — seed them as root
-      // siblings so they're swipeable, with the primary greeting active.
+      // siblings so they're swipeable, without stealing the primary's active slot.
       for (const alt of getAlternateGreetings(character.id)) {
-        if (alt.trim()) appendMessage(convId, 'assistant', sub(alt), null);
+        if (alt.trim())
+          appendMessage(convId, 'assistant', sub(alt), null, 'done', null, null, false);
       }
-      activateMessage(primary.id);
     }
     return convId;
   });
@@ -228,7 +231,9 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
     (personaId !== undefined && personaId !== conv.personaId) ||
     (endpointId !== undefined && endpointId !== conv.endpointId) ||
     (speakerName !== undefined && (speakerName?.trim() || null) !== conv.speakerName);
-  if (hasForegroundGeneration(id))
+  // Only prompt-affecting changes conflict with an in-flight reply; a title
+  // rename is always safe (the endpoint too is resolved once at gen start).
+  if (contextChanged && hasForegroundGeneration(id))
     throw new HttpError(409, 'a generation is already running in this conversation');
   if (contextChanged) discardSpeculativeSwipes(id);
   // No updated_at bump: metadata edits are not "new content" and must not

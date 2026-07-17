@@ -1,4 +1,4 @@
-import { createSignal, onMount } from 'solid-js';
+import { createSignal, onCleanup, onMount } from 'solid-js';
 
 export type EditorId = number | 'new';
 
@@ -14,6 +14,31 @@ interface EntityEditorOptions<T extends { id: number }, D> {
 
 export function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/** Popover dismiss wiring: close on click outside `root` or on Escape.
+ * Call from component setup — the document listeners live for the component's
+ * lifetime and are cleaned up with it. */
+export function useDismiss(
+  root: () => HTMLElement | undefined,
+  open: () => boolean,
+  close: () => void,
+): void {
+  const onDocClick = (event: MouseEvent) => {
+    const el = root();
+    if (open() && el && !el.contains(event.target as Node)) close();
+  };
+  const onDocKey = (event: KeyboardEvent) => {
+    if (event.key === 'Escape') close();
+  };
+  onMount(() => {
+    document.addEventListener('click', onDocClick);
+    document.addEventListener('keydown', onDocKey);
+  });
+  onCleanup(() => {
+    document.removeEventListener('click', onDocClick);
+    document.removeEventListener('keydown', onDocKey);
+  });
 }
 
 export function numberOrNull(value: string): number | null {

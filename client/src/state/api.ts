@@ -6,7 +6,6 @@ import type {
   Preset,
   Settings,
   Template,
-  TreeSnapshot,
 } from '@minitavern/shared';
 
 interface RequestOptions {
@@ -60,7 +59,6 @@ export const api = {
   patchConversation: (id: number, patch: Partial<Conversation>) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   deleteConversation: (id: number) => request<void>('DELETE', `/api/conversations/${id}`),
-  tree: (id: number) => request<TreeSnapshot>('GET', `/api/conversations/${id}/tree`),
   search: (q: string) =>
     request<{ conversation: Conversation; snippet: string | null }[]>(
       'GET',

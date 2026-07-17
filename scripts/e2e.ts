@@ -8,6 +8,7 @@
 //       sleep 2; node scripts/e2e.ts'
 import { deflateSync } from 'node:zlib';
 import type { Message, ServerEvent, Settings, TreeSnapshot } from '@minitavern/shared';
+import { chunk } from './pngChunk.ts';
 
 if (!process.env.E2E_BASE || !process.env.E2E_MOCK) {
   console.error(
@@ -110,27 +111,6 @@ class WsClient {
   close(): void {
     this.ws.close();
   }
-}
-
-const crcLookup = new Uint32Array(256).map((_, n) => {
-  let c = n;
-  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-  return c >>> 0;
-});
-
-function crc32(buf: Buffer): number {
-  let c = 0xffffffff;
-  for (const byte of buf) c = crcLookup[(c ^ byte) & 0xff]! ^ (c >>> 8);
-  return (c ^ 0xffffffff) >>> 0;
-}
-
-function chunk(type: string, data: Buffer): Buffer {
-  const head = Buffer.concat([Buffer.from(type, 'latin1'), data]);
-  const out = Buffer.alloc(head.length + 8);
-  out.writeUInt32BE(data.length, 0);
-  head.copy(out, 4);
-  out.writeUInt32BE(crc32(head), head.length + 4);
-  return out;
 }
 
 function makeCardPng(): Buffer {
@@ -989,6 +969,8 @@ async function main() {
   );
 
   console.log('== comfy image rendering ==');
+  const COMFY_WORKFLOW =
+    '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}';
   const imgSnap = await tree(conv2.id);
   const imgRes = await req<{ toolMessageId: number }>(
     'POST',
@@ -997,11 +979,7 @@ async function main() {
       prompt: 'Depict this scene.',
       label: 'Image prompt',
       expectedActiveLeafId: imgSnap.activeLeafId,
-      image: {
-        workflow:
-          '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}',
-        comfyUrl: MOCK_CONTROL,
-      },
+      image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
     },
   );
   const pendingSnap = await tree(conv2.id);
@@ -1110,6 +1088,140 @@ async function main() {
     afterDelete.status === 404 && afterDelete2.status === 404,
     'deleting the tool message deletes all its image files from disk',
   );
+
+  console.log('== comfy render failures surface and are retryable ==');
+  const waitForImageState = async (
+    mid: number,
+    pred: (m: Message) => boolean,
+    label: string,
+  ): Promise<Message> => {
+    for (let i = 0; i < 60; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      const message = (await tree(conv2.id)).messages.find((m) => m.id === mid);
+      if (message && pred(message)) return message;
+    }
+    throw new Error(`timeout waiting for: ${label}`);
+  };
+
+  await fetch(`${MOCK_CONTROL}/control/comfy-fail-next?stage=prompt&count=1`, { method: 'POST' });
+  const failSnap = await tree(conv2.id);
+  const failRes = await req<{ toolMessageId: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/tool`,
+    {
+      prompt: 'Depict a failure.',
+      label: 'Image prompt',
+      expectedActiveLeafId: failSnap.activeLeafId,
+      image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
+    },
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === failRes.toolMessageId,
+    'failing image tool text finished',
+  );
+  // The failure must be pushed to subscribers (patch with the updated body),
+  // not just persisted for the next refetch.
+  const failPatch = await ws.waitFor(
+    (e) =>
+      e.t === 'treePatch' &&
+      e.messages.some((m) => m.id === failRes.toolMessageId && m.genMeta?.imageError != null),
+    'render failure broadcast to subscribers',
+  );
+  const failedMsg =
+    failPatch.t === 'treePatch'
+      ? failPatch.messages.find((m) => m.id === failRes.toolMessageId)
+      : undefined;
+  assert(
+    failedMsg?.imagePending === false &&
+      failedMsg.images.length === 0 &&
+      failedMsg.status === 'done' &&
+      failedMsg.genMeta?.imageError?.includes('rejected the workflow (500)') === true,
+    'a rejected submission clears imagePending and surfaces genMeta.imageError',
+  );
+
+  // Retry (the client's Retry button) re-renders from the stored config.
+  await req('POST', `/api/messages/${failRes.toolMessageId}/render-image`);
+  const retried = await waitForImageState(
+    failRes.toolMessageId,
+    (m) => !m.imagePending && m.images.length === 1,
+    'retry render finished',
+  );
+  assert(retried.genMeta?.imageError == null, 'a successful retry clears the stored imageError');
+
+  await fetch(`${MOCK_CONTROL}/control/comfy-fail-next?stage=render&count=1`, { method: 'POST' });
+  await req('POST', `/api/messages/${failRes.toolMessageId}/render-image`);
+  const execFailed = await waitForImageState(
+    failRes.toolMessageId,
+    (m) => !m.imagePending && m.genMeta?.imageError != null,
+    'execution failure surfaced',
+  );
+  assert(
+    execFailed.genMeta?.imageError?.includes('KSampler [3] RuntimeError: mock render explosion') ===
+      true,
+    'execution failures relay the ComfyUI node traceback',
+  );
+  assert(execFailed.images.length === 1, 'a failed re-render keeps previously rendered images');
+
+  console.log('== tool message guards ==');
+  await expectStatus(
+    'POST',
+    `/api/messages/${failRes.toolMessageId}/advance`,
+    { expectedActiveLeafId: failRes.toolMessageId },
+    400,
+  );
+  await expectStatus(
+    'POST',
+    `/api/messages/${failRes.toolMessageId}/continue`,
+    { expectedActiveLeafId: failRes.toolMessageId },
+    400,
+  );
+
+  // Stopping the text generation must clear its queued render — finalize on a
+  // non-done ending would otherwise leave imagePending stuck forever.
+  const stopSnap = await tree(conv2.id);
+  const stopRes = await req<{ toolMessageId: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/tool`,
+    {
+      prompt: 'Will be stopped.',
+      label: 'Image prompt',
+      expectedActiveLeafId: stopSnap.activeLeafId,
+      image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
+    },
+  );
+  await req('POST', `/api/generations/${stopRes.toolMessageId}/stop`);
+  const stoppedMsg = (await tree(conv2.id)).messages.find((m) => m.id === stopRes.toolMessageId);
+  assert(
+    stoppedMsg?.status === 'stopped' &&
+      stoppedMsg.imagePending === false &&
+      stoppedMsg.images.length === 0,
+    'stopping a tool generation clears its queued image render',
+  );
+
+  // render-image is role-agnostic (fallback config stored on first use), and
+  // resume is refused while the render is pending — finalize on the resumed
+  // generation's non-done endings would disown it.
+  const renderSend = await sendMessage(conv2.id, 'draw the last reply');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === renderSend.assistantMessageId,
+    'assistant reply to render finished',
+  );
+  await req('POST', `/api/messages/${renderSend.assistantMessageId}/render-image`, {
+    workflow: COMFY_WORKFLOW,
+    comfyUrl: MOCK_CONTROL,
+  });
+  await expectStatus(
+    'POST',
+    `/api/messages/${renderSend.assistantMessageId}/continue`,
+    { expectedActiveLeafId: renderSend.assistantMessageId },
+    409,
+  );
+  const assistantRendered = await waitForImageState(
+    renderSend.assistantMessageId,
+    (m) => !m.imagePending && m.images.length === 1,
+    'assistant-message render finished',
+  );
+  assert(assistantRendered.hasImageRender, 'fallback render config is stored for future swipes');
 
   console.log('== transient upstream failures auto-resume ==');
   await failNextMockRequests(1);

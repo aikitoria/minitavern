@@ -13,8 +13,6 @@ export interface GenParams {
 
 export interface GenMeta {
   error?: string;
-  finishReason?: string;
-  usage?: { promptTokens?: number; completionTokens?: number };
   /** Image render failure (the text generation itself succeeded). */
   imageError?: string;
 }
@@ -26,7 +24,8 @@ export interface Message {
   role: Role;
   content: string;
   reasoning: string | null;
-  /** Speaker name the message was sent with (assistant messages); null = character default. */
+  /** Speaker name the message was sent with (assistant messages) or the
+   * plugin's tool label (tool messages); null = character default. */
   name: string | null;
   status: MessageStatus;
   activeChildId: number | null;
@@ -170,6 +169,26 @@ export const DEFAULT_SETTINGS: Settings = {
   backgroundSwipeGeneration: false,
   pluginSettings: {},
 };
+
+/**
+ * Validates a ComfyUI workflow template ({{prompt}}/{{seed}} slots): after
+ * macro substitution it must parse as a JSON object (API format). Returns a
+ * predicate like 'must be a JSON object', or null when valid. Shared so the
+ * client's save-time check and the server's route-time 400 can never drift.
+ */
+export function workflowValidationError(workflow: string): string | null {
+  const substituted = workflow.replaceAll(/\{\{(prompt|seed)\}\}/gi, (_, key: string) =>
+    key.toLowerCase() === 'prompt' ? 'test' : '1',
+  );
+  try {
+    const parsed: unknown = JSON.parse(substituted);
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? null
+      : 'must be a JSON object (ComfyUI API format)';
+  } catch (err) {
+    return `is not valid JSON after macro substitution: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
 
 export interface TreeSnapshot {
   conversationId: number;

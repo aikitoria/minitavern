@@ -291,20 +291,24 @@ export function rotateDown(messageId: number): boolean {
   return true;
 }
 
-/** Deletes a message and its whole subtree (FK cascade), repairing the active path if needed. */
+/** Deletes a message and its whole subtree (FK cascade), repairing the active
+ * path if needed. The current callers only ever delete inactive speculative
+ * siblings, so the repair normally doesn't fire — it's kept because the leaf
+ * probe costs one point lookup (the leaf died iff the deleted node was one of
+ * its ancestors, i.e. on the active path), not a path walk. */
 export function deleteMessage(messageId: number): void {
   const row = getRow(messageId);
   if (!row) return;
   const { conversation_id: conversationId, parent_id: parentId } = row;
-  const onActivePath = getActivePath(conversationId).some((m) => m.id === messageId);
   // Collect before the delete cascades; unlink only after the commit succeeds.
   const doomedImages = collectSubtreeImages(messageId);
   transaction(() => {
     stmt('DELETE FROM messages WHERE id = ?').run(messageId);
-    if (!onActivePath) return;
-    const sibling = newestChildId(conversationId, parentId);
-    const newLeaf = sibling != null ? descendToLeaf(sibling) : parentId;
-    setActiveLeaf(conversationId, newLeaf);
+    const leaf = getActiveLeafId(conversationId);
+    if (leaf != null && !getRow(leaf)) {
+      const sibling = newestChildId(conversationId, parentId);
+      setActiveLeaf(conversationId, sibling != null ? descendToLeaf(sibling) : parentId);
+    }
   });
   deleteImageFiles(doomedImages);
 }

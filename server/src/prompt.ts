@@ -70,6 +70,9 @@ export interface BuiltPrompt {
   messages: ChatMessage[];
   /** "Name:" to prefill the assistant turn with, when the template prefixes speaker names. */
   namePrefill: string | null;
+  /** {{char}}/{{user}} as this prompt resolved them (persona honors usesPersonas). */
+  charName: string;
+  userName: string;
 }
 
 /**
@@ -135,29 +138,14 @@ export function buildChatMessages(
     if (msg.role === 'tool') continue; // plugin output is chat-visible only, never sent upstream
     const trimmedContent = msg.content.trim();
     if (trimmedContent.length === 0) continue;
-    const content =
-      prefixNames && msg.role !== 'system'
-        ? `${speakerFor(msg).trim()}: ${trimmedContent}`
-        : trimmedContent;
+    // Stored history only ever carries user/assistant (tool is skipped above),
+    // so every prefixed message has a speaker.
+    const content = prefixNames ? `${speakerFor(msg).trim()}: ${trimmedContent}` : trimmedContent;
     messages.push({ role: msg.role, content });
   }
 
   const currentSpeaker = speakerName?.trim() || charName;
-  return { messages, namePrefill: prefixNames ? `${currentSpeaker}:` : null };
-}
-
-/** {{char}}/{{user}} names as buildChatMessages resolves them (persona honors
- * the effective template's usesPersonas). */
-function resolveNames(conversation: Conversation): { charName: string; userName: string } {
-  const character = getCharacter(conversation.characterId);
-  const settings = getSettings();
-  const custom = character?.customTemplate ?? null;
-  const template = custom
-    ? null
-    : (getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId));
-  const usesPersonas = custom ? custom.usesPersonas : (template?.usesPersonas ?? true);
-  const persona = usesPersonas ? getPersona(conversation.personaId) : null;
-  return { charName: character?.name ?? 'Assistant', userName: persona?.name ?? 'User' };
+  return { messages, namePrefill: prefixNames ? `${currentSpeaker}:` : null, charName, userName };
 }
 
 /**
@@ -170,8 +158,10 @@ export function buildToolPrompt(
   history: Message[],
   prompt: string,
 ): BuiltPrompt {
-  const { messages } = buildChatMessages(conversation, history);
-  const { charName, userName } = resolveNames(conversation);
-  messages.push({ role: 'user', content: substituteMacros(prompt.trim(), charName, userName) });
-  return { messages, namePrefill: null };
+  const built = buildChatMessages(conversation, history);
+  built.messages.push({
+    role: 'user',
+    content: substituteMacros(prompt.trim(), built.charName, built.userName),
+  });
+  return { ...built, namePrefill: null };
 }

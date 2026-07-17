@@ -20,7 +20,11 @@ const MOCK_PNG = Buffer.from(
 let failuresRemaining = 0;
 let terminalWithoutNewline = false;
 let lastComfyWorkflow: unknown = null;
-const comfyJobs = new Map<string, number>(); // prompt_id -> ready-at timestamp
+/** Next N /prompt submissions are rejected with a 500. */
+let comfyFailPrompts = 0;
+/** Next N accepted jobs fail during execution (error status in /history). */
+let comfyFailRenders = 0;
+const comfyJobs = new Map<string, { readyAt: number; fail: boolean }>();
 
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/v1/models') {
@@ -46,6 +50,16 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify({ workflow: lastComfyWorkflow }));
     return;
   }
+  if (req.method === 'POST' && req.url?.startsWith('/control/comfy-fail-next')) {
+    const url = new URL(req.url, 'http://mock');
+    const count = Number(url.searchParams.get('count') ?? '1');
+    const n = Number.isSafeInteger(count) && count > 0 ? count : 0;
+    if (url.searchParams.get('stage') === 'render') comfyFailRenders = n;
+    else comfyFailPrompts = n;
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ comfyFailPrompts, comfyFailRenders }));
+    return;
+  }
   if (req.method === 'POST' && req.url === '/prompt') {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
@@ -59,10 +73,17 @@ const server = http.createServer((req, res) => {
         return;
       }
       lastComfyWorkflow = parsed.prompt;
+      if (comfyFailPrompts > 0) {
+        comfyFailPrompts--;
+        res.writeHead(500, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'mock comfy submission failure' }));
+        return;
+      }
       // uuid like real ComfyUI — a shared prefix would collide the server's
       // promptId-derived image filenames.
       const promptId = randomUUID();
-      comfyJobs.set(promptId, Date.now() + 400);
+      comfyJobs.set(promptId, { readyAt: Date.now() + 400, fail: comfyFailRenders > 0 });
+      if (comfyFailRenders > 0) comfyFailRenders--;
       // Step progress over the ws, like ComfyUI's sampler events.
       setTimeout(() => {
         for (const client of wss.clients) {
@@ -81,10 +102,35 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url?.startsWith('/history/')) {
     const promptId = req.url.slice('/history/'.length);
-    const readyAt = comfyJobs.get(promptId);
+    const job = comfyJobs.get(promptId);
     res.writeHead(200, { 'content-type': 'application/json' });
-    if (readyAt == null || Date.now() < readyAt) {
+    if (job == null || Date.now() < job.readyAt) {
       res.end('{}');
+      return;
+    }
+    if (job.fail) {
+      res.end(
+        JSON.stringify({
+          [promptId]: {
+            status: {
+              status_str: 'error',
+              completed: false,
+              messages: [
+                [
+                  'execution_error',
+                  {
+                    node_type: 'KSampler',
+                    node_id: '3',
+                    exception_type: 'RuntimeError',
+                    exception_message: 'mock render explosion',
+                  },
+                ],
+              ],
+            },
+            outputs: {},
+          },
+        }),
+      );
       return;
     }
     res.end(
@@ -100,6 +146,18 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === 'GET' && req.url?.startsWith('/view')) {
+    // Real ComfyUI 404s without the exact file params — serving the PNG
+    // unconditionally would leave the server's download-URL construction
+    // untested.
+    const q = new URL(req.url, 'http://mock').searchParams;
+    if (
+      q.get('filename') !== 'mock.png' ||
+      q.get('type') !== 'output' ||
+      q.get('subfolder') !== ''
+    ) {
+      res.writeHead(404).end();
+      return;
+    }
     res.writeHead(200, { 'content-type': 'image/png' });
     res.end(MOCK_PNG);
     return;
@@ -116,7 +174,16 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: 'controlled mock failure' }));
         return;
       }
-      const parsed = JSON.parse(body) as { messages: { role: string; content: string }[] };
+      // A malformed body must fail the one request, not throw in the 'end'
+      // handler and kill the whole mock (cascading e2e timeouts).
+      let parsed: { messages: { role: string; content: string }[] };
+      try {
+        parsed = JSON.parse(body) as { messages: { role: string; content: string }[] };
+      } catch {
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'invalid JSON' }));
+        return;
+      }
       const lastUser = [...parsed.messages].reverse().find((m) => m.role === 'user');
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
       const send = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);

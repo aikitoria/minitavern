@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal } from 'solid-js';
 import { api } from '../state/api.ts';
 import type { PluginCommand } from '../plugins/api.ts';
 import { pluginCommands, pluginTools } from '../plugins/index.ts';
@@ -11,7 +11,7 @@ import {
   streamingMessage,
   toast,
 } from '../state/store.ts';
-import { errorMessage } from '../util.ts';
+import { errorMessage, useDismiss } from '../util.ts';
 
 const coarsePointer = matchMedia('(pointer: coarse)').matches;
 
@@ -100,6 +100,18 @@ const BUILTIN_COMMANDS: PluginCommand[] = [
 
 const COMMANDS: PluginCommand[] = [...BUILTIN_COMMANDS, ...pluginCommands];
 
+// Dispatch is first-match — a plugin reusing a name would be silently
+// shadowed. Surface it loudly at startup instead.
+{
+  const seen = new Set<string>();
+  for (const cmd of COMMANDS) {
+    if (seen.has(cmd.name)) {
+      console.error(`[plugins] duplicate slash command /${cmd.name} — later registration is dead`);
+    }
+    seen.add(cmd.name);
+  }
+}
+
 export default function Composer() {
   const [text, setText] = createSignal('');
   const [selIdx, setSelIdx] = createSignal(0);
@@ -107,21 +119,11 @@ export default function Composer() {
   let area: HTMLTextAreaElement | undefined;
   let toolsWrap: HTMLSpanElement | undefined;
 
-  // Dismiss the tools menu on outside click or Escape.
-  const onDocClick = (event: MouseEvent) => {
-    if (toolsOpen() && toolsWrap && !toolsWrap.contains(event.target as Node)) setToolsOpen(false);
-  };
-  const onDocKey = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') setToolsOpen(false);
-  };
-  onMount(() => {
-    document.addEventListener('click', onDocClick);
-    document.addEventListener('keydown', onDocKey);
-  });
-  onCleanup(() => {
-    document.removeEventListener('click', onDocClick);
-    document.removeEventListener('keydown', onDocKey);
-  });
+  useDismiss(
+    () => toolsWrap,
+    toolsOpen,
+    () => setToolsOpen(false),
+  );
 
   // "/cha" -> completion menu; "/char args" -> parameter hint.
   const cmdQuery = () => {
@@ -183,8 +185,10 @@ export default function Composer() {
     setText('');
     queueMicrotask(resize);
     const sent = await navigateTree(() => api.send(id, content, state.tree.activeLeafId));
-    if (!sent) {
-      setText(content); // restore on failure so nothing is lost
+    // Restore on failure so nothing is lost — unless the user typed something
+    // new during the round-trip, which must not be clobbered.
+    if (!sent && !text()) {
+      setText(content);
       queueMicrotask(resize); // value bindings fire no input event, so re-grow manually
     }
   };

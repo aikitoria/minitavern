@@ -85,6 +85,9 @@ defineEntityRoutes<Endpoint>({
     },
   ],
   settingsRef: 'activeEndpointId',
+  // conversations.endpoint_id is ON DELETE SET NULL — clients must drop the
+  // stale per-conversation override, same as characters/personas.
+  invalidateOnDelete: ['conversations'],
 });
 
 route.get('/api/endpoints/:id/models', async ({ params }) => {

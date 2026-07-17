@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import WebSocket from 'ws';
+import { workflowValidationError } from '@minitavern/shared';
 import { stmt } from './db.ts';
 import { getMessage, markMessageDirty } from './tree.ts';
 import { broadcastTree } from './sync.ts';
@@ -38,7 +39,9 @@ function expandWorkflow(workflow: string, description: string): string {
   );
 }
 
-/** Validates and normalizes a route-supplied image render config. */
+/** Validates and normalizes a route-supplied image render config. The
+ * workflow check is the shared route-time/save-time validator, so a broken
+ * workflow 400s here instead of failing async mid-render. */
 export function parseImageConfig(raw: unknown): { workflow: string; comfyUrl: string } {
   const obj =
     typeof raw === 'object' && raw !== null && !Array.isArray(raw)
@@ -47,25 +50,12 @@ export function parseImageConfig(raw: unknown): { workflow: string; comfyUrl: st
   const workflow = typeof obj.workflow === 'string' ? obj.workflow : '';
   if (!workflow.trim()) throw new Error('image.workflow is required');
   const invalid = workflowValidationError(workflow);
-  if (invalid) throw new Error(`image.workflow: ${invalid}`);
+  if (invalid) throw new Error(`image.workflow ${invalid}`);
   const comfyUrl =
     typeof obj.comfyUrl === 'string' && obj.comfyUrl.trim()
       ? obj.comfyUrl.trim()
       : 'http://comfy:8588';
   return { workflow, comfyUrl };
-}
-
-/** Route-time validation so a broken workflow 400s instead of failing async. */
-export function workflowValidationError(workflow: string): string | null {
-  try {
-    const parsed: unknown = JSON.parse(expandWorkflow(workflow, 'test'));
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-      return 'workflow must be a JSON object (ComfyUI API format)';
-    }
-    return null;
-  } catch (err) {
-    return `workflow is not valid JSON after macro substitution: ${err instanceof Error ? err.message : String(err)}`;
-  }
 }
 
 interface ComfyOutputFile {

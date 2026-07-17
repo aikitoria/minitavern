@@ -368,26 +368,15 @@ async function consumeStream(
     if (!line.startsWith('data:')) return;
     const data = line.slice(5).trim();
     if (!data || data === '[DONE]') return;
-    let parsed: {
-      choices?: { delta?: SseDelta; finish_reason?: string | null }[];
-      usage?: { prompt_tokens?: number; completion_tokens?: number } | null;
-    };
+    let parsed: { choices?: { delta?: SseDelta }[] };
     try {
       parsed = JSON.parse(data);
     } catch {
       return;
     }
-    const choice = parsed.choices?.[0];
-    const delta = choice?.delta;
+    const delta = parsed.choices?.[0]?.delta;
     const d = delta?.content ?? undefined;
     const r = delta?.reasoning_content ?? delta?.reasoning ?? undefined;
-    if (choice?.finish_reason) gen.meta.finishReason = choice.finish_reason;
-    if (parsed.usage) {
-      gen.meta.usage = {
-        promptTokens: parsed.usage.prompt_tokens,
-        completionTokens: parsed.usage.completion_tokens,
-      };
-    }
     if (d == null && r == null) return;
     const dOut = d != null ? passContent(d) : '';
     if (dOut) gen.content += dOut;

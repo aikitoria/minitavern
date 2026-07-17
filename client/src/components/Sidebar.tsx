@@ -1,8 +1,8 @@
-import { For, Show, createEffect, createSignal, on, onCleanup, onMount } from 'solid-js';
+import { For, Show, createEffect, createSignal, on } from 'solid-js';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { newConversation, openModal, selectConversation, state, toast } from '../state/store.ts';
-import { errorMessage } from '../util.ts';
+import { errorMessage, useDismiss } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
 
@@ -18,23 +18,21 @@ export default function Sidebar() {
   let searchTimer: number | undefined;
   let newChatWrap: HTMLDivElement | undefined;
 
-  // Dismiss the new-chat menu on outside click or Escape (same as the tools menu).
-  const onDocClick = (event: MouseEvent) => {
-    if (newMenuOpen() && newChatWrap && !newChatWrap.contains(event.target as Node)) {
-      setNewMenuOpen(false);
-    }
+  useDismiss(
+    () => newChatWrap,
+    newMenuOpen,
+    () => setNewMenuOpen(false),
+  );
+
+  // Apply only if the query hasn't changed while the request was in flight.
+  const runSearch = (q: string) => {
+    void api
+      .search(q)
+      .then((r) => {
+        if (query().trim() === q) setResults(r);
+      })
+      .catch(console.error);
   };
-  const onDocKey = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') setNewMenuOpen(false);
-  };
-  onMount(() => {
-    document.addEventListener('click', onDocClick);
-    document.addEventListener('keydown', onDocKey);
-  });
-  onCleanup(() => {
-    document.removeEventListener('click', onDocClick);
-    document.removeEventListener('keydown', onDocKey);
-  });
 
   const onSearchInput = (value: string) => {
     setQuery(value);
@@ -44,14 +42,7 @@ export default function Sidebar() {
       setResults(null);
       return;
     }
-    searchTimer = window.setTimeout(() => {
-      void api
-        .search(q)
-        .then((r) => {
-          if (query().trim() === q) setResults(r);
-        })
-        .catch(console.error);
-    }, 250);
+    searchTimer = window.setTimeout(() => runSearch(q), 250);
   };
 
   // Results otherwise only refresh on typing — re-run the query when the
@@ -62,13 +53,7 @@ export default function Sidebar() {
       () => state.conversations.map((c) => `${c.id}:${c.title}`).join('\n'),
       () => {
         const q = query().trim();
-        if (!q || !results()) return;
-        void api
-          .search(q)
-          .then((r) => {
-            if (query().trim() === q) setResults(r);
-          })
-          .catch(console.error);
+        if (q && results()) runSearch(q);
       },
       { defer: true },
     ),

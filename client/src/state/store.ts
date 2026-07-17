@@ -164,28 +164,63 @@ function persistSelectedConversation(id: number | null): void {
   }
 }
 
-async function loadConversations(): Promise<void> {
-  const conversations = await api.conversations();
-  conversationsLoaded = true;
-  setState('conversations', reconcile(conversations, { key: 'id' }));
-  if (
-    selectionRestored &&
-    state.selectedId != null &&
-    !conversations.some((conversation) => conversation.id === state.selectedId)
-  ) {
-    selectConversation(null);
-    toast('This conversation was deleted on another device.');
-  }
+// Refetches can overlap (invalidate bursts, reconnect loadAll racing an
+// invalidate) and resolve out of order; applying an older response after a
+// newer one — or after a local write like newConversation's insert — would
+// revert state, so each entity tracks a fetch sequence and stale responses
+// are dropped.
+const fetchSeq = new Map<InvalidateEntity, number>();
+
+/** Marks now as the entity's newest state: any in-flight refetch started
+ * earlier is stale and its response will be discarded. */
+function bumpFetchSeq(entity: InvalidateEntity): number {
+  const seq = (fetchSeq.get(entity) ?? 0) + 1;
+  fetchSeq.set(entity, seq);
+  return seq;
+}
+
+function loader<T>(
+  entity: InvalidateEntity,
+  fetch: () => Promise<T>,
+  apply: (data: T) => void,
+): () => Promise<void> {
+  return async () => {
+    const seq = bumpFetchSeq(entity);
+    const data = await fetch();
+    if (fetchSeq.get(entity) !== seq) return; // superseded while in flight
+    apply(data);
+  };
 }
 
 const loaders: Record<InvalidateEntity, () => Promise<void>> = {
-  conversations: loadConversations,
-  characters: async () => setState('characters', reconcile(await api.characters(), { key: 'id' })),
-  presets: async () => setState('presets', reconcile(await api.presets(), { key: 'id' })),
-  templates: async () => setState('templates', reconcile(await api.templates(), { key: 'id' })),
-  personas: async () => setState('personas', reconcile(await api.personas(), { key: 'id' })),
-  endpoints: async () => setState('endpoints', reconcile(await api.endpoints(), { key: 'id' })),
-  settings: async () => setState('settings', await api.settings()),
+  conversations: loader('conversations', api.conversations, (conversations) => {
+    conversationsLoaded = true;
+    setState('conversations', reconcile(conversations, { key: 'id' }));
+    if (
+      selectionRestored &&
+      state.selectedId != null &&
+      !conversations.some((conversation) => conversation.id === state.selectedId)
+    ) {
+      selectConversation(null);
+      toast('This conversation was deleted on another device.');
+    }
+  }),
+  characters: loader('characters', api.characters, (data) =>
+    setState('characters', reconcile(data, { key: 'id' })),
+  ),
+  presets: loader('presets', api.presets, (data) =>
+    setState('presets', reconcile(data, { key: 'id' })),
+  ),
+  templates: loader('templates', api.templates, (data) =>
+    setState('templates', reconcile(data, { key: 'id' })),
+  ),
+  personas: loader('personas', api.personas, (data) =>
+    setState('personas', reconcile(data, { key: 'id' })),
+  ),
+  endpoints: loader('endpoints', api.endpoints, (data) =>
+    setState('endpoints', reconcile(data, { key: 'id' })),
+  ),
+  settings: loader('settings', api.settings, (data) => setState('settings', data)),
 };
 
 export async function loadAll(): Promise<void> {
@@ -215,6 +250,16 @@ export function handleServerEvent(ev: ServerEvent): void {
             'tree',
             'messages',
             reconcile(Object.fromEntries(ev.messages.map((m) => [m.id, m])), { key: 'id' }),
+          );
+        });
+        // A render may have finished while we were disconnected — progress for
+        // messages the snapshot shows as no longer pending is stale and must
+        // not front-run the next render on the same message.
+        setImageProgress((progress) => {
+          const pending = new Set(ev.messages.filter((m) => m.imagePending).map((m) => m.id));
+          if (Object.keys(progress).every((mid) => pending.has(Number(mid)))) return progress;
+          return Object.fromEntries(
+            Object.entries(progress).filter(([mid]) => pending.has(Number(mid))),
           );
         });
       }
@@ -412,6 +457,11 @@ export async function swipeToSibling(message: Message, dir: 1 | -1): Promise<voi
 
 export async function newConversation(characterId: number | null): Promise<void> {
   const conv = await api.createConversation(characterId);
+  // Insert immediately so Header/ChatView never flash the empty state while
+  // the invalidate-driven refetch is in flight; mark refetches started before
+  // this write as stale so they can't briefly remove the row again.
+  bumpFetchSeq('conversations');
+  setState('conversations', (list) => [conv, ...list]);
   selectConversation(conv.id);
 }
 

@@ -88,13 +88,19 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
   const nextId = nextUnreadSibling(msg);
 
   if (nextId != null) {
+    // Revealing a not-yet-seen speculative reply is "new content" for the
+    // sidebar, exactly like generating it in the foreground would have been.
+    const wasUnread = getMessage(nextId)?.generationKind === 'speculative';
     if (hasActiveGeneration(msg.conversationId)) {
       if (isBackgroundGeneration(nextId)) promoteBackgroundGeneration(nextId);
-      else if (!stopGeneration(msg.id)) {
+      // A speculative stream in another sibling group loses its context on
+      // this branch switch anyway — cancel it rather than refusing the swipe.
+      else if (!stopGeneration(msg.id) && !cancelBackgroundSwipe(msg.conversationId)) {
         throw new HttpError(409, 'a different generation is already running');
       }
     }
     markSwipeRead(nextId);
+    if (wasUnread) touchConversation(msg.conversationId);
     const leaf = activateMessage(nextId);
     broadcastTree(msg.conversationId);
     prepareNextSwipe(leaf);
@@ -102,7 +108,11 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
     return { activeLeafId: leaf, assistantMessageId: null };
   }
 
-  if (hasActiveGeneration(msg.conversationId) && !stopGeneration(msg.id)) {
+  if (
+    hasActiveGeneration(msg.conversationId) &&
+    !stopGeneration(msg.id) &&
+    !cancelBackgroundSwipe(msg.conversationId)
+  ) {
     throw new HttpError(409, 'a different generation is already running');
   }
   const mid = spawnAssistantReply(getConversation(msg.conversationId), msg.parentId, msg.name);
@@ -163,11 +173,13 @@ route.post('/api/messages/:id/edit-branch', ({ params, body }) => {
 route.post('/api/messages/:id/activate', ({ params, body }) => {
   const msg = requireMessage(positiveId(params.id));
   requireExpectedLeaf(msg, body);
+  const wasUnread = msg.generationKind === 'speculative';
   if (hasActiveGeneration(msg.conversationId)) {
     if (isBackgroundGeneration(msg.id)) promoteBackgroundGeneration(msg.id);
     else requireIdle(msg.conversationId);
   }
   markSwipeRead(msg.id);
+  if (wasUnread) touchConversation(msg.conversationId);
   const leaf = activateMessage(msg.id);
   broadcastTree(msg.conversationId);
   prepareNextSwipe(leaf);

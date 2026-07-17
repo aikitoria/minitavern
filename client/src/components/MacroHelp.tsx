@@ -1,4 +1,5 @@
-import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
+import { For, Show, createSignal } from 'solid-js';
+import { useDismiss } from '../util.ts';
 
 const BASIC: [string, string][] = [
   ['{{char}}', 'The character\'s name (or "Assistant")'],
@@ -30,21 +31,11 @@ export default function MacroHelp(props: {
   const [open, setOpen] = createSignal(false);
   let root: HTMLSpanElement | undefined;
 
-  const onDocClick = (event: MouseEvent) => {
-    if (open() && root && !root.contains(event.target as Node)) setOpen(false);
-  };
-  const onKey = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') setOpen(false);
-  };
-
-  onMount(() => {
-    document.addEventListener('click', onDocClick);
-    document.addEventListener('keydown', onKey);
-  });
-  onCleanup(() => {
-    document.removeEventListener('click', onDocClick);
-    document.removeEventListener('keydown', onKey);
-  });
+  useDismiss(
+    () => root,
+    open,
+    () => setOpen(false),
+  );
 
   // Basics first, then content slots in built-in template order, syntax last.
   const rows = () =>

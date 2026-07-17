@@ -1,4 +1,5 @@
 import { Show, createSignal, onMount } from 'solid-js';
+import { workflowValidationError } from '@minitavern/shared';
 import type { Plugin, PluginMessageView } from './api.ts';
 import { pluginSettings, savePluginSettings } from './api.ts';
 import { api } from '../state/api.ts';
@@ -59,20 +60,10 @@ function settings(): ImageGenSettings {
   return cfg;
 }
 
-/** Mirror of the server's route-time check so a broken paste fails at save time. */
+/** The server's route-time check (shared implementation) so a broken paste
+ * fails at save time; an empty workflow is allowed as a placeholder. */
 function workflowError(workflow: string): string | null {
-  if (!workflow.trim()) return null;
-  const dummy = workflow
-    .replaceAll(/\{\{prompt\}\}/gi, () => 'test')
-    .replaceAll(/\{\{seed\}\}/gi, () => '1');
-  try {
-    const parsed: unknown = JSON.parse(dummy);
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? null
-      : 'must be a JSON object (ComfyUI API format)';
-  } catch (err) {
-    return `is not valid JSON after macro substitution: ${errorMessage(err)}`;
-  }
+  return workflow.trim() ? workflowValidationError(workflow) : null;
 }
 
 /** No instruction → the describe-character prompt; otherwise the instruction
