@@ -1,6 +1,6 @@
 import type { Message } from '@minitavern/shared';
 import { stmt } from './db.ts';
-import { stopAllBackgroundGenerations, stopBackgroundGeneration } from './generation.ts';
+import { stopBackgroundGenerations } from './generation.ts';
 import { broadcastTree } from './sync.ts';
 
 const retryTimers = new Map<number, NodeJS.Timeout>();
@@ -51,27 +51,20 @@ export function scheduleSpeculativeRetry(
   );
 }
 
-/** Removes unread speculative siblings and returns the conversations that changed. */
-export function discardSpeculativeSwipes(conversationId?: number): number[] {
+/** Removes unread speculative siblings — one conversation's, or all when omitted. */
+export function discardSpeculativeSwipes(conversationId?: number): void {
   cancelSpeculativeRetries(conversationId);
-  if (conversationId == null) stopAllBackgroundGenerations();
-  else stopBackgroundGeneration(conversationId);
-
+  stopBackgroundGenerations(conversationId);
+  const cid = conversationId ?? null;
   const rows = stmt(
     `SELECT DISTINCT conversation_id FROM messages
-       WHERE generation_kind = 'speculative'
-       ${conversationId == null ? '' : 'AND conversation_id = ?'}`,
-  ).all(...(conversationId == null ? [] : [conversationId])) as { conversation_id: number }[];
-  if (conversationId == null) {
-    stmt("DELETE FROM messages WHERE generation_kind = 'speculative'").run();
-  } else {
-    stmt("DELETE FROM messages WHERE generation_kind = 'speculative' AND conversation_id = ?").run(
-      conversationId,
-    );
-  }
+       WHERE generation_kind = 'speculative' AND (? IS NULL OR conversation_id = ?)`,
+  ).all(cid, cid) as { conversation_id: number }[];
+  stmt(
+    "DELETE FROM messages WHERE generation_kind = 'speculative' AND (? IS NULL OR conversation_id = ?)",
+  ).run(cid, cid);
   for (const row of rows) broadcastTree(row.conversation_id);
   queueMicrotask(() => refillHandler?.(conversationId));
-  return rows.map((row) => row.conversation_id);
 }
 
 export function markSwipeRead(messageId: number): void {

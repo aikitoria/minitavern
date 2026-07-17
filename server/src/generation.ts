@@ -49,23 +49,15 @@ export function promoteBackgroundGeneration(mid: number): boolean {
   return true;
 }
 
-/** Stops the conversation's speculative generation, if any, and returns its message id. */
-export function stopBackgroundGeneration(conversationId: number): number | null {
-  const gen = [...active.values()].find(
-    (candidate) => candidate.conversationId === conversationId && candidate.background,
-  );
-  if (!gen) return null;
-  stopGeneration(gen.mid);
-  return gen.mid;
-}
-
-/** Used when the global setting is disabled. */
-export function stopAllBackgroundGenerations(): { mid: number; conversationId: number }[] {
-  const stopped: { mid: number; conversationId: number }[] = [];
+/** Stops speculative generations — one conversation's, or all when omitted.
+ * Returns the stopped message id (meaningful for the single-conversation case). */
+export function stopBackgroundGenerations(conversationId?: number): number | null {
+  let stopped: number | null = null;
   for (const gen of [...active.values()]) {
     if (!gen.background) continue;
-    stopped.push({ mid: gen.mid, conversationId: gen.conversationId });
+    if (conversationId != null && gen.conversationId !== conversationId) continue;
     stopGeneration(gen.mid);
+    stopped = gen.mid;
   }
   return stopped;
 }
@@ -116,22 +108,16 @@ function finalize(gen: ActiveGen, status: 'done' | 'error' | 'stopped'): void {
       message: getMessage(gen.mid)!,
     });
   }
-  invalidate('conversations');
-  if (status === 'done' && gen.onDone) {
+  // Speculative fills never touch updated_at, so a conversation-list refetch
+  // would be a no-op — don't make every client do one per background swipe.
+  if (!gen.background) invalidate('conversations');
+  const callback = status === 'done' ? gen.onDone : status === 'error' ? gen.onError : undefined;
+  if (callback) {
     queueMicrotask(() => {
       try {
-        gen.onDone?.();
+        callback();
       } catch (err) {
-        console.error('[generation] completion callback failed:', err);
-      }
-    });
-  }
-  if (status === 'error' && gen.onError) {
-    queueMicrotask(() => {
-      try {
-        gen.onError?.();
-      } catch (err) {
-        console.error('[generation] error callback failed:', err);
+        console.error(`[generation] ${status} callback failed:`, err);
       }
     });
   }

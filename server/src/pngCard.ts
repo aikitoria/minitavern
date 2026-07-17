@@ -10,6 +10,10 @@ export interface ParsedCard {
 }
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+export function isPng(data: Buffer): boolean {
+  return data.length >= 8 && data.subarray(0, 8).equals(PNG_SIGNATURE);
+}
 const MAX_COMPRESSED_METADATA = 1024 * 1024;
 const MAX_DECOMPRESSED_METADATA = 8 * 1024 * 1024;
 
@@ -179,6 +183,9 @@ export function buildCharacterCard(png: Buffer, card: unknown): Buffer {
   let off = 8;
   while (off + 12 <= png.length) {
     const length = png.readUInt32BE(off);
+    if (!Number.isSafeInteger(off + 12 + length) || off + 12 + length > png.length) {
+      throw new Error('PNG contains a truncated chunk');
+    }
     const type = png.toString('latin1', off + 4, off + 8);
     const chunk = png.subarray(off, off + 12 + length);
     off += 12 + length;

@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import type { Character, CustomTemplate } from '@minitavern/shared';
 import { AVATAR_DIR, stmt, toCharacter } from '../db.ts';
 import { invalidate } from '../events.ts';
-import { buildCharacterCard, makePlaceholderPng, parseCharacterCard } from '../pngCard.ts';
+import { buildCharacterCard, isPng, makePlaceholderPng, parseCharacterCard } from '../pngCard.ts';
 import { route, HttpError } from '../router.ts';
 import type { Ctx } from '../router.ts';
 import { optionalBoolean, optionalString, positiveId } from '../validation.ts';
@@ -56,11 +56,11 @@ defineEntityRoutes<Character>({
 
 route.put(
   '/api/characters/:id/avatar',
-  ({ params, raw, req }: Ctx) => {
+  ({ params, raw }: Ctx) => {
     const id = positiveId(params.id);
     rowById('characters', id);
     if (!raw?.length) throw new HttpError(400, 'image body is required');
-    const avatar = saveAvatar('character', id, raw, req.headers['content-type'] ?? '');
+    const avatar = saveAvatar('character', id, raw);
     stmt('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
     invalidate('characters');
     return toCharacter(rowById('characters', id));
@@ -93,7 +93,7 @@ route.post(
     const id = Number(result.lastInsertRowid);
     let avatar: string;
     try {
-      avatar = saveAvatar('character', id, raw, 'image/png');
+      avatar = saveAvatar('character', id, raw);
     } catch (err) {
       stmt('DELETE FROM characters WHERE id = ?').run(id);
       throw err;
@@ -132,6 +132,9 @@ route.get('/api/characters/:id/card', ({ params, res }) => {
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
   }
+  // Legacy uploads trusted the content-type header, so an old .png file may
+  // not actually be one — export with the placeholder instead of a 500.
+  if (base && !isPng(base)) base = null;
   const png = buildCharacterCard(base ?? makePlaceholderPng(), card);
   res
     .writeHead(200, {

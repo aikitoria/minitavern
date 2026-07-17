@@ -48,10 +48,16 @@ export function substituteMacros(text: string, charName: string, userName: strin
  * are collapsed so a natural-looking template produces clean output.
  */
 export function renderTemplate(template: string, vars: Record<string, string>): string {
-  let out = template.replaceAll(
-    /\{\{#if ([a-z]+)\}\}([\s\S]*?)\{\{\/if\}\}/gi,
-    (_, key: string, body: string) => (vars[key.toLowerCase()]?.trim() ? body : ''),
-  );
+  // Innermost-first (body may not contain another opener), looped to fixpoint so
+  // nested blocks resolve outward instead of the first opener grabbing the first closer.
+  let out = template;
+  for (let prev; prev !== out;) {
+    prev = out;
+    out = out.replaceAll(
+      /\{\{#if ([a-z]+)\}\}((?:(?!\{\{#if )[\s\S])*?)\{\{\/if\}\}/gi,
+      (_, key: string, body: string) => (vars[key.toLowerCase()]?.trim() ? body : ''),
+    );
+  }
   out = out.replaceAll(
     /\{\{([a-z]+)\}\}/gi,
     (match, key: string) => vars[key.toLowerCase()] ?? match,

@@ -29,7 +29,12 @@ export function createIpAllowlist(env: string | undefined): IpAllowlist {
     const family = isIP(address);
     if (!family) throw new Error(`Invalid address in MINITAVERN_IP_ALLOWLIST: ${entry}`);
     const maxPrefix = family === 4 ? 32 : 128;
-    const prefix = slash === -1 ? maxPrefix : Number(entry.slice(slash + 1));
+    // Strict digit check: Number('') is 0, so a trailing "/" would silently become /0.
+    const rawPrefix = slash === -1 ? null : entry.slice(slash + 1);
+    if (rawPrefix !== null && !/^\d+$/.test(rawPrefix)) {
+      throw new Error(`Invalid prefix in MINITAVERN_IP_ALLOWLIST: ${entry}`);
+    }
+    const prefix = rawPrefix === null ? maxPrefix : Number(rawPrefix);
     if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) {
       throw new Error(`Invalid prefix in MINITAVERN_IP_ALLOWLIST: ${entry}`);
     }

@@ -87,8 +87,14 @@ export async function dispatch(
     const m = r.regex.exec(pathname);
     if (!m) continue;
     const params: Record<string, string> = {};
-    r.paramNames.forEach((name, i) => (params[name] = decodeURIComponent(m[i + 1]!)));
     try {
+      r.paramNames.forEach((name, i) => {
+        try {
+          params[name] = decodeURIComponent(m[i + 1]!);
+        } catch {
+          throw new HttpError(400, 'malformed percent-encoding in path');
+        }
+      });
       let body: unknown = null;
       let raw: Buffer | null = null;
       if (req.method !== 'GET' && req.method !== 'DELETE') {

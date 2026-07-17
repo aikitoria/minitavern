@@ -152,7 +152,10 @@ export default function Composer() {
     setText('');
     queueMicrotask(resize);
     const sent = await navigateTree(() => api.send(id, content, state.tree.activeLeafId));
-    if (!sent) setText(content); // restore on failure so nothing is lost
+    if (!sent) {
+      setText(content); // restore on failure so nothing is lost
+      queueMicrotask(resize); // value bindings fire no input event, so re-grow manually
+    }
   };
 
   const stop = () => {
@@ -175,6 +178,7 @@ export default function Composer() {
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
+    if (event.isComposing) return; // IME candidate confirmation, not a command
     const matches = cmdMatches();
     if (matches.length > 0) {
       if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
@@ -196,7 +200,9 @@ export default function Composer() {
       }
     }
     // ↑ in an empty composer: edit the last sent user message in place.
-    if (event.key === 'ArrowUp' && !text()) {
+    // Chat view only — in trace view no MessageNode is mounted to consume the
+    // request, and the stale signal would pop an editor open much later.
+    if (event.key === 'ArrowUp' && !text() && state.viewMode === 'chat') {
       const lastUser = [...activePath()].reverse().find((m) => m.role === 'user');
       if (lastUser) {
         event.preventDefault();

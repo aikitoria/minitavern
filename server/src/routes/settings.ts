@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS } from '@minitavern/shared';
 import { route, HttpError } from '../router.ts';
 import { getSettings, putSettings } from '../settingsStore.ts';
 import { invalidate } from '../events.ts';
-import { stmt } from '../db.ts';
+import { requireReference, type EntityTable } from './entityUtils.ts';
 import { objectBody, optionalBoolean, optionalNullableId, optionalNumber } from '../validation.ts';
 import { discardSpeculativeSwipes } from '../speculation.ts';
 import { subscribedConversationIds } from '../events.ts';
@@ -25,17 +25,14 @@ route.put('/api/settings', ({ body }) => {
     defaultPersonaId: optionalNullableId(b, 'defaultPersonaId'),
     defaultTemplateId: optionalNullableId(b, 'defaultTemplateId'),
   };
-  const tables: Record<keyof typeof ids, string> = {
+  const tables: Record<keyof typeof ids, EntityTable> = {
     defaultPresetId: 'presets',
     activeEndpointId: 'endpoints',
     defaultPersonaId: 'personas',
     defaultTemplateId: 'templates',
   };
   for (const key of Object.keys(ids) as (keyof typeof ids)[]) {
-    const id = ids[key];
-    if (id != null && !stmt(`SELECT id FROM ${tables[key]} WHERE id = ?`).get(id)) {
-      throw new HttpError(400, `${key} does not exist`);
-    }
+    requireReference(tables[key], ids[key], key);
   }
   const autoExpandThinking = optionalBoolean(b, 'autoExpandThinking');
   const backgroundSwipeGeneration = optionalBoolean(b, 'backgroundSwipeGeneration');

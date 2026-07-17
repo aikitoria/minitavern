@@ -382,6 +382,13 @@ textarea.mono,
   align-items: center;
   justify-content: center;
   gap: 14px;
+  transition: opacity 0.3s ease;
+}
+
+/* Fading out — stays mounted until the transition finishes. */
+.boot-screen.boot-done {
+  opacity: 0;
+  pointer-events: none;
 }
 
 .boot-name {
@@ -1433,6 +1440,17 @@ textarea.mono,
   display: flex;
   align-items: center;
   gap: 12px;
+}
+
+/* API key input with its "Clear key" button beside it. */
+.key-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.key-row input {
+  flex: 1;
 }
 
 .avatar-row .avatar,

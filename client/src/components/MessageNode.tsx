@@ -13,7 +13,6 @@ import {
   siblingsOf,
   state,
   swipeToSibling,
-  toast,
 } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
 import Markdown from './Markdown.tsx';
@@ -174,50 +173,6 @@ export default function MessageNode(props: { message: Message }) {
 
   const copy = () => void navigator.clipboard.writeText(props.message.content);
 
-  const Tools = () => (
-    <>
-      <Show when={siblings().length > 1 || (!isUser() && !editing())}>
-        <span class="branch-nav">
-          <button
-            class="icon-btn"
-            disabled={
-              state.treeNavigationPending || streaming() || editing() || siblingIndex() <= 0
-            }
-            onClick={() => void swipeToSibling(props.message, -1)}
-          >
-            ‹
-          </button>
-          {siblingIndex() + 1}/{siblings().length}
-          <button
-            class="icon-btn"
-            disabled={
-              state.treeNavigationPending ||
-              editing() ||
-              (isUser() && siblingIndex() >= siblings().length - 1)
-            }
-            title={!isUser() && siblingIndex() >= siblings().length - 1 ? 'Regenerate' : undefined}
-            onClick={() => void swipeToSibling(props.message, 1)}
-          >
-            ›
-          </button>
-        </span>
-      </Show>
-      <Show when={!streaming() && !editing()}>
-        <span class="msg-actions">
-          <button class="icon-btn" title="Copy" onClick={copy}>
-            ⧉
-          </button>
-          <button class="icon-btn" title="Edit" onClick={startEdit}>
-            ✎
-          </button>
-          <button class="icon-btn" title="Delete branch from here" onClick={remove}>
-            <TrashIcon />
-          </button>
-        </span>
-      </Show>
-    </>
-  );
-
   return (
     <article
       class="msg"
@@ -270,7 +225,47 @@ export default function MessageNode(props: { message: Message }) {
             </button>
           </Show>
           <span class="msg-tools-top">
-            <Tools />
+            <Show when={siblings().length > 1 || (!isUser() && !editing())}>
+              <span class="branch-nav">
+                <button
+                  class="icon-btn"
+                  disabled={
+                    state.treeNavigationPending || streaming() || editing() || siblingIndex() <= 0
+                  }
+                  onClick={() => void swipeToSibling(props.message, -1)}
+                >
+                  ‹
+                </button>
+                {siblingIndex() + 1}/{siblings().length}
+                <button
+                  class="icon-btn"
+                  disabled={
+                    state.treeNavigationPending ||
+                    editing() ||
+                    (isUser() && siblingIndex() >= siblings().length - 1)
+                  }
+                  title={
+                    !isUser() && siblingIndex() >= siblings().length - 1 ? 'Regenerate' : undefined
+                  }
+                  onClick={() => void swipeToSibling(props.message, 1)}
+                >
+                  ›
+                </button>
+              </span>
+            </Show>
+            <Show when={!streaming() && !editing()}>
+              <span class="msg-actions">
+                <button class="icon-btn" title="Copy" onClick={copy}>
+                  ⧉
+                </button>
+                <button class="icon-btn" title="Edit" onClick={startEdit}>
+                  ✎
+                </button>
+                <button class="icon-btn" title="Delete branch from here" onClick={remove}>
+                  <TrashIcon />
+                </button>
+              </span>
+            </Show>
           </span>
         </div>
 
@@ -307,6 +302,7 @@ export default function MessageNode(props: { message: Message }) {
                     e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
                   }}
                   onKeyDown={(e) => {
+                    if (e.isComposing) return; // IME candidate confirmation, not a command
                     // Ctrl/Cmd+Enter submits as a new branch; Escape cancels.
                     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
                       e.preventDefault();

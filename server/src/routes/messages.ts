@@ -118,6 +118,7 @@ route.patch('/api/messages/:id', ({ params, body }) => {
   markMessageDirty(msg.conversationId, msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
+  invalidate('conversations');
   return getMessage(msg.id);
 });
 

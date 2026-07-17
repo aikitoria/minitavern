@@ -5,6 +5,7 @@ import {
   activateMessage,
   appendMessage,
   deleteMessage,
+  getActiveLeafId,
   getActivePath,
   getMessage,
   getTreeMessages,
@@ -18,7 +19,7 @@ import {
   hasActiveGeneration,
   hasForegroundGeneration,
   startGeneration,
-  stopBackgroundGeneration,
+  stopBackgroundGenerations,
   stopConversationGenerations,
 } from '../generation.ts';
 import { broadcastTree, treeSnapshot } from '../sync.ts';
@@ -52,7 +53,7 @@ export function touchConversation(id: number): void {
 
 /** Removes an in-flight speculative sibling before a foreground action takes over. */
 export function cancelBackgroundSwipe(conversationId: number): boolean {
-  const mid = stopBackgroundGeneration(conversationId);
+  const mid = stopBackgroundGenerations(conversationId);
   if (mid == null) return false;
   deleteMessage(mid);
   return true;
@@ -98,9 +99,7 @@ export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
 }
 
 export function prepareActiveSwipe(conversationId: number): void {
-  const row = stmt('SELECT active_leaf_id FROM conversations WHERE id = ?').get(conversationId) as
-    { active_leaf_id: number | null } | undefined;
-  const leaf = row?.active_leaf_id ?? null;
+  const leaf = getActiveLeafId(conversationId);
   if (leaf != null) prepareNextSwipe(leaf);
 }
 
@@ -220,8 +219,10 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
   if (hasForegroundGeneration(id))
     throw new HttpError(409, 'a generation is already running in this conversation');
   if (contextChanged) discardSpeculativeSwipes(id);
+  // No updated_at bump: metadata edits are not "new content" and must not
+  // reorder the sidebar (same doctrine as setActiveLeaf).
   stmt(
-    `UPDATE conversations SET title = ?, character_id = ?, persona_id = ?, endpoint_id = ?, speaker_name = ?, updated_at = ?
+    `UPDATE conversations SET title = ?, character_id = ?, persona_id = ?, endpoint_id = ?, speaker_name = ?
      WHERE id = ?`,
   ).run(
     title !== undefined ? title.trim() : conv.title,
@@ -229,7 +230,6 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
     personaId !== undefined ? personaId : conv.personaId,
     endpointId !== undefined ? endpointId : conv.endpointId,
     speakerName !== undefined ? speakerName?.trim() || null : conv.speakerName,
-    Date.now(),
     id,
   );
   invalidate('conversations');
@@ -249,13 +249,6 @@ route.get('/api/conversations/:id/tree', ({ params }) => {
   const id = positiveId(params.id);
   getConversation(id);
   return treeSnapshot(id);
-});
-
-route.post('/api/conversations/:id/prepare-swipe', ({ params }) => {
-  const id = positiveId(params.id);
-  getConversation(id);
-  prepareActiveSwipe(id);
-  return { prepared: true };
 });
 
 /** The exact upstream request messages a generation on the current branch would send. */

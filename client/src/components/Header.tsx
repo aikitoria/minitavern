@@ -67,6 +67,7 @@ export default function Header() {
                     class="header-title-input"
                     onBlur={commitRename}
                     onKeyDown={(e) => {
+                      if (e.isComposing) return; // IME candidate confirmation, not a command
                       if (e.key === 'Enter') commitRename();
                       if (e.key === 'Escape') setEditing(false);
                     }}

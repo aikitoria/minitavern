@@ -3,16 +3,31 @@ import { join } from 'node:path';
 import { AVATAR_DIR } from '../db.ts';
 import { HttpError } from '../router.ts';
 
-const IMAGE_EXT: Record<string, string> = {
-  'image/png': 'png',
-  'image/jpeg': 'jpg',
-  'image/webp': 'webp',
-};
+const IMAGE_EXTS = ['png', 'jpg', 'webp'];
+
+/** File type from magic bytes — content-type headers lie (a renamed JPEG
+ * stored as character-N.png would later break PNG card export). */
+function sniffImageExt(data: Buffer): string | null {
+  if (
+    data.length >= 8 &&
+    data.readUInt32BE(0) === 0x89504e47 &&
+    data.readUInt32BE(4) === 0x0d0a1a0a
+  )
+    return 'png';
+  if (data.length >= 3 && data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff) return 'jpg';
+  if (
+    data.length >= 12 &&
+    data.toString('latin1', 0, 4) === 'RIFF' &&
+    data.toString('latin1', 8, 12) === 'WEBP'
+  )
+    return 'webp';
+  return null;
+}
 
 export type AvatarKind = 'character' | 'persona';
 
 export function deleteAvatarFiles(kind: AvatarKind, id: number): void {
-  for (const ext of Object.values(IMAGE_EXT)) {
+  for (const ext of IMAGE_EXTS) {
     try {
       unlinkSync(join(AVATAR_DIR, `${kind}-${id}.${ext}`));
     } catch (err) {
@@ -21,14 +36,9 @@ export function deleteAvatarFiles(kind: AvatarKind, id: number): void {
   }
 }
 
-export function saveAvatar(
-  kind: AvatarKind,
-  id: number,
-  data: Buffer,
-  contentType: string,
-): string {
-  const ext = IMAGE_EXT[contentType.split(';', 1)[0]!.trim().toLowerCase()];
-  if (!ext) throw new HttpError(415, 'avatar must be image/png, image/jpeg or image/webp');
+export function saveAvatar(kind: AvatarKind, id: number, data: Buffer): string {
+  const ext = sniffImageExt(data);
+  if (!ext) throw new HttpError(415, 'avatar must be a PNG, JPEG or WebP image');
   deleteAvatarFiles(kind, id);
   const filename = `${kind}-${id}.${ext}`;
   writeFileSync(join(AVATAR_DIR, filename), data);

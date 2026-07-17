@@ -22,11 +22,11 @@ defineEntityRoutes<Persona>({
 
 route.put(
   '/api/personas/:id/avatar',
-  ({ params, raw, req }: Ctx) => {
+  ({ params, raw }: Ctx) => {
     const id = positiveId(params.id);
     rowById('personas', id);
     if (!raw?.length) throw new HttpError(400, 'image body is required');
-    const avatar = saveAvatar('persona', id, raw, req.headers['content-type'] ?? '');
+    const avatar = saveAvatar('persona', id, raw);
     stmt('UPDATE personas SET avatar = ? WHERE id = ?').run(avatar, id);
     invalidate('personas');
     return toPersona(rowById('personas', id));

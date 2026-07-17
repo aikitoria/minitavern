@@ -117,19 +117,17 @@ if (version < 1) {
     );
     CREATE INDEX idx_messages_conversation ON messages(conversation_id);
     CREATE INDEX idx_messages_parent ON messages(parent_id);
-    PRAGMA user_version = 1;
-    COMMIT;
   `);
-  const now = Date.now();
   db.prepare('INSERT INTO presets (name, content, created_at) VALUES (?, ?, ?)').run(
     'Default assistant',
     'You are {{char}}, a helpful assistant talking to {{user}}. Answer accurately and concisely.',
-    now,
+    Date.now(),
   );
   db.prepare('INSERT INTO settings (key, value) VALUES (?, ?)').run(
     'app',
     JSON.stringify({ ...DEFAULT_SETTINGS, defaultPresetId: 1, defaultTemplateId: 1 }),
   );
+  db.exec('PRAGMA user_version = 1; COMMIT;');
 }
 
 if (version < 2) {
@@ -141,14 +139,13 @@ if (version < 2) {
       content TEXT NOT NULL DEFAULT '',
       created_at INTEGER NOT NULL
     );
-    PRAGMA user_version = 2;
-    COMMIT;
   `);
   db.prepare('INSERT INTO templates (name, content, created_at) VALUES (?, ?, ?)').run(
     'Default',
     DEFAULT_PROMPT_TEMPLATE,
     Date.now(),
   );
+  db.exec('PRAGMA user_version = 2; COMMIT;');
 }
 
 if (version < 3) {

@@ -112,30 +112,29 @@ class WsClient {
   }
 }
 
-function crcTable(): Uint32Array {
-  return new Uint32Array(256).map((_, n) => {
-    let c = n;
-    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
-    return c >>> 0;
-  });
+const crcLookup = new Uint32Array(256).map((_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function crc32(buf: Buffer): number {
+  let c = 0xffffffff;
+  for (const byte of buf) c = crcLookup[(c ^ byte) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function chunk(type: string, data: Buffer): Buffer {
+  const head = Buffer.concat([Buffer.from(type, 'latin1'), data]);
+  const out = Buffer.alloc(head.length + 8);
+  out.writeUInt32BE(data.length, 0);
+  head.copy(out, 4);
+  out.writeUInt32BE(crc32(head), head.length + 4);
+  return out;
 }
 
 function makeCardPng(): Buffer {
   // 1x1 PNG with a tEXt 'chara' chunk carrying a V2 card.
-  const table = crcTable();
-  const crc32 = (buf: Buffer) => {
-    let c = 0xffffffff;
-    for (const byte of buf) c = table[(c ^ byte) & 0xff]! ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
-  const chunk = (type: string, data: Buffer) => {
-    const head = Buffer.concat([Buffer.from(type, 'latin1'), data]);
-    const out = Buffer.alloc(head.length + 8);
-    out.writeUInt32BE(data.length, 0);
-    head.copy(out, 4);
-    out.writeUInt32BE(crc32(head), head.length + 4);
-    return out;
-  };
   const ihdr = Buffer.alloc(13);
   ihdr.writeUInt32BE(1, 0);
   ihdr.writeUInt32BE(1, 4);
@@ -167,20 +166,6 @@ function makeCardPng(): Buffer {
 }
 
 function makeCompressedMetadataBombPng(): Buffer {
-  const table = crcTable();
-  const crc32 = (buf: Buffer) => {
-    let c = 0xffffffff;
-    for (const byte of buf) c = table[(c ^ byte) & 0xff]! ^ (c >>> 8);
-    return (c ^ 0xffffffff) >>> 0;
-  };
-  const chunk = (type: string, data: Buffer) => {
-    const head = Buffer.concat([Buffer.from(type, 'latin1'), data]);
-    const out = Buffer.alloc(head.length + 8);
-    out.writeUInt32BE(data.length, 0);
-    head.copy(out, 4);
-    out.writeUInt32BE(crc32(head), head.length + 4);
-    return out;
-  };
   const metadata = Buffer.concat([
     Buffer.from('chara\0', 'latin1'),
     Buffer.from([1, 0, 0, 0]),
@@ -194,6 +179,12 @@ function makeCompressedMetadataBombPng(): Buffer {
 }
 
 const tree = (id: number) => req<TreeSnapshot>('GET', `/api/conversations/${id}/tree`);
+
+const fetchTrace = (id: number) =>
+  req<{ messages: { role: string; content: string }[]; namePrefill: string | null }>(
+    'GET',
+    `/api/conversations/${id}/trace`,
+  );
 
 async function branchBody(conversationId: number, body: Record<string, unknown> = {}) {
   const snapshot = await tree(conversationId);
@@ -321,8 +312,11 @@ async function main() {
   await ws.open();
   ws.sendRaw(null);
   await new Promise((resolve) => setTimeout(resolve, 50));
-  await req('GET', '/api/settings');
-  assert(true, 'malformed WebSocket command does not crash the server');
+  const settingsAfterBadWs = await req<Settings>('GET', '/api/settings');
+  assert(
+    typeof settingsAfterBadWs.revision === 'number',
+    'malformed WebSocket command does not crash the server',
+  );
   ws.sub(conv.id);
   await ws.waitFor((e) => e.t === 'tree', 'initial tree push');
   const peer = new WsClient();
@@ -627,8 +621,11 @@ async function main() {
     body: new Uint8Array(makeCompressedMetadataBombPng()),
   });
   assert(bombRes.status === 400, 'oversized compressed PNG metadata is rejected safely');
-  await req('GET', '/api/settings');
-  assert(true, 'server remains responsive after compressed metadata rejection');
+  const settingsAfterBomb = await req<Settings>('GET', '/api/settings');
+  assert(
+    typeof settingsAfterBomb.revision === 'number',
+    'server remains responsive after compressed metadata rejection',
+  );
   const cardRes = await fetch(`${BASE}/api/characters/import-card`, {
     method: 'POST',
     headers: { 'content-type': 'application/octet-stream' },
@@ -696,10 +693,7 @@ async function main() {
   const conv2 = await req<{ id: number }>('POST', '/api/conversations', {});
   await req('PATCH', `/api/conversations/${conv2.id}`, { speakerName: 'Ari' });
 
-  const trace = await req<{
-    messages: { role: string; content: string }[];
-    namePrefill: string | null;
-  }>('GET', `/api/conversations/${conv2.id}/trace`);
+  const trace = await fetchTrace(conv2.id);
   assert(
     trace.messages.some((m) => m.role === 'user' && m.content === 'You are playing Assistant.'),
     'template prologue emitted as fake user turn',
@@ -719,10 +713,7 @@ async function main() {
     reply.content.includes('Aiki: prefix check'),
     'history prefixed with persona name upstream',
   );
-  const prefixedTrace = await req<{
-    messages: { role: string; content: string }[];
-    namePrefill: string | null;
-  }>('GET', `/api/conversations/${conv2.id}/trace`);
+  const prefixedTrace = await fetchTrace(conv2.id);
   assert(
     prefixedTrace.messages.some((message) => message.content === 'Aiki: prefix check') &&
       prefixedTrace.namePrefill === 'Ari:',
@@ -782,10 +773,7 @@ async function main() {
   const inlineConv = await req<{ id: number }>('POST', '/api/conversations', {
     characterId: inlineChar.id,
   });
-  const inlineTrace = await req<{
-    messages: { role: string; content: string }[];
-    namePrefill: string | null;
-  }>('GET', `/api/conversations/${inlineConv.id}/trace`);
+  const inlineTrace = await fetchTrace(inlineConv.id);
   assert(
     inlineTrace.messages.some(
       (m) => m.role === 'system' && m.content.endsWith('INLINE Inline Hero + User'),

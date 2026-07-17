@@ -1,4 +1,4 @@
-import { For, Show } from 'solid-js';
+import { For, Show, createEffect, createSignal } from 'solid-js';
 import { booting, state, setState } from './state/store.ts';
 import Sidebar from './components/Sidebar.tsx';
 import Header from './components/Header.tsx';
@@ -8,10 +8,16 @@ import SettingsModal from './components/SettingsModal.tsx';
 import ConversationSettings from './components/ConversationSettings.tsx';
 
 export default function App() {
+  // Boot is one-way: once booting() clears, fade the cover out and unmount it
+  // after the transition instead of popping it away.
+  const [bootGone, setBootGone] = createSignal(false);
+  createEffect(() => {
+    if (!booting()) setTimeout(() => setBootGone(true), 350);
+  });
   return (
     <div class="app">
-      <Show when={booting()}>
-        <div class="boot-screen">
+      <Show when={!bootGone()}>
+        <div class="boot-screen" classList={{ 'boot-done': !booting() }}>
           <img src="/icon.svg" alt="" width="72" height="72" />
           <span class="boot-name">MiniTavern</span>
           <span class="boot-dots">

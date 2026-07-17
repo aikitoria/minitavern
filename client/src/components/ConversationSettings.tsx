@@ -26,13 +26,22 @@ function snapshot(conv: Conversation): Draft {
 }
 
 function Editor(props: { conv: Conversation }) {
-  const [draft, setDraft] = createStore<Draft>(snapshot(props.conv));
+  let base = snapshot(props.conv);
+  const [draft, setDraft] = createStore<Draft>({ ...base });
   const [saved, flashSaved] = createSavedFlash();
   const [error, setError] = createSignal('');
 
   const save = async () => {
+    // Only send fields the user changed here — a full-draft PATCH would
+    // clobber concurrent updates (auto-titling, /char on another device).
+    const dirty = Object.fromEntries(
+      (Object.keys(base) as (keyof Draft)[])
+        .filter((key) => draft[key] !== base[key])
+        .map((key) => [key, draft[key]]),
+    );
     try {
-      await api.patchConversation(props.conv.id, { ...draft });
+      const updated = await api.patchConversation(props.conv.id, dirty);
+      base = snapshot(updated);
       setError('');
       flashSaved();
     } catch (err) {
@@ -42,7 +51,10 @@ function Editor(props: { conv: Conversation }) {
 
   const discard = () => {
     const current = selectedConversation();
-    if (current) setDraft(reconcile(snapshot(current)));
+    if (current) {
+      base = snapshot(current);
+      setDraft(reconcile({ ...base }));
+    }
     setError('');
   };
 

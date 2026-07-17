@@ -151,6 +151,9 @@ export const streamingMessage = globalMemo<Message | null>(() => {
 const LAST_CONVERSATION_KEY = 'minitavern.lastConversationId';
 let conversationsLoaded = false;
 let selectionRestored = false;
+/** First tree snapshot applied — the boot cover only waits for the initial
+ * (hash-restored) tree, not for every later conversation switch. */
+const [initialTreeLoaded, setInitialTreeLoaded] = createSignal(false);
 
 function persistSelectedConversation(id: number | null): void {
   try {
@@ -202,6 +205,7 @@ export function handleServerEvent(ev: ServerEvent): void {
       break;
     case 'tree':
       if (ev.conversationId === state.selectedId) {
+        setInitialTreeLoaded(true);
         batch(() => {
           setState('tree', 'conversationId', ev.conversationId);
           setState('tree', 'activeLeafId', ev.activeLeafId);
@@ -222,10 +226,7 @@ export function handleServerEvent(ev: ServerEvent): void {
       const bodies = new Map(ev.messages.map((m) => [m.id, m]));
       // A node we've never seen and no body for means a missed frame — resync.
       if (ev.nodes.some((node) => !bodies.has(node.id) && !state.tree.messages[node.id])) {
-        api
-          .tree(ev.conversationId)
-          .then((snapshot) => handleServerEvent({ t: 'tree', ...snapshot }))
-          .catch(console.error);
+        resyncTree();
         break;
       }
       batch(() => {
@@ -282,7 +283,21 @@ export function handleServerEvent(ev: ServerEvent): void {
 
 // ---- Actions ----
 
+/**
+ * Re-request the tree by re-subscribing: the server pushes a fresh snapshot
+ * on repeat subs, and it arrives in-order with patches/deltas on the WS
+ * channel — a REST fetch could race a concurrent patch and revert an edited
+ * body that would never be resent.
+ */
+function resyncTree(): void {
+  if (state.selectedId != null) subscribe(state.selectedId);
+}
+
 export function selectConversation(id: number | null): void {
+  if (id === state.selectedId) {
+    setState('sidebarOpen', false); // mobile: still dismiss the sidebar
+    return;
+  }
   batch(() => {
     setState('selectedId', id);
     setState('sidebarOpen', false);
@@ -291,6 +306,9 @@ export function selectConversation(id: number | null): void {
     // marks the tree as still loading.
     setState('tree', { conversationId: null, messages: {}, activeLeafId: null });
   });
+  // A swipe animation pending in the previous conversation must not leak into
+  // this one's freshly mounted nodes.
+  setPendingSwipe(null);
   subscribe(id);
   persistSelectedConversation(id);
   history.replaceState(null, '', id != null ? `#${id}` : '#');
@@ -304,14 +322,7 @@ export async function navigateTree(action: () => Promise<unknown>): Promise<bool
     return true;
   } catch (err) {
     toast(err instanceof Error ? err.message : String(err));
-    if (err instanceof ApiError && err.status === 409 && state.selectedId != null) {
-      try {
-        const snapshot = await api.tree(state.selectedId);
-        handleServerEvent({ t: 'tree', ...snapshot });
-      } catch {
-        /* WebSocket invalidation remains the fallback. */
-      }
-    }
+    if (err instanceof ApiError && err.status === 409) resyncTree();
     return false;
   } finally {
     setState('treeNavigationPending', false);
@@ -400,5 +411,8 @@ export function toggleSidebar(): void {
 /** True until the initial server state (and the hash-selected tree, if any) has arrived. */
 export const booting = globalMemo(
   () =>
-    !state.booted || (state.selectedId != null && state.tree.conversationId !== state.selectedId),
+    !state.booted ||
+    (!initialTreeLoaded() &&
+      state.selectedId != null &&
+      state.tree.conversationId !== state.selectedId),
 );

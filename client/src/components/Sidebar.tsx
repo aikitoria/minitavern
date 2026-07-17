@@ -1,14 +1,7 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createEffect, createSignal, on } from 'solid-js';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
-import {
-  newConversation,
-  openModal,
-  selectConversation,
-  setState,
-  state,
-  toast,
-} from '../state/store.ts';
+import { newConversation, openModal, selectConversation, state, toast } from '../state/store.ts';
 import { errorMessage } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
@@ -41,6 +34,26 @@ export default function Sidebar() {
         .catch(console.error);
     }, 250);
   };
+
+  // Results otherwise only refresh on typing — re-run the query when the
+  // conversation list changes (a delete/rename elsewhere would leave stale,
+  // still-clickable entries).
+  createEffect(
+    on(
+      () => state.conversations.map((c) => `${c.id}:${c.title}`).join('\n'),
+      () => {
+        const q = query().trim();
+        if (!q || !results()) return;
+        void api
+          .search(q)
+          .then((r) => {
+            if (query().trim() === q) setResults(r);
+          })
+          .catch(console.error);
+      },
+      { defer: true },
+    ),
+  );
 
   const create = (characterId: number | null) => {
     setNewMenuOpen(false);

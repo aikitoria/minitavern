@@ -1,4 +1,4 @@
-import { createSignal } from 'solid-js';
+import { createSignal, onMount } from 'solid-js';
 
 export type EditorId = number | 'new';
 
@@ -36,6 +36,18 @@ export function createEntityEditor<T extends { id: number }, D>(
     setStatus('');
     options.load(options.items().find((item) => item.id === id));
   };
+  /** Select-and-load an item that may not be in items() yet (e.g. a fresh
+   * import whose WS invalidate refetch hasn't landed). */
+  const adopt = (item: T) => {
+    nav.openDetail();
+    setSelectedId(item.id);
+    options.load(item);
+  };
+  // Seed the initial "new entity" form once the refs exist: raw DOM defaults
+  // diverge from load(undefined) (e.g. a Select with no '' option stays '').
+  onMount(() => {
+    if (selectedId() === 'new') options.load(undefined);
+  });
   const save = async () => {
     try {
       const id = selectedId();
@@ -70,6 +82,7 @@ export function createEntityEditor<T extends { id: number }, D>(
     nav,
     selected,
     select,
+    adopt,
     save,
     remove,
     flashSaved,
