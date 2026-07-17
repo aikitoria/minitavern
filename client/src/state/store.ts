@@ -1,4 +1,4 @@
-import { createMemo, batch } from 'solid-js';
+import { createMemo, createSignal, batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type {
   Character,
@@ -300,6 +300,50 @@ export async function navigateTree(action: () => Promise<unknown>): Promise<bool
   } finally {
     setState('treeNavigationPending', false);
   }
+}
+
+// ---- Swipe navigation (shared by the touch gesture, ‹ › buttons and arrow keys) ----
+
+export interface PendingSwipe {
+  /** Sibling group the swipe happens in (-1 for root messages). */
+  parentKey: number;
+  /** The message sliding out. */
+  outgoingId: number;
+  /** 1 = next sibling (out to the left, in from the right), -1 = previous. */
+  dir: 1 | -1;
+}
+
+export const [pendingSwipe, setPendingSwipe] = createSignal<PendingSwipe | null>(null);
+
+/**
+ * Switch to a sibling with a directional slide: the outgoing message animates
+ * fully out while `pendingSwipe` is set, and the incoming sibling slides in
+ * from the opposite side as it mounts. Swiping an assistant message past the
+ * end generates a new sibling (advance).
+ */
+export async function swipeToSibling(message: Message, dir: 1 | -1): Promise<void> {
+  if (state.treeNavigationPending) return;
+  const siblings = siblingsOf(message);
+  const idx = siblings.findIndex((m) => m.id === message.id);
+  let action: (() => Promise<unknown>) | null = null;
+  if (dir === -1 || message.role === 'user') {
+    const target = siblings[idx + dir];
+    if (target) action = () => api.activate(target.id, state.tree.activeLeafId);
+  } else {
+    action = () => api.advance(message.id, state.tree.activeLeafId);
+  }
+  if (!action) return;
+  setPendingSwipe({ parentKey: message.parentId ?? -1, outgoingId: message.id, dir });
+  const ok = await navigateTree(action);
+  if (!ok) {
+    setPendingSwipe(null); // spring back
+    return;
+  }
+  // The incoming sibling consumes this as it mounts; drop it shortly after so
+  // unrelated mounts never animate.
+  setTimeout(() => {
+    setPendingSwipe((p) => (p?.outgoingId === message.id ? null : p));
+  }, 400);
 }
 
 export async function newConversation(characterId: number | null): Promise<void> {

@@ -1,13 +1,11 @@
 import { For, Show, createEffect, onCleanup, onMount } from 'solid-js';
-import { api } from '../state/api.ts';
 import {
   activePath,
-  navigateTree,
   newConversation,
   selectedConversation,
-  siblingsOf,
   state,
   streamingMessage,
+  swipeToSibling,
 } from '../state/store.ts';
 import MessageNode from './MessageNode.tsx';
 import TraceView from './TraceView.tsx';
@@ -48,14 +46,11 @@ export default function ChatView() {
     const path = activePath();
     const last = path[path.length - 1];
     if (!last || last.role !== 'assistant') return;
-    const siblings = siblingsOf(last);
-    const idx = siblings.findIndex((m) => m.id === last.id);
     if (event.key === 'ArrowLeft') {
       if (last.status === 'streaming' || streamingMessage()) return;
-      if (idx > 0)
-        void navigateTree(() => api.activate(siblings[idx - 1]!.id, state.tree.activeLeafId));
+      void swipeToSibling(last, -1);
     } else {
-      void navigateTree(() => api.advance(last.id, state.tree.activeLeafId));
+      void swipeToSibling(last, 1);
     }
     event.preventDefault();
   };

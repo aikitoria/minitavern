@@ -3,10 +3,12 @@ import type { Message } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import {
   navigateTree,
+  pendingSwipe,
   selectedCharacter,
   selectedPersona,
   siblingsOf,
   state,
+  swipeToSibling,
   toast,
 } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
@@ -31,17 +33,20 @@ export default function MessageNode(props: { message: Message }) {
   const siblings = () => siblingsOf(props.message);
   const siblingIndex = () => siblings().findIndex((m) => m.id === props.message.id);
 
-  const switchSibling = (offset: number) => {
-    const target = siblings()[siblingIndex() + offset];
-    if (target) void navigateTree(() => api.activate(target.id, state.tree.activeLeafId));
-  };
+  // Mount-time swipe context: when this node mounts as the incoming sibling
+  // of an in-flight swipe, it slides in from the side the swipe came from.
+  const swipeAtMount = pendingSwipe();
+  const enterDir =
+    swipeAtMount &&
+    swipeAtMount.outgoingId !== props.message.id &&
+    (props.message.parentId ?? -1) === swipeAtMount.parentKey
+      ? swipeAtMount.dir
+      : 0;
 
-  const nextSiblingOrRegenerate = () => {
-    if (isUser()) switchSibling(1);
-    else {
-      void navigateTree(() => api.advance(props.message.id, state.tree.activeLeafId));
-    }
-  };
+  // While this node is the outgoing side of a swipe it slides fully out (and
+  // holds offscreen until the replacing tree frame unmounts it). A failed
+  // swipe clears pendingSwipe, springing it back.
+  const exitDir = () => (pendingSwipe()?.outgoingId === props.message.id ? pendingSwipe()!.dir : 0);
 
   // SillyTavern-style swipe gesture on the last assistant message: swipe left
   // for the next sibling (generating a new one past the end), right for the previous.
@@ -87,9 +92,9 @@ export default function MessageNode(props: { message: Message }) {
     if (dragging() && horizontal) {
       const dx = dragX();
       if (dx <= -48) {
-        nextSiblingOrRegenerate();
+        void swipeToSibling(props.message, 1);
       } else if (dx >= 48 && !streaming()) {
-        switchSibling(-1);
+        void swipeToSibling(props.message, -1);
       }
     }
     setDragging(false);
@@ -136,7 +141,7 @@ export default function MessageNode(props: { message: Message }) {
             disabled={
               state.treeNavigationPending || streaming() || editing() || siblingIndex() <= 0
             }
-            onClick={() => switchSibling(-1)}
+            onClick={() => void swipeToSibling(props.message, -1)}
           >
             ‹
           </button>
@@ -149,7 +154,7 @@ export default function MessageNode(props: { message: Message }) {
               (isUser() && siblingIndex() >= siblings().length - 1)
             }
             title={!isUser() && siblingIndex() >= siblings().length - 1 ? 'Regenerate' : undefined}
-            onClick={nextSiblingOrRegenerate}
+            onClick={() => void swipeToSibling(props.message, 1)}
           >
             ›
           </button>
@@ -186,13 +191,7 @@ export default function MessageNode(props: { message: Message }) {
       onTouchCancel={onTouchEnd}
     >
       <Avatar src={avatarSrc()} name={name()} />
-      <div
-        class="msg-body"
-        style={{
-          transform: dragX() !== 0 ? `translateX(${dragX()}px)` : undefined,
-          transition: dragging() ? 'none' : 'transform 0.15s ease-out',
-        }}
-      >
+      <div class="msg-body">
         <div class="msg-head">
           <span class="msg-name">{name()}</span>
           <Show when={props.message.status === 'stopped'}>
@@ -218,39 +217,55 @@ export default function MessageNode(props: { message: Message }) {
           </span>
         </div>
 
-        <Show when={props.message.reasoning && reasoningOpen()}>
-          <div class="reasoning-text">{props.message.reasoning}</div>
-        </Show>
-
-        <Show
-          when={!editing()}
-          fallback={
-            <div class="msg-edit">
-              <textarea
-                ref={editArea}
-                onInput={(e) => {
-                  e.currentTarget.style.height = 'auto';
-                  e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
-                }}
-              />
-              <div class="msg-edit-actions">
-                <button class="primary-btn" onClick={() => void saveAsBranch()}>
-                  {isUser() ? 'Send as branch' : 'Save as branch'}
-                </button>
-                <button onClick={() => void saveInPlace()}>Save in place</button>
-                <button onClick={() => setEditing(false)}>Cancel</button>
-              </div>
-            </div>
-          }
+        {/* Only the content region slides on swipes; the name row and tools stay put. */}
+        <div
+          class="msg-swipe"
+          classList={{ 'swipe-in-next': enterDir === 1, 'swipe-in-prev': enterDir === -1 }}
+          style={{
+            transform:
+              exitDir() !== 0
+                ? `translateX(${exitDir() === 1 ? -105 : 105}%)`
+                : dragX() !== 0
+                  ? `translateX(${dragX()}px)`
+                  : undefined,
+            opacity: exitDir() !== 0 ? 0 : undefined,
+            transition: dragging() ? 'none' : 'transform 0.18s ease-out, opacity 0.18s ease-out',
+          }}
         >
-          <div class="msg-content">
-            <Markdown content={props.message.content} streaming={streaming()} />
-          </div>
-        </Show>
+          <Show when={props.message.reasoning && reasoningOpen()}>
+            <div class="reasoning-text">{props.message.reasoning}</div>
+          </Show>
 
-        <Show when={props.message.status === 'error'}>
-          <div class="msg-error">{props.message.genMeta?.error ?? 'Generation failed'}</div>
-        </Show>
+          <Show
+            when={!editing()}
+            fallback={
+              <div class="msg-edit">
+                <textarea
+                  ref={editArea}
+                  onInput={(e) => {
+                    e.currentTarget.style.height = 'auto';
+                    e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+                  }}
+                />
+                <div class="msg-edit-actions">
+                  <button class="primary-btn" onClick={() => void saveAsBranch()}>
+                    {isUser() ? 'Send as branch' : 'Save as branch'}
+                  </button>
+                  <button onClick={() => void saveInPlace()}>Save in place</button>
+                  <button onClick={() => setEditing(false)}>Cancel</button>
+                </div>
+              </div>
+            }
+          >
+            <div class="msg-content">
+              <Markdown content={props.message.content} streaming={streaming()} />
+            </div>
+          </Show>
+
+          <Show when={props.message.status === 'error'}>
+            <div class="msg-error">{props.message.genMeta?.error ?? 'Generation failed'}</div>
+          </Show>
+        </div>
       </div>
     </article>
   );

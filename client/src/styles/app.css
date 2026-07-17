@@ -606,7 +606,8 @@ textarea.mono {
 
 .chat {
   flex: 1;
-  overflow-y: auto;
+  /* x hidden: swipe transitions slide message bodies fully offscreen */
+  overflow: hidden auto;
   scrollbar-gutter: stable;
 }
 
@@ -659,6 +660,29 @@ textarea.mono {
 .msg-body {
   flex: 1;
   min-width: 0;
+}
+
+/* Incoming side of a sibling swipe: slide in from the direction the swipe came from. */
+@keyframes swipe-in-next {
+  from {
+    transform: translateX(105%);
+    opacity: 0;
+  }
+}
+
+@keyframes swipe-in-prev {
+  from {
+    transform: translateX(-105%);
+    opacity: 0;
+  }
+}
+
+.msg-swipe.swipe-in-next {
+  animation: swipe-in-next 0.18s ease-out;
+}
+
+.msg-swipe.swipe-in-prev {
+  animation: swipe-in-prev 0.18s ease-out;
 }
 
 .msg-head {
