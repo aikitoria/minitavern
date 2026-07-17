@@ -54,7 +54,7 @@ body {
   background: var(--bg);
   color: var(--text);
   font:
-    15px/1.55 'Inter Variable',
+    15px/1.55 'IBM Plex Sans Variable',
     system-ui,
     'Segoe UI',
     Roboto,

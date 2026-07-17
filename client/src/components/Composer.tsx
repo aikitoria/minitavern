@@ -4,6 +4,7 @@ import {
   activePath,
   navigateTree,
   selectConversation,
+  setEditRequestId,
   state,
   streamingMessage,
   toast,
@@ -193,6 +194,15 @@ export default function Composer() {
         complete(matches[Math.min(selIdx(), matches.length - 1)]!);
         return;
       }
+    }
+    // ↑ in an empty composer: edit the last sent user message in place.
+    if (event.key === 'ArrowUp' && !text()) {
+      const lastUser = [...activePath()].reverse().find((m) => m.role === 'user');
+      if (lastUser) {
+        event.preventDefault();
+        setEditRequestId(lastUser.id);
+      }
+      return;
     }
     // Desktop: Enter sends, Shift+Enter newline. Touch: Enter is newline, use the button.
     if (event.key === 'Enter' && !event.shiftKey && !coarsePointer) {

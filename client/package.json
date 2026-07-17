@@ -4,7 +4,6 @@
   "private": true,
   "type": "module",
   "devDependencies": {
-    "@fontsource-variable/inter": "^5.2.8",
     "@minitavern/shared": "*",
     "dompurify": "^3.2.4",
     "highlight.js": "^11.11.1",
@@ -18,5 +17,8 @@
     "dev": "vite --host --port 5173",
     "build": "vite build",
     "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@fontsource-variable/ibm-plex-sans": "^5.2.8"
   }
 }

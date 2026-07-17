@@ -1,4 +1,4 @@
-import { createMemo, createSignal, batch } from 'solid-js';
+import { createMemo, createRoot, createSignal, batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type {
   Character,
@@ -74,18 +74,24 @@ export function toast(text: string): void {
 
 // ---- Derived state ----
 
-export const selectedConversation = createMemo(
+/**
+ * App-lifetime memo: rooted explicitly (and intentionally never disposed) so
+ * Solid's dev mode doesn't warn about computations created outside a root.
+ */
+const globalMemo = <T>(fn: () => T) => createRoot(() => createMemo(fn));
+
+export const selectedConversation = globalMemo(
   () => state.conversations.find((c) => c.id === state.selectedId) ?? null,
 );
 
-export const selectedCharacter = createMemo(() => {
+export const selectedCharacter = globalMemo(() => {
   const conv = selectedConversation();
   return conv?.characterId != null
     ? (state.characters.find((c) => c.id === conv.characterId) ?? null)
     : null;
 });
 
-export const selectedPersona = createMemo(() => {
+export const selectedPersona = globalMemo(() => {
   const conv = selectedConversation();
   return conv?.personaId != null
     ? (state.personas.find((p) => p.id === conv.personaId) ?? null)
@@ -93,7 +99,7 @@ export const selectedPersona = createMemo(() => {
 });
 
 /** Active path, root -> leaf, walked up via parent pointers from the active leaf. */
-export const activePath = createMemo<Message[]>(() => {
+export const activePath = globalMemo<Message[]>(() => {
   const tree = state.tree;
   const path: Message[] = [];
   let cur = tree.activeLeafId;
@@ -107,7 +113,7 @@ export const activePath = createMemo<Message[]>(() => {
 });
 
 /** parentId (or -1 for roots) -> ordered children; drives the < n/m > branch navigation. */
-export const childrenByParent = createMemo<Map<number, Message[]>>(() => {
+export const childrenByParent = globalMemo<Map<number, Message[]>>(() => {
   const map = new Map<number, Message[]>();
   for (const msg of Object.values(state.tree.messages)) {
     const key = msg.parentId ?? -1;
@@ -123,7 +129,7 @@ export function siblingsOf(message: Message): Message[] {
   return childrenByParent().get(message.parentId ?? -1) ?? [];
 }
 
-export const streamingMessage = createMemo<Message | null>(() => {
+export const streamingMessage = globalMemo<Message | null>(() => {
   for (const msg of activePath()) {
     if (msg.status === 'streaming') return msg;
   }
@@ -315,6 +321,9 @@ export interface PendingSwipe {
 
 export const [pendingSwipe, setPendingSwipe] = createSignal<PendingSwipe | null>(null);
 
+/** Set to a message id to ask that MessageNode to open its in-place editor (composer ↑ key). */
+export const [editRequestId, setEditRequestId] = createSignal<number | null>(null);
+
 /**
  * Switch to a sibling with a directional slide: the outgoing message animates
  * fully out while `pendingSwipe` is set, and the incoming sibling slides in
@@ -379,7 +388,7 @@ export function toggleSidebar(): void {
 }
 
 /** True until the initial server state (and the hash-selected tree, if any) has arrived. */
-export const booting = createMemo(
+export const booting = globalMemo(
   () =>
     !state.booted || (state.selectedId != null && state.tree.conversationId !== state.selectedId),
 );

@@ -1,11 +1,13 @@
-import { Show, createSignal } from 'solid-js';
+import { Show, createEffect, createSignal } from 'solid-js';
 import type { Message } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import {
+  editRequestId,
   navigateTree,
   pendingSwipe,
   selectedCharacter,
   selectedPersona,
+  setEditRequestId,
   siblingsOf,
   state,
   swipeToSibling,
@@ -13,6 +15,7 @@ import {
 } from '../state/store.ts';
 import Avatar from './Avatar.tsx';
 import Markdown from './Markdown.tsx';
+import TrashIcon from './TrashIcon.tsx';
 
 // Shared across all messages: on touch layouts, actions show only on the last-tapped message.
 const [touchedId, setTouchedId] = createSignal<number | null>(null);
@@ -112,6 +115,14 @@ export default function MessageNode(props: { message: Message }) {
     });
   };
 
+  // The composer's ↑ key requests an in-place edit of the last sent message.
+  createEffect(() => {
+    if (editRequestId() === props.message.id) {
+      setEditRequestId(null);
+      if (!editing()) startEdit();
+    }
+  });
+
   const saveInPlace = async () => {
     const saved = await navigateTree(() =>
       api.editMessage(props.message.id, editArea!.value, state.tree.activeLeafId),
@@ -169,7 +180,7 @@ export default function MessageNode(props: { message: Message }) {
             ✎
           </button>
           <button class="icon-btn" title="Delete branch from here" onClick={remove}>
-            🗑
+            <TrashIcon />
           </button>
         </span>
       </Show>
@@ -245,6 +256,15 @@ export default function MessageNode(props: { message: Message }) {
                   onInput={(e) => {
                     e.currentTarget.style.height = 'auto';
                     e.currentTarget.style.height = `${e.currentTarget.scrollHeight}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    // Ctrl/Cmd+Enter submits as a new branch; Escape cancels.
+                    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                      e.preventDefault();
+                      void saveAsBranch();
+                    } else if (e.key === 'Escape') {
+                      setEditing(false);
+                    }
                   }}
                 />
                 <div class="msg-edit-actions">
