@@ -47,12 +47,20 @@ export default function MacroTextarea(props: {
   template?: boolean;
   /** Additional macro names to treat as valid (e.g. a plugin's {{instruction}}). */
   extraKeys?: string[];
+  /** Exclusive macro set: replaces the base {{char}}/{{user}} keys entirely. */
+  keys?: string[];
   rows?: number | string;
   class?: string;
   classList?: { [key: string]: boolean | undefined };
   placeholder?: string;
+  /** Notified on every text change, including programmatic .value loads. */
+  onText?: (text: string) => void;
 }) {
-  const [text, setText] = createSignal('');
+  const [text, setTextSignal] = createSignal('');
+  const setText = (next: string) => {
+    setTextSignal(next);
+    props.onText?.(next);
+  };
   let overlay!: HTMLDivElement;
   let area: HTMLTextAreaElement | undefined;
   let observer: ResizeObserver | undefined;
@@ -94,7 +102,12 @@ export default function MacroTextarea(props: {
         <For
           each={segments(
             text(),
-            new Set([...(props.template ? TEMPLATE_KEYS : BASIC_KEYS), ...(props.extraKeys ?? [])]),
+            props.keys
+              ? new Set(props.keys)
+              : new Set([
+                  ...(props.template ? TEMPLATE_KEYS : BASIC_KEYS),
+                  ...(props.extraKeys ?? []),
+                ]),
             props.template === true,
           )}
         >

@@ -88,12 +88,33 @@ export const api = {
     prompt: string,
     label: string,
     expectedActiveLeafId: number | null,
+    image?: { workflow: string; comfyUrl: string },
   ) =>
     request<{ toolMessageId: number; activeLeafId: number }>(
       'POST',
       `/api/conversations/${conversationId}/tool`,
-      { prompt, label, expectedActiveLeafId },
+      { prompt, label, expectedActiveLeafId, ...(image ? { image } : {}) },
     ),
+
+  moveMessage: (messageId: number, direction: 'up' | 'down', expectedActiveLeafId: number | null) =>
+    request<{ activeLeafId: number | null }>('POST', `/api/messages/${messageId}/move`, {
+      direction,
+      expectedActiveLeafId,
+    }),
+  duplicateMessage: (messageId: number, expectedActiveLeafId: number | null) =>
+    request<{ messageId: number; activeLeafId: number }>(
+      'POST',
+      `/api/messages/${messageId}/duplicate`,
+      { expectedActiveLeafId },
+    ),
+  renderImage: (messageId: number, fallbackConfig?: { workflow: string; comfyUrl: string }) =>
+    request<{ rendering: boolean }>(
+      'POST',
+      `/api/messages/${messageId}/render-image`,
+      fallbackConfig ?? {},
+    ),
+  setActiveImage: (messageId: number, index: number) =>
+    request<void>('POST', `/api/messages/${messageId}/active-image`, { index }),
 
   editMessage: (messageId: number, content: string, expectedActiveLeafId: number | null) =>
     request<unknown>('PATCH', `/api/messages/${messageId}`, { content, expectedActiveLeafId }),

@@ -20,7 +20,13 @@ const TEMPLATE: [string, string][] = [
 ];
 
 /** "?" chip that pops a reference card of the macros usable in the adjacent field. */
-export default function MacroHelp(props: { template?: boolean }) {
+export default function MacroHelp(props: {
+  template?: boolean;
+  /** Exclusive row set replacing the built-ins (e.g. a plugin's workflow macros). */
+  rows?: [string, string][];
+  /** Rows appended after the built-ins (e.g. a plugin's {{instruction}}). */
+  extra?: [string, string][];
+}) {
   const [open, setOpen] = createSignal(false);
   let root: HTMLSpanElement | undefined;
 
@@ -41,7 +47,8 @@ export default function MacroHelp(props: { template?: boolean }) {
   });
 
   // Basics first, then content slots in built-in template order, syntax last.
-  const rows = () => (props.template ? [...BASIC, ...TEMPLATE] : BASIC);
+  const rows = () =>
+    props.rows ?? [...(props.template ? [...BASIC, ...TEMPLATE] : BASIC), ...(props.extra ?? [])];
 
   return (
     <span class="macro-help" ref={root}>

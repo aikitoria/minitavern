@@ -1,5 +1,6 @@
 import type { GenerationKind, Message, MessageStatus, Role, TreeNode } from '@minitavern/shared';
 import { stmt, toMessage, transaction } from './db.ts';
+import { collectMessageImages, collectSubtreeImages, deleteImageFiles } from './images.ts';
 
 // Messages created or edited since the last tree broadcast, per conversation.
 // The coalesced broadcast drains this to know which full bodies to include.
@@ -183,12 +184,121 @@ function newestChildId(conversationId: number, parentId: number | null): number 
   return row?.id ?? null;
 }
 
+/**
+ * "Remove this block from the screen" — the delete button's semantics. The
+ * message AND its sibling swipes are deleted (an alternative's subtree dies
+ * with it), while the message's own children — the blocks visible below it —
+ * reattach to its parent. Whole-tail removal is what delete-tail (/del) does.
+ */
+export function spliceMessage(messageId: number): void {
+  const row = getRow(messageId);
+  if (!row) return;
+  const {
+    conversation_id: conversationId,
+    parent_id: parentId,
+    active_child_id: activeChildId,
+  } = row;
+  const siblingIds = (
+    stmt('SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id != ?').all(
+      conversationId,
+      parentId,
+      messageId,
+    ) as { id: number }[]
+  ).map((r) => r.id);
+  // The message's own images plus every doomed sibling subtree's, collected
+  // before the deletes cascade; unlinked only after the commit succeeds.
+  const doomedImages = [
+    ...collectMessageImages(messageId),
+    ...siblingIds.flatMap((id) => collectSubtreeImages(id)),
+  ];
+  transaction(() => {
+    const leaf = getActiveLeafId(conversationId);
+    // Order matters: drop the sibling group first (their subtrees cascade),
+    // THEN reparent this message's children — reparenting first would put
+    // them into the very group being deleted.
+    for (const id of siblingIds) stmt('DELETE FROM messages WHERE id = ?').run(id);
+    stmt('UPDATE messages SET parent_id = ? WHERE parent_id = ?').run(parentId, messageId);
+    stmt('DELETE FROM messages WHERE id = ?').run(messageId);
+    // Re-derive the leaf: descend through the removed node's remembered child
+    // when it was the leaf itself; keep it if it survived (the visible chain);
+    // otherwise it died inside a sibling subtree — fall back near the parent.
+    let newLeaf: number | null;
+    if (leaf === messageId) {
+      newLeaf = activeChildId != null ? descendToLeaf(activeChildId) : parentId;
+    } else if (leaf != null && getRow(leaf)) {
+      newLeaf = leaf;
+    } else {
+      const fallback = parentId ?? newestChildId(conversationId, null);
+      newLeaf = fallback != null ? descendToLeaf(fallback) : null;
+    }
+    setActiveLeaf(conversationId, newLeaf);
+  });
+  deleteImageFiles(doomedImages);
+}
+
+/**
+ * Moves a message's block one step down the visible chain by rotating it with
+ * its active child's block: the child group rises to the parent, the whole
+ * sibling group of `messageId` (its swipes included) reattaches under the
+ * risen child, and the child's former children reattach under `messageId`.
+ * Returns false when there is no block below.
+ */
+export function rotateDown(messageId: number): boolean {
+  const row = getRow(messageId);
+  if (!row) return false;
+  const { conversation_id: conversationId, parent_id: parentId } = row;
+  // active_child_id can be stale (rotations leave the moved message pointing
+  // at its former child, now its parent) — trusting it here would corrupt the
+  // tree, so verify it is a real child before use.
+  const remembered =
+    row.active_child_id != null && getRow(row.active_child_id)?.parent_id === messageId
+      ? row.active_child_id
+      : null;
+  const childB = remembered ?? newestChildId(conversationId, messageId);
+  if (childB == null) return false;
+  // The risen child's remembered descent becomes the moved message's: those
+  // grandchildren are about to become its children.
+  const bActiveChild = getRow(childB)!.active_child_id;
+
+  const groupIds = (sql: string, ...binds: (number | null)[]) =>
+    (stmt(sql).all(...binds) as { id: number }[]).map((r) => r.id);
+  const reparent = (newParent: number | null, ids: number[]) =>
+    stmt('UPDATE messages SET parent_id = ? WHERE id IN (SELECT value FROM json_each(?))').run(
+      newParent,
+      JSON.stringify(ids),
+    );
+
+  transaction(() => {
+    const leaf = getActiveLeafId(conversationId);
+    // Captured up front — the three reparents would otherwise see each other's writes.
+    const groupA = groupIds(
+      'SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ?',
+      conversationId,
+      parentId,
+    );
+    const groupB = groupIds('SELECT id FROM messages WHERE parent_id = ?', messageId);
+    const groupC = groupIds('SELECT id FROM messages WHERE parent_id = ?', childB);
+    reparent(messageId, groupC);
+    reparent(parentId, groupB);
+    reparent(childB, groupA);
+    // Repair the moved message's remembered child (its old one is now its
+    // parent): continue through the risen child's former descent.
+    stmt('UPDATE messages SET active_child_id = ? WHERE id = ?').run(bActiveChild, messageId);
+    // The old leaf stays the leaf unless it was the risen child itself (then
+    // the moved message, now the bottom block, becomes the leaf).
+    setActiveLeaf(conversationId, leaf === childB ? messageId : leaf);
+  });
+  return true;
+}
+
 /** Deletes a message and its whole subtree (FK cascade), repairing the active path if needed. */
 export function deleteMessage(messageId: number): void {
   const row = getRow(messageId);
   if (!row) return;
   const { conversation_id: conversationId, parent_id: parentId } = row;
   const onActivePath = getActivePath(conversationId).some((m) => m.id === messageId);
+  // Collect before the delete cascades; unlink only after the commit succeeds.
+  const doomedImages = collectSubtreeImages(messageId);
   transaction(() => {
     stmt('DELETE FROM messages WHERE id = ?').run(messageId);
     if (!onActivePath) return;
@@ -196,4 +306,5 @@ export function deleteMessage(messageId: number): void {
     const newLeaf = sibling != null ? descendToLeaf(sibling) : parentId;
     setActiveLeaf(conversationId, newLeaf);
   });
+  deleteImageFiles(doomedImages);
 }

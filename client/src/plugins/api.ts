@@ -1,4 +1,5 @@
 import type { Component, JSX } from 'solid-js';
+import type { Message } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import { setState, state } from '../state/store.ts';
 
@@ -19,10 +20,30 @@ export interface PluginCommand {
 }
 
 /**
+ * Custom rendering for tool messages a plugin owns. `create` is called once
+ * per mounted message node with reactive accessors, so Header and Body can
+ * share per-message state (expanders, viewers) through closures.
+ */
+export interface PluginMessageView {
+  /** Whether this plugin owns the given tool message (key off its data). */
+  claims: (message: Message) => boolean;
+  create: (
+    message: () => Message,
+    ctx: { streaming: () => boolean },
+  ) => {
+    /** Rendered among the chips in the message header. */
+    Header?: () => JSX.Element;
+    /** Replaces the default content rendering of the message body. */
+    Body: () => JSX.Element;
+  };
+}
+
+/**
  * A client-side plugin: contributes any combination of tools-menu buttons,
- * slash commands, and a page in the Tools settings tab. Settings persist in
- * the global Settings under pluginSettings[id] (revision-guarded like the
- * rest, synced across devices via the settings invalidate).
+ * slash commands, a page in the Tools settings tab, and custom rendering for
+ * its tool messages. Settings persist in the global Settings under
+ * pluginSettings[id] (revision-guarded like the rest, synced across devices
+ * via the settings invalidate).
  */
 export interface Plugin {
   /** Key into settings.pluginSettings; never rename once shipped. */
@@ -32,6 +53,7 @@ export interface Plugin {
   tools?: PluginTool[];
   commands?: PluginCommand[];
   settingsPage?: Component;
+  messageView?: PluginMessageView;
 }
 
 /** Current settings for a plugin, with defaults filled in (reactive). */

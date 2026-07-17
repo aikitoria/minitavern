@@ -3,9 +3,12 @@ import { route, HttpError } from '../router.ts';
 import {
   activateMessage,
   appendMessage,
-  deleteMessage,
+  getActiveLeafId,
+  getActivePath,
   getMessage,
   markMessageDirty,
+  rotateDown,
+  spliceMessage,
 } from '../tree.ts';
 import {
   hasActiveGeneration,
@@ -28,6 +31,7 @@ import { objectBody, positiveId } from '../validation.ts';
 import { optionalNullableId } from '../validation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import { discardSpeculativeSwipes, markSwipeRead, nextUnreadSibling } from '../speculation.ts';
+import { parseImageConfig, startImageRender } from '../comfy.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -52,6 +56,11 @@ route.post('/api/messages/:id/continue', ({ params, body }) => {
   const msg = requireMessage(positiveId(params.id));
   if (msg.role !== 'assistant') throw new HttpError(400, 'only assistant messages can be resumed');
   if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
+  // finalize() clears image_pending on non-done endings, which would disown a
+  // render started via render-image — keep the two exclusive.
+  if (msg.imagePending) {
+    throw new HttpError(409, 'an image render is running for this message');
+  }
   const conv = getConversation(msg.conversationId);
   requireExpectedLeaf(msg, body);
   if (conv.activeLeafId !== msg.id)
@@ -173,10 +182,134 @@ route.del('/api/messages/:id', ({ params, req }) => {
     rawExpected === 'null' ? null : rawExpected == null ? undefined : Number(rawExpected);
   requireExpectedActiveLeaf(msg.conversationId, expected);
   requireIdle(msg.conversationId);
-  deleteMessage(msg.id);
+  // Removing a block changes the context every prepared swipe was generated for.
+  discardSpeculativeSwipes(msg.conversationId);
+  // Splice, not subtree-delete: the tree below reattaches to the parent.
+  // Whole-branch removal is what /del (delete-tail) is for.
+  spliceMessage(msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
   invalidate('conversations');
+});
+
+/** Moves a message's block one step up or down the visible chain. Down rotates
+ * it with its active child's block; up is the same rotation on the parent. */
+route.post('/api/messages/:id/move', ({ params, body }) => {
+  const msg = requireMessage(positiveId(params.id));
+  const b = objectBody(body);
+  const direction = b.direction;
+  if (direction !== 'up' && direction !== 'down') {
+    throw new HttpError(400, "direction must be 'up' or 'down'");
+  }
+  requireExpectedLeaf(msg, body);
+  requireIdle(msg.conversationId);
+  if (!getActivePath(msg.conversationId).some((m) => m.id === msg.id)) {
+    throw new HttpError(400, 'message is not on the active branch');
+  }
+  const target = direction === 'down' ? msg.id : msg.parentId;
+  if (target == null) throw new HttpError(400, 'message is already at the top');
+  // Reordering changes the context every prepared swipe was generated for.
+  discardSpeculativeSwipes(msg.conversationId);
+  if (!rotateDown(target)) throw new HttpError(400, 'message is already at the bottom');
+  broadcastTree(msg.conversationId);
+  return { activeLeafId: getActiveLeafId(msg.conversationId) };
+});
+
+/** Duplicates a message as a new activated sibling swipe (content, name,
+ * reasoning and image render config; generated images are not shared). */
+route.post('/api/messages/:id/duplicate', ({ params, body }) => {
+  let msg = requireMessage(positiveId(params.id));
+  requireExpectedLeaf(msg, body);
+  requireIdle(msg.conversationId);
+  // requireIdle may have deleted the message itself (in-flight speculative
+  // sibling); re-fetch, and only completed content is worth copying.
+  msg = requireMessage(msg.id);
+  if (msg.status !== 'done') {
+    throw new HttpError(400, 'only completed messages can be duplicated');
+  }
+  discardSpeculativeSwipes(msg.conversationId);
+  const copy = appendMessage(
+    msg.conversationId,
+    msg.role,
+    msg.content,
+    msg.parentId,
+    'done',
+    msg.model,
+    msg.name,
+    false,
+  );
+  const renderRow = stmt('SELECT image_render_json FROM messages WHERE id = ?').get(msg.id) as {
+    image_render_json: string | null;
+  };
+  stmt('UPDATE messages SET reasoning = ?, image_render_json = ? WHERE id = ?').run(
+    msg.reasoning,
+    renderRow.image_render_json,
+    copy.id,
+  );
+  activateMessage(copy.id);
+  touchConversation(msg.conversationId);
+  broadcastTree(msg.conversationId);
+  invalidate('conversations');
+  return { messageId: copy.id, activeLeafId: copy.id };
+});
+
+/** Renders another image alternative: the stored workflow with the message's
+ * current content as the prompt and a fresh random seed. Messages without a
+ * stored config (pre-swipes renders) may supply one, which is then stored. */
+route.post('/api/messages/:id/render-image', ({ params, body }) => {
+  const msg = requireMessage(positiveId(params.id));
+  const b = body == null ? {} : objectBody(body);
+  const row = stmt('SELECT image_render_json FROM messages WHERE id = ?').get(msg.id) as {
+    image_render_json: string | null;
+  };
+  if (msg.imagePending) {
+    throw new HttpError(409, 'an image render is already running for this message');
+  }
+  if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
+  if (!msg.content.trim()) throw new HttpError(400, 'message has no description to render');
+  let config: { workflow: string; comfyUrl: string };
+  if (row.image_render_json) {
+    config = JSON.parse(row.image_render_json) as { workflow: string; comfyUrl: string };
+  } else {
+    try {
+      config = parseImageConfig(b);
+    } catch {
+      throw new HttpError(400, 'message has no image render configuration');
+    }
+    stmt('UPDATE messages SET image_render_json = ? WHERE id = ?').run(
+      JSON.stringify(config),
+      msg.id,
+    );
+  }
+  stmt('UPDATE messages SET image_pending = 1 WHERE id = ?').run(msg.id);
+  markMessageDirty(msg.conversationId, msg.id);
+  broadcastTree(msg.conversationId);
+  startImageRender({
+    conversationId: msg.conversationId,
+    mid: msg.id,
+    comfyUrl: config.comfyUrl,
+    workflow: config.workflow,
+    description: msg.content,
+  });
+  return { rendering: true };
+});
+
+/** Selects which image alternative a message displays (persisted, synced). */
+route.post('/api/messages/:id/active-image', ({ params, body }) => {
+  const msg = requireMessage(positiveId(params.id));
+  const b = objectBody(body);
+  const index = b.index;
+  if (
+    typeof index !== 'number' ||
+    !Number.isSafeInteger(index) ||
+    index < 0 ||
+    index >= msg.images.length
+  ) {
+    throw new HttpError(400, 'index out of range');
+  }
+  stmt('UPDATE messages SET active_image = ? WHERE id = ?').run(index, msg.id);
+  markMessageDirty(msg.conversationId, msg.id);
+  broadcastTree(msg.conversationId);
 });
 
 route.post('/api/generations/:id/stop', ({ params }) => {

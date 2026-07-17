@@ -22,6 +22,10 @@ services:
     <<: *dev-volumes
     ports:
       - "5488:5487"
+    # Also joined to ComfyUI's network so the server can reach http://comfy:8588.
+    networks:
+      - default
+      - comfy
 
   client:
     image: node:26-alpine
@@ -58,3 +62,8 @@ services:
     <<: *dev-volumes
     ports:
       - "9800:9800"
+
+networks:
+  comfy:
+    external: true
+    name: my-bridge-network

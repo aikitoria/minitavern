@@ -5,13 +5,14 @@ import { existsSync, readFileSync, watch } from 'node:fs';
 import { stat, readFile } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { AVATAR_DIR } from './db.ts';
+import { AVATAR_DIR, IMAGES_DIR } from './db.ts';
 import { dispatch } from './router.ts';
 import { initWebSocket, setSubscribeHandler, subscribedConversationIds } from './events.ts';
 import { sendTreeTo } from './sync.ts';
 import { prepareActiveSwipe } from './routes/conversations.ts';
 import { configuredIpAllowlist, isRequestIpAllowed, requestIp } from './ipAccess.ts';
 import { setSpeculativeRefillHandler } from './speculation.ts';
+import { sweepOrphanedImages } from './images.ts';
 import './routes/messages.ts';
 import './routes/presets.ts';
 import './routes/templates.ts';
@@ -22,6 +23,9 @@ import './routes/settings.ts';
 
 const PORT = Number(process.env.PORT ?? 5487);
 const CLIENT_DIST = process.env.CLIENT_DIST ?? '';
+
+// Backstop for image-file deletion guarantees (crash windows, late renders).
+sweepOrphanedImages();
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
@@ -83,6 +87,14 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   if (pathname.startsWith('/avatars/')) {
     const path = safeJoin(AVATAR_DIR, pathname.slice('/avatars/'.length));
     if (path && (await serveFile(res, path, false))) return;
+    res.writeHead(404).end();
+    return;
+  }
+
+  if (pathname.startsWith('/images/')) {
+    // Generated images never change once written — serve immutable.
+    const path = safeJoin(IMAGES_DIR, pathname.slice('/images/'.length));
+    if (path && (await serveFile(res, path, true))) return;
     res.writeHead(404).end();
     return;
   }

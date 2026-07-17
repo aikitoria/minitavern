@@ -43,6 +43,7 @@ export default defineConfig({
     proxy: {
       '/api': { target },
       '/avatars': { target },
+      '/images': { target },
       '/ws': { target, ws: true },
     },
   },

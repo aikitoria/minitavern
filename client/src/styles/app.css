@@ -852,6 +852,40 @@ textarea.mono,
   color: var(--text-dim);
 }
 
+/* Fullscreen pan/zoom viewer. */
+.image-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  background: rgb(0 0 0 / 0.92);
+  overflow: hidden;
+  touch-action: none;
+  user-select: none;
+}
+
+.image-viewer img {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  max-width: 92vw;
+  max-height: 92vh;
+  will-change: transform;
+  cursor: grab;
+}
+
+.image-viewer.dragging img {
+  cursor: grabbing;
+}
+
+.image-viewer-close {
+  position: fixed;
+  top: 14px;
+  right: 14px;
+  font-size: 20px;
+  color: #fff;
+}
+
 /* Incoming side of a sibling swipe: slide in from the direction the swipe came from. */
 @keyframes swipe-in-next {
   from {
@@ -1184,6 +1218,47 @@ textarea.mono,
   animation: menu-in-up 0.1s ease-out;
 }
 
+/* ⋯ menu on messages: destructive/rare actions live behind one extra click. */
+.msg-more-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.msg-more-menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 40;
+  min-width: 140px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
+  animation: menu-in 0.1s ease-out;
+}
+
+.msg-more-menu button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  border: none;
+  border-radius: 0;
+  background: none;
+  padding: 7px 12px;
+  text-align: left;
+  font-size: 13.5px;
+}
+
+.msg-more-menu button:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.msg-more-menu .danger {
+  color: var(--danger);
+}
+
 /* Optical centering: the plane points right, so its mass sits left of center. */
 .send-btn:not(.stop-btn, .resume-btn, .tools-btn) svg {
   transform: translateX(1.5px);
@@ -1352,7 +1427,7 @@ textarea.mono,
   background: none;
   border: none;
   border-radius: 0;
-  padding: 0 13px;
+  padding: 0 8px;
   font-size: 13.5px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -1500,15 +1575,23 @@ textarea.mono,
   gap: 12px;
 }
 
-/* API key input with its "Clear key" button beside it. */
+/* An input or select with compact action buttons beside it (API key + Clear,
+ * workflow picker + Add/Delete). The field flexes; buttons keep natural size. */
 .key-row {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.key-row input {
+.key-row input,
+.key-row .select-btn {
   flex: 1;
+  min-width: 0;
+}
+
+.key-row > button:not(.select-btn) {
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .avatar-row .avatar,

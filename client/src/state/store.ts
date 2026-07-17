@@ -242,9 +242,19 @@ export function handleServerEvent(ev: ServerEvent): void {
             for (const node of ev.nodes) {
               const body = bodies.get(node.id);
               if (body) {
-                messages[node.id] = body;
+                const existing = messages[node.id];
+                // Merge into the existing object: replacing it would change
+                // identity and remount the whole MessageNode (destroying UI
+                // state like open viewers) since the timeline is keyed by
+                // reference.
+                if (existing) Object.assign(existing, body);
+                else messages[node.id] = body;
+                if (!body.imagePending) clearImageProgress(node.id);
               } else {
                 const msg = messages[node.id]!;
+                // parentId too: splice deletions and block moves reparent
+                // messages without resending their bodies.
+                msg.parentId = node.parentId;
                 msg.activeChildId = node.activeChildId;
                 msg.status = node.status;
                 msg.generationKind = node.generationKind;
@@ -276,9 +286,30 @@ export function handleServerEvent(ev: ServerEvent): void {
       }
       if (ev.conversationId === state.selectedId && state.tree.messages[ev.message.id]) {
         setState('tree', 'messages', ev.message.id, ev.message);
+        if (!ev.message.imagePending) clearImageProgress(ev.message.id);
       }
       break;
+    case 'imageProgress':
+      if (ev.conversationId !== state.selectedId) break;
+      setImageProgress((progress) => ({ ...progress, [ev.mid]: { value: ev.value, max: ev.max } }));
+      break;
   }
+}
+
+/** Per-message image render progress (ephemeral; only read while imagePending). */
+export const [imageProgress, setImageProgress] = createSignal<
+  Record<number, { value: number; max: number }>
+>({});
+
+/** Dropped once a body shows the render finished — a later render on the same
+ * message must not open with the previous one's final progress. */
+function clearImageProgress(mid: number): void {
+  setImageProgress((progress) => {
+    if (!(mid in progress)) return progress;
+    const next = { ...progress };
+    delete next[mid];
+    return next;
+  });
 }
 
 // ---- Actions ----
@@ -309,6 +340,7 @@ export function selectConversation(id: number | null): void {
   // A swipe animation pending in the previous conversation must not leak into
   // this one's freshly mounted nodes.
   setPendingSwipe(null);
+  setImageProgress({});
   subscribe(id);
   persistSelectedConversation(id);
   history.replaceState(null, '', id != null ? `#${id}` : '#');

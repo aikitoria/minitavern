@@ -7,7 +7,9 @@ Small but mighty self-hosted chat frontend for OpenAI-compatible LLM APIs.
 - Characters (with SillyTavern PNG card import/export), system prompt presets, prompt templates (fake first user message, speaker-name prefixing, per-template persona opt-out), user personas — all with live-highlighted `{{char}}`/`{{user}}`/`{{system}}`/`{{#if}}` macros. Characters can inline a custom prompt or a full custom template instead of referencing one.
 - Multiple named API endpoints, each with its own model and sampling settings; conversations can override the global active endpoint. Transient upstream failures (5xx, network blips, stalls) retry automatically with the partial reply as prefill; real API errors (e.g. context length exceeded) surface as toasts.
 - Optional background swipe generation: one unread reply alternative is always prepared ahead of the one you're reading.
-- Plugin interface: plugins add buttons to the composer's tools menu, slash commands, and pages in Settings → Tools. Ships with an Image Generation plugin — `/image [instruction]` asks the model to describe the current scene as an image prompt (configurable prompts with an `{{instruction}}` macro), streamed into the chat as a distinct tool message that never enters later prompt history.
+- Plugin interface: plugins add buttons to the composer's tools menu, slash commands, pages in Settings → Tools, and custom rendering for their tool messages. Ships with an Image Generation plugin — `/image [instruction]` asks the model to describe the current scene as an image prompt (configurable prompts with an `{{instruction}}` macro), streamed into the chat as a distinct tool message that never enters later prompt history.
+- ComfyUI image rendering: paste workflow API JSON (multiple named workflows, `{{prompt}}`/`{{seed}}` macros) and `/image` renders the described scene — live sampler progress in the message header, swipeable image alternatives (`›` past the end re-renders with a fresh seed), a fullscreen pan/zoom viewer, and the prompt collapsing behind an expander once the image lands. Generated images are stored next to the DB and are hard-deleted with their message.
+- Message management: every message has a `⋯` menu with duplicate (as a sibling swipe), move up/down (block rotation that keeps swipes attached), and delete. Deleting removes that block — the message plus its sibling swipes — while the visible chain below reattaches upward; `/del` truncates whole tails.
 - Full-text message search (SQLite FTS5) with snippets, plus title search.
 - Responsive: desktop two-pane layout, mobile PWA with bottom composer and swipe gestures.
 
@@ -49,6 +51,21 @@ environment:
 
 WebSockets automatically become `wss://`. Certificates are hot-reloaded on renewal.
 
+### ComfyUI (optional)
+
+Both Compose files attach the containers to an external Docker network named
+`my-bridge-network` so the server can reach a ComfyUI container as
+`http://comfy:8588`. If you don't run ComfyUI, either create the network
+(`docker network create my-bridge-network`) or remove the `networks` blocks;
+if your ComfyUI has another name/port, adjust the ComfyUI URL in
+Settings → Tools → Image Generation.
+
+To render images: export your workflow via ComfyUI's "Save (API Format)",
+paste it in Settings → Tools → Image Generation, and replace the sampler seed
+with `{{seed}}` and the positive prompt text with `{{prompt}}` (the field
+validates the JSON and checks both macros live). Multiple named workflows are
+supported; the selected one is what `/image` uses.
+
 ## First-run setup
 
 1. Open Settings (⚙) → **Endpoints**, add your OpenAI-compatible API (base URL up to `/v1`), create it, "Fetch models", pick the model and sampling settings, save.
@@ -61,7 +78,7 @@ WebSockets automatically become `wss://`. Certificates are hot-reloaded on renew
 - **↑** in an empty composer edits your last message in place; **Ctrl/Cmd+Enter** in any message editor submits as a new branch, **Escape** cancels.
 - **←/→** swipe the last assistant reply between siblings (→ past the end regenerates); on touch, swipe the reply horizontally.
 - `/char <name>` sets the assistant speaker name, `/del <n>` deletes the last n messages including their swipes and descendants, `/delchat` deletes the conversation.
-- `/image [instruction]` generates an image description from the chat context (Image Generation plugin; prompts configurable in Settings → Tools).
+- `/image [instruction]` generates an image description from the chat context and, with a workflow configured, renders it via ComfyUI (Image Generation plugin; prompts and workflows configurable in Settings → Tools).
 
 ## Development
 

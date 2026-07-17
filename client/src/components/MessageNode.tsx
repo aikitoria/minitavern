@@ -1,8 +1,9 @@
-import { Show, createEffect, createSignal } from 'solid-js';
+import { Show, createEffect, createMemo, createSignal, onCleanup } from 'solid-js';
 import type { Message } from '@minitavern/shared';
 import type { PendingSwipe } from '../state/store.ts';
 import { api } from '../state/api.ts';
 import {
+  childrenByParent,
   editRequestId,
   navigateTree,
   pendingSwipe,
@@ -14,12 +15,24 @@ import {
   state,
   swipeToSibling,
 } from '../state/store.ts';
+import { findMessageView } from '../plugins/index.ts';
 import Avatar from './Avatar.tsx';
 import Markdown from './Markdown.tsx';
 import TrashIcon from './TrashIcon.tsx';
 
 // Shared across all messages: on touch layouts, actions show only on the last-tapped message.
 const [touchedId, setTouchedId] = createSignal<number | null>(null);
+
+// At most one ⋯ menu open at a time; module-level listeners dismiss it.
+const [moreMenuId, setMoreMenuId] = createSignal<number | null>(null);
+document.addEventListener('click', (event) => {
+  if (moreMenuId() != null && !(event.target as Element).closest?.('.msg-more-wrap')) {
+    setMoreMenuId(null);
+  }
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') setMoreMenuId(null);
+});
 
 export default function MessageNode(props: { message: Message }) {
   const [editing, setEditing] = createSignal(false);
@@ -177,6 +190,30 @@ export default function MessageNode(props: { message: Message }) {
 
   const copy = () => void navigator.clipboard.writeText(props.message.content);
 
+  // ---- ⋯ menu actions ----
+  const menuOpen = () => moreMenuId() === props.message.id;
+  const closeMenu = () => setMoreMenuId(null);
+  const canMoveUp = () => props.message.parentId != null;
+  const canMoveDown = () => (childrenByParent().get(props.message.id)?.length ?? 0) > 0;
+  const duplicate = () =>
+    void navigateTree(() => api.duplicateMessage(props.message.id, state.tree.activeLeafId));
+  const move = (direction: 'up' | 'down') =>
+    void navigateTree(() => api.moveMessage(props.message.id, direction, state.tree.activeLeafId));
+
+  // A plugin may own this tool message's rendering (header controls + body).
+  // Memoized so the view (and its closure state) survives message updates and
+  // is only recreated if the claim itself flips.
+  const claimedView = createMemo(() =>
+    props.message.role === 'tool' ? findMessageView(props.message) : undefined,
+  );
+  const pluginView = createMemo(() => claimedView()?.create(() => props.message, { streaming }));
+
+  // A menu left open when this node unmounts (e.g. swiped away) must not
+  // reappear open on a later remount of the same message id.
+  onCleanup(() => {
+    if (moreMenuId() === props.message.id) setMoreMenuId(null);
+  });
+
   return (
     <article
       class="msg"
@@ -231,6 +268,7 @@ export default function MessageNode(props: { message: Message }) {
               </Show>
             </button>
           </Show>
+          {pluginView()?.Header?.()}
           <span class="msg-tools-top">
             <Show when={siblings().length > 1 || (isAssistant() && !editing())}>
               <span class="branch-nav">
@@ -270,9 +308,58 @@ export default function MessageNode(props: { message: Message }) {
                 <button class="icon-btn" title="Edit" onClick={startEdit}>
                   ✎
                 </button>
-                <button class="icon-btn" title="Delete branch from here" onClick={remove}>
-                  <TrashIcon />
-                </button>
+                <span class="msg-more-wrap">
+                  <button
+                    class="icon-btn"
+                    classList={{ 'icon-btn-active': menuOpen() }}
+                    title="More"
+                    onClick={() => setMoreMenuId(menuOpen() ? null : props.message.id)}
+                  >
+                    ⋯
+                  </button>
+                  <Show when={menuOpen()}>
+                    <div
+                      class="msg-more-menu"
+                      ref={(el) => queueMicrotask(() => el.scrollIntoView({ block: 'nearest' }))}
+                    >
+                      <button
+                        onClick={() => {
+                          closeMenu();
+                          duplicate();
+                        }}
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        disabled={!canMoveUp()}
+                        onClick={() => {
+                          closeMenu();
+                          move('up');
+                        }}
+                      >
+                        Move up
+                      </button>
+                      <button
+                        disabled={!canMoveDown()}
+                        onClick={() => {
+                          closeMenu();
+                          move('down');
+                        }}
+                      >
+                        Move down
+                      </button>
+                      <button
+                        class="danger"
+                        onClick={() => {
+                          closeMenu();
+                          remove();
+                        }}
+                      >
+                        <TrashIcon /> Delete
+                      </button>
+                    </div>
+                  </Show>
+                </span>
               </span>
             </Show>
           </span>
@@ -339,9 +426,13 @@ export default function MessageNode(props: { message: Message }) {
               </div>
             }
           >
-            <div class="msg-content">
-              <Markdown content={props.message.content} streaming={streaming()} />
-            </div>
+            {pluginView() ? (
+              pluginView()!.Body()
+            ) : (
+              <div class="msg-content">
+                <Markdown content={props.message.content} streaming={streaming()} />
+              </div>
+            )}
           </Show>
 
           <Show when={props.message.status === 'error'}>

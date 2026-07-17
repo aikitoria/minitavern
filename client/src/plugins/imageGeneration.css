@@ -1,0 +1,75 @@
+/* Image Generation plugin styles: tool-message image display, render
+ * progress, and the settings-page workflow editor. Imported by the plugin
+ * module — core styles stay in styles/app.css. */
+
+/* Generated image attached to a tool message. */
+.msg-image {
+  display: block;
+  max-width: min(100%, 512px);
+  max-height: 512px;
+  margin-top: 8px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  cursor: zoom-in;
+}
+
+/* Compact render indicator in the message header. */
+.msg-image-pending {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12.5px;
+}
+
+.img-progress {
+  flex: 0 0 110px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-raised);
+  overflow: hidden;
+}
+
+.img-progress-fill {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.2s ease;
+}
+
+/* Detail fields of the workflow selected in the picker above: inset panel with
+ * an accent spine so they visibly belong to that selection. */
+.workflow-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 4px 14px 14px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 var(--radius) var(--radius) 0;
+  /* Darker inset well — inputs are --bg-raised and must stand out from it. */
+  background: var(--bg);
+}
+
+.workflow-detail label:first-child {
+  margin-top: 6px;
+}
+
+/* Live workflow-macro presence indicators under the workflow editor. */
+.macro-checks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.macro-checks .warn {
+  color: var(--danger);
+}
+
+.macro-checks .soft {
+  color: var(--md-quote);
+}

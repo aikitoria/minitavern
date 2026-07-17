@@ -38,6 +38,12 @@ import {
 } from '../speculation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import {
+  collectConversationImages,
+  collectSiblingSubtreeImages,
+  deleteImageFiles,
+} from '../images.ts';
+import { parseImageConfig, startImageRender } from '../comfy.ts';
+import {
   objectBody,
   optionalNullableId,
   optionalNullableString,
@@ -246,7 +252,9 @@ route.del('/api/conversations/:id', ({ params }) => {
   const id = positiveId(params.id);
   getConversation(id);
   stopConversationGenerations(id);
+  const doomedImages = collectConversationImages(id);
   stmt('DELETE FROM conversations WHERE id = ?').run(id);
+  deleteImageFiles(doomedImages);
   takeDirtyMessageIds(id); // drop pending patch state for the deleted tree
   invalidate('conversations');
 });
@@ -269,6 +277,16 @@ route.post('/api/conversations/:id/tool', ({ params, body }) => {
   const b = objectBody(body);
   const prompt = requiredString(b, 'prompt');
   const label = optionalNullableString(b, 'label');
+  // Optional image rendering: once the text generation completes, its output
+  // is substituted into the ComfyUI workflow and rendered asynchronously.
+  let image: { workflow: string; comfyUrl: string } | null = null;
+  if (b.image != null) {
+    try {
+      image = parseImageConfig(b.image);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+  }
   requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
   // An in-flight speculative swipe is deliberately discarded and not refilled:
   // once the tool output is the leaf, the previous reply can't be swiped
@@ -289,9 +307,31 @@ route.post('/api/conversations/:id/tool', ({ params, body }) => {
     null,
     label?.trim() || null,
   );
+  // Store the render config (so more alternatives can be generated later) and
+  // flag the pending render; finalize() clears the flag if the text generation
+  // ends any way other than 'done'.
+  if (image) {
+    stmt('UPDATE messages SET image_pending = 1, image_render_json = ? WHERE id = ?').run(
+      JSON.stringify(image),
+      msg.id,
+    );
+  }
   touchConversation(id);
   broadcastTree(id);
-  startGeneration(getConversation(id), msg.id, undefined, { prompt: built });
+  const renderImage = image;
+  startGeneration(getConversation(id), msg.id, undefined, {
+    prompt: built,
+    onDone: renderImage
+      ? () =>
+          startImageRender({
+            conversationId: id,
+            mid: msg.id,
+            comfyUrl: renderImage.comfyUrl,
+            workflow: renderImage.workflow,
+            description: getMessage(msg.id)?.content ?? '',
+          })
+      : undefined,
+  });
   invalidate('conversations');
   return { toolMessageId: msg.id, activeLeafId: msg.id };
 });
@@ -410,6 +450,7 @@ route.post('/api/conversations/:id/delete-tail', ({ params, body }) => {
 
   cancelSpeculativeRetries(id);
   stopConversationGenerations(id);
+  const doomedImages = collectSiblingSubtreeImages(id, cutoff.parentId);
   const deleted = transaction(() => {
     const result = stmt('DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ?').run(
       id,
@@ -418,6 +459,7 @@ route.post('/api/conversations/:id/delete-tail', ({ params, body }) => {
     setActiveLeaf(id, cutoff.parentId);
     return result.changes;
   });
+  deleteImageFiles(doomedImages);
   touchConversation(id);
   broadcastTree(id);
   prepareActiveSwipe(id);

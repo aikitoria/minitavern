@@ -15,6 +15,8 @@ export interface GenMeta {
   error?: string;
   finishReason?: string;
   usage?: { promptTokens?: number; completionTokens?: number };
+  /** Image render failure (the text generation itself succeeded). */
+  imageError?: string;
 }
 
 export interface Message {
@@ -31,6 +33,14 @@ export interface Message {
   model: string | null;
   genMeta: GenMeta | null;
   generationKind: GenerationKind;
+  /** Generated image alternatives (served /images/ paths); swipeable within the message. */
+  images: string[];
+  /** Selected index into images (server-persisted so it syncs across devices). */
+  activeImage: number;
+  /** A render is currently producing a new image for this message. */
+  imagePending: boolean;
+  /** Whether a render config is stored, i.e. more images can be generated. */
+  hasImageRender: boolean;
   createdAt: number;
 }
 
@@ -198,7 +208,9 @@ export type ServerEvent =
       messages: Message[];
     }
   | { t: 'delta'; mid: number; d?: string; r?: string }
-  | { t: 'final'; conversationId: number; message: Message };
+  | { t: 'final'; conversationId: number; message: Message }
+  /** Image render progress for a message with imagePending (e.g. sampler steps). */
+  | { t: 'imageProgress'; conversationId: number; mid: number; value: number; max: number };
 
 /** Client -> server WebSocket commands. */
 export type ClientCommand = { sub: number | null };

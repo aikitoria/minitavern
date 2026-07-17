@@ -16,10 +16,12 @@ import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_SETTINGS } from '@minitavern/shared';
 
 export const DATA_DIR = process.env.DATA_DIR ?? '/data';
 export const AVATAR_DIR = join(DATA_DIR, 'avatars');
+export const IMAGES_DIR = join(DATA_DIR, 'images');
 const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, 'minitavern.db');
 
 mkdirSync(dirname(DB_PATH), { recursive: true });
 mkdirSync(AVATAR_DIR, { recursive: true });
+mkdirSync(IMAGES_DIR, { recursive: true });
 
 export const db = new DatabaseSync(DB_PATH);
 db.exec('PRAGMA foreign_keys = ON');
@@ -273,6 +275,33 @@ if (version < 13) {
   `);
 }
 
+// Generated image attached to a message (plugin tool output): NULL, the
+// 'pending' placeholder while rendering, or a served /images/ path.
+if (version < 14) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE messages ADD COLUMN image TEXT;
+    PRAGMA user_version = 14;
+    COMMIT;
+  `);
+}
+
+// Image swipes: a message carries a list of generated images plus the stored
+// render config so alternatives can be re-rendered with a fresh seed.
+if (version < 15) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE messages ADD COLUMN images_json TEXT NOT NULL DEFAULT '[]';
+    ALTER TABLE messages ADD COLUMN active_image INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN image_pending INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN image_render_json TEXT;
+    UPDATE messages SET images_json = json_array(image) WHERE image IS NOT NULL AND image <> 'pending';
+    ALTER TABLE messages DROP COLUMN image;
+    PRAGMA user_version = 15;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(
@@ -282,6 +311,8 @@ db.prepare(
   `UPDATE messages SET status = 'error',
    gen_meta_json = json_object('error', 'Server restarted during generation') WHERE status = 'streaming'`,
 ).run();
+// Image renders don't survive a restart either: clear stale pending flags.
+db.prepare('UPDATE messages SET image_pending = 0 WHERE image_pending = 1').run();
 
 let txDepth = 0;
 
@@ -341,6 +372,10 @@ export function toMessage(r: Row): Message {
     model: r.model as string | null,
     genMeta: r.gen_meta_json ? JSON.parse(r.gen_meta_json as string) : null,
     generationKind: r.generation_kind as Message['generationKind'],
+    images: r.images_json ? (JSON.parse(r.images_json as string) as string[]) : [],
+    activeImage: (r.active_image as number) ?? 0,
+    imagePending: (r.image_pending as number) === 1,
+    hasImageRender: r.image_render_json != null,
     createdAt: r.created_at as number,
   };
 }

@@ -559,7 +559,7 @@ async function main() {
   );
   ws2.close();
 
-  console.log('== delete prunes subtree ==');
+  console.log('== delete splices the message out of the chain ==');
   snap = await tree(conv.id);
   const before = snap.messages.length;
   await req(
@@ -569,6 +569,108 @@ async function main() {
   snap = await tree(conv.id);
   assert(snap.messages.length === before - 1, 'message deleted');
   assert(snap.activeLeafId !== send2.assistantMessageId, 'active leaf repaired');
+  // Mid-path delete: the messages below reparent to the deleted one's parent.
+  await req(
+    'DELETE',
+    `/api/messages/${stoppedSend.assistantMessageId}?expectedActiveLeafId=${send2.userMessageId}`,
+  );
+  snap = await tree(conv.id);
+  assert(snap.messages.length === before - 2, 'only the deleted message is removed');
+  assert(
+    snap.messages.find((m) => m.id === send2.userMessageId)?.parentId ===
+      stoppedSend.userMessageId && snap.activeLeafId === send2.userMessageId,
+    'descendants reparent upward and the active leaf survives',
+  );
+  // Deleting a block with swipes: the sibling alternatives (and their
+  // subtrees) die too; only the visible chain below the block survives.
+  const blockSend = await sendMessage(conv.id, 'block root');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === blockSend.assistantMessageId,
+    'block reply finished',
+  );
+  const blockSwipe = await req<{ assistantMessageId: number | null }>(
+    'POST',
+    `/api/messages/${blockSend.assistantMessageId}/advance`,
+    { expectedActiveLeafId: blockSend.assistantMessageId },
+  );
+  const swipeId = blockSwipe.assistantMessageId!;
+  await ws.waitFor((e) => e.t === 'final' && e.message.id === swipeId, 'block swipe finished');
+  const below = await sendMessage(conv.id, 'below the block');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === below.assistantMessageId,
+    'below-block reply finished',
+  );
+  await req('DELETE', `/api/messages/${swipeId}?expectedActiveLeafId=${below.assistantMessageId}`);
+  snap = await tree(conv.id);
+  assert(
+    !snap.messages.some((m) => m.id === swipeId || m.id === blockSend.assistantMessageId),
+    'deleting a block removes its sibling swipes too',
+  );
+  assert(
+    snap.messages.find((m) => m.id === below.userMessageId)?.parentId === blockSend.userMessageId &&
+      snap.activeLeafId === below.assistantMessageId,
+    'the visible chain below the block survives, reparented',
+  );
+  // Regression: the treePatch after a splice must carry the survivors' new
+  // parentId as a structural update (no full bodies are resent for them).
+  const splicePatch = await ws.waitFor(
+    (e) =>
+      e.t === 'treePatch' &&
+      e.conversationId === conv.id &&
+      e.nodes.some((n) => n.id === below.userMessageId && n.parentId === blockSend.userMessageId) &&
+      !e.nodes.some((n) => n.id === swipeId),
+    'splice reparenting travels over the WS patch',
+  );
+  assert(splicePatch.t === 'treePatch', 'splice patch received');
+
+  console.log('== message move and duplicate ==');
+  const mv = await sendMessage(conv.id, 'move me');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === mv.assistantMessageId,
+    'move-me reply finished',
+  );
+  const mvParent = (await tree(conv.id)).messages.find((m) => m.id === mv.userMessageId)!.parentId;
+  await req('POST', `/api/messages/${mv.assistantMessageId}/move`, {
+    direction: 'up',
+    expectedActiveLeafId: mv.assistantMessageId,
+  });
+  snap = await tree(conv.id);
+  assert(
+    snap.messages.find((m) => m.id === mv.assistantMessageId)?.parentId === mvParent &&
+      snap.messages.find((m) => m.id === mv.userMessageId)?.parentId === mv.assistantMessageId &&
+      snap.activeLeafId === mv.userMessageId,
+    'move up rotates the block above its parent',
+  );
+  await req('POST', `/api/messages/${mv.userMessageId}/move`, {
+    direction: 'up',
+    expectedActiveLeafId: mv.userMessageId,
+  });
+  snap = await tree(conv.id);
+  assert(
+    snap.messages.find((m) => m.id === mv.userMessageId)?.parentId === mvParent &&
+      snap.messages.find((m) => m.id === mv.assistantMessageId)?.parentId === mv.userMessageId &&
+      snap.activeLeafId === mv.assistantMessageId,
+    'moving back restores the original order',
+  );
+  const dup = await req<{ messageId: number; activeLeafId: number }>(
+    'POST',
+    `/api/messages/${mv.assistantMessageId}/duplicate`,
+    { expectedActiveLeafId: mv.assistantMessageId },
+  );
+  snap = await tree(conv.id);
+  const dupMsg = snap.messages.find((m) => m.id === dup.messageId);
+  assert(
+    dupMsg?.parentId === mv.userMessageId &&
+      dupMsg.content === snap.messages.find((m) => m.id === mv.assistantMessageId)!.content &&
+      snap.activeLeafId === dup.messageId,
+    'duplicate creates an activated sibling copy',
+  );
+  await expectStatus(
+    'POST',
+    `/api/messages/${dup.messageId}/move`,
+    { direction: 'down', expectedActiveLeafId: dup.messageId },
+    400,
+  );
 
   console.log('== delete-tail removes sibling swipes and descendant trees ==');
   const tailConv = await req<{ id: number }>('POST', '/api/conversations', {});
@@ -884,6 +986,129 @@ async function main() {
       (m) => m.role !== 'tool' && !m.content.includes('Describe Assistant for Aiki.'),
     ),
     'tool messages are excluded from prompt history',
+  );
+
+  console.log('== comfy image rendering ==');
+  const imgSnap = await tree(conv2.id);
+  const imgRes = await req<{ toolMessageId: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/tool`,
+    {
+      prompt: 'Depict this scene.',
+      label: 'Image prompt',
+      expectedActiveLeafId: imgSnap.activeLeafId,
+      image: {
+        workflow:
+          '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}',
+        comfyUrl: MOCK_CONTROL,
+      },
+    },
+  );
+  const pendingSnap = await tree(conv2.id);
+  assert(
+    pendingSnap.messages.find((m) => m.id === imgRes.toolMessageId)?.imagePending === true,
+    'image render is flagged pending while the tool text streams',
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === imgRes.toolMessageId,
+    'image tool text finished',
+  );
+  await ws.waitFor(
+    (e) => e.t === 'imageProgress' && e.mid === imgRes.toolMessageId,
+    'image render progress relayed to subscribers',
+    15_000,
+  );
+  let imageUrl: string | null = null;
+  for (let i = 0; i < 60 && !imageUrl; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const snap = await tree(conv2.id);
+    const message = snap.messages.find((m) => m.id === imgRes.toolMessageId);
+    if (message && !message.imagePending && message.images.length > 0) {
+      imageUrl = message.images[0]!;
+    }
+  }
+  assert(imageUrl?.startsWith('/images/'), 'rendered image attached to the tool message');
+  const served = await fetch(`${BASE}${imageUrl}`);
+  assert(
+    served.ok &&
+      served.headers.get('content-type') === 'image/png' &&
+      (await served.arrayBuffer()).byteLength > 0,
+    'generated image is served from /images/',
+  );
+  const { workflow: substituted } = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-workflow`)
+  ).json()) as {
+    workflow: { 3: { inputs: { seed: unknown } }; 6: { inputs: { text: string } } };
+  };
+  assert(typeof substituted[3].inputs.seed === 'number', '{{seed}} substituted as a number');
+  assert(
+    substituted[6].inputs.text.includes('You said:') && substituted[6].inputs.text.includes('"'),
+    '{{prompt}} carries the JSON-escaped description with quotes intact',
+  );
+
+  // Image swipes: re-render with the same stored prompt/workflow, fresh seed.
+  const firstSeed = substituted[3].inputs.seed;
+  await req('POST', `/api/messages/${imgRes.toolMessageId}/render-image`);
+  let regenMsg: Message | undefined;
+  for (let i = 0; i < 60 && !regenMsg; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const snap = await tree(conv2.id);
+    const message = snap.messages.find((m) => m.id === imgRes.toolMessageId);
+    if (message && !message.imagePending && message.images.length === 2) regenMsg = message;
+  }
+  assert(
+    regenMsg != null && regenMsg.activeImage === 1,
+    'regenerated image is appended and selected',
+  );
+  assert(regenMsg.images[0] !== regenMsg.images[1], 'each render produces a distinct image file');
+  const { workflow: regenWorkflow } = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-workflow`)
+  ).json()) as { workflow: { 3: { inputs: { seed: unknown } } } };
+  assert(regenWorkflow[3].inputs.seed !== firstSeed, 'regeneration uses a fresh seed');
+  await req('POST', `/api/messages/${imgRes.toolMessageId}/active-image`, { index: 0 });
+  assert(
+    (await tree(conv2.id)).messages.find((m) => m.id === imgRes.toolMessageId)?.activeImage === 0,
+    'active image selection persists',
+  );
+  const secondImageUrl = regenMsg.images[1]!;
+
+  // Consecutive tool runs chain parent→child; deleting a tool message must
+  // splice it out (descendants survive) and still delete its image from disk.
+  const chained = await req<{ toolMessageId: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/tool`,
+    {
+      prompt: 'Another one.',
+      label: 'Image prompt',
+      expectedActiveLeafId: imgRes.toolMessageId,
+    },
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === chained.toolMessageId,
+    'chained tool generation finished',
+  );
+  const chainSnap = await tree(conv2.id);
+  assert(
+    chainSnap.messages.find((m) => m.id === chained.toolMessageId)?.parentId ===
+      imgRes.toolMessageId,
+    'consecutive tool messages chain parent→child',
+  );
+  const imgParent = chainSnap.messages.find((m) => m.id === imgRes.toolMessageId)!.parentId;
+  await req(
+    'DELETE',
+    `/api/messages/${imgRes.toolMessageId}?expectedActiveLeafId=${chained.toolMessageId}`,
+  );
+  const splicedSnap = await tree(conv2.id);
+  const survivor = splicedSnap.messages.find((m) => m.id === chained.toolMessageId);
+  assert(
+    survivor?.parentId === imgParent && splicedSnap.activeLeafId === chained.toolMessageId,
+    'deleting a tool message splices it out, keeping its descendants',
+  );
+  const afterDelete = await fetch(`${BASE}${imageUrl}`);
+  const afterDelete2 = await fetch(`${BASE}${secondImageUrl}`);
+  assert(
+    afterDelete.status === 404 && afterDelete2.status === 404,
+    'deleting the tool message deletes all its image files from disk',
   );
 
   console.log('== transient upstream failures auto-resume ==');

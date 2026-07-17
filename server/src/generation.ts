@@ -105,6 +105,10 @@ function finalize(gen: ActiveGen, status: 'done' | 'error' | 'stopped'): void {
     stmt(
       'UPDATE messages SET content = ?, reasoning = ?, model = ?, status = ?, gen_meta_json = ? WHERE id = ?',
     ).run(gen.content, gen.reasoning || null, gen.model, status, JSON.stringify(gen.meta), gen.mid);
+    // A stopped/failed generation never starts its image render — drop the pending flag.
+    if (status !== 'done') {
+      stmt('UPDATE messages SET image_pending = 0 WHERE id = ? AND image_pending = 1').run(gen.mid);
+    }
     broadcastConv(gen.conversationId, {
       t: 'final',
       conversationId: gen.conversationId,
