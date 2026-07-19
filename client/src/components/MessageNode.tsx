@@ -18,6 +18,7 @@ import {
 import { findMessageView } from '../plugins/index.ts';
 import Avatar from './Avatar.tsx';
 import Markdown from './Markdown.tsx';
+import Modal from './Modal.tsx';
 import TrashIcon from './TrashIcon.tsx';
 
 // Shared across all messages: on touch layouts, actions show only on the last-tapped message.
@@ -200,6 +201,22 @@ export default function MessageNode(props: { message: Message }) {
   const move = (direction: 'up' | 'down') =>
     void navigateTree(() => api.moveMessage(props.message.id, direction, state.tree.activeLeafId));
 
+  // Steered regeneration: new assistant sibling with a one-off prompt instruction.
+  const [steerOpen, setSteerOpen] = createSignal(false);
+  let steerArea: HTMLTextAreaElement | undefined;
+  const openSteer = () => {
+    setSteerOpen(true);
+    queueMicrotask(() => steerArea?.focus());
+  };
+  const confirmSteer = async () => {
+    const instruction = steerArea?.value.trim() ?? '';
+    if (!instruction) return;
+    const ok = await navigateTree(() =>
+      api.regenerate(props.message.id, instruction, state.tree.activeLeafId),
+    );
+    if (ok) setSteerOpen(false);
+  };
+
   // A plugin may own this tool message's rendering (header controls + body).
   // Memoized so the view (and its closure state) survives message updates and
   // is only recreated if the claim itself flips.
@@ -322,6 +339,16 @@ export default function MessageNode(props: { message: Message }) {
                       class="msg-more-menu"
                       ref={(el) => queueMicrotask(() => el.scrollIntoView({ block: 'nearest' }))}
                     >
+                      <Show when={isAssistant()}>
+                        <button
+                          onClick={() => {
+                            closeMenu();
+                            openSteer();
+                          }}
+                        >
+                          Regenerate with instruction…
+                        </button>
+                      </Show>
                       <button
                         onClick={() => {
                           closeMenu();
@@ -440,6 +467,34 @@ export default function MessageNode(props: { message: Message }) {
           </Show>
         </div>
       </div>
+      <Show when={steerOpen()}>
+        <Modal title="Regenerate with instruction" onClose={() => setSteerOpen(false)}>
+          <div class="form">
+            <label>Instruction (steers only this regeneration — never enters history)</label>
+            <textarea
+              ref={steerArea}
+              rows={3}
+              placeholder="e.g. make it shorter and more casual"
+              onKeyDown={(e) => {
+                if (e.isComposing) return; // IME candidate confirmation, not a command
+                // Ctrl/Cmd+Enter confirms; Escape cancels.
+                if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                  e.preventDefault();
+                  void confirmSteer();
+                } else if (e.key === 'Escape') {
+                  setSteerOpen(false);
+                }
+              }}
+            />
+            <div class="form-actions">
+              <button class="primary-btn" onClick={() => void confirmSteer()}>
+                Regenerate
+              </button>
+              <button onClick={() => setSteerOpen(false)}>Cancel</button>
+            </div>
+          </div>
+        </Modal>
+      </Show>
     </article>
   );
 }

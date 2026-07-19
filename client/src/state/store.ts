@@ -38,7 +38,7 @@ interface AppState {
   sidebarOpen: boolean;
   modal: ModalKind;
   /** 'trace' replaces the timeline with the assembled upstream request. */
-  viewMode: 'chat' | 'trace';
+  viewMode: 'chat' | 'trace' | 'tree';
   treeNavigationPending: boolean;
   toasts: { id: number; text: string }[];
   tree: TreeState;

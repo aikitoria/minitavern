@@ -169,3 +169,20 @@ export function buildToolPrompt(
   });
   return { ...built, namePrefill: null };
 }
+
+/**
+ * Upstream request for a steered regeneration: the normal chat context (built
+ * for the name the new sibling speaks with) plus the rendered steer text as a
+ * trailing system message. The steer lives only in this prompt — it is never
+ * stored on a message, so later generations are unaffected.
+ */
+export function buildSteeredPrompt(
+  conversation: Conversation,
+  history: Message[],
+  steer: string,
+  speakerName: string | null,
+): BuiltPrompt {
+  const built = buildChatMessages(conversation, history, speakerName);
+  built.messages.push({ role: 'system', content: steer });
+  return built;
+}

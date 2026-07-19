@@ -15,6 +15,7 @@ import { errorMessage } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
 import TraceIcon from './TraceIcon.tsx';
+import { TreeIcon } from './TreeView.tsx';
 
 export default function Header() {
   const [editing, setEditing] = createSignal(false);
@@ -112,6 +113,14 @@ export default function Header() {
               onClick={() => setState('viewMode', state.viewMode === 'chat' ? 'trace' : 'chat')}
             >
               <TraceIcon />
+            </button>
+            <button
+              class="icon-btn"
+              classList={{ 'icon-btn-active': state.viewMode === 'tree' }}
+              title="Toggle conversation tree"
+              onClick={() => setState('viewMode', state.viewMode === 'tree' ? 'chat' : 'tree')}
+            >
+              <TreeIcon />
             </button>
             <button
               class="icon-btn"

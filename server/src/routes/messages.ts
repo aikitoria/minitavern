@@ -12,6 +12,7 @@ import {
   getActiveLeafId,
   getActivePath,
   getMessage,
+  getPathToMessage,
   markMessageDirty,
   rotateDown,
   spliceMessage,
@@ -34,11 +35,13 @@ import {
   spawnAssistantReply,
   touchConversation,
 } from './conversations.ts';
-import { objectBody, positiveId } from '../validation.ts';
+import { objectBody, positiveId, requiredString } from '../validation.ts';
 import { optionalNullableId } from '../validation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import { discardSpeculativeSwipes, markSwipeRead, nextUnreadSibling } from '../speculation.ts';
 import { parseImageConfig, startImageRender } from '../comfy.ts';
+import { getSettings } from '../settingsStore.ts';
+import { buildSteeredPrompt } from '../prompt.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -127,6 +130,35 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
     throw new HttpError(409, 'a different generation is already running');
   }
   const mid = spawnAssistantReply(getConversation(msg.conversationId), msg.parentId, msg.name);
+  invalidate('conversations');
+  return { activeLeafId: mid, assistantMessageId: mid };
+});
+
+/**
+ * Steered regeneration: a new assistant sibling whose generation is steered by
+ * a one-off instruction. The instruction is rendered into settings.steerTemplate
+ * and injected into this generation's prompt only — it never enters history.
+ */
+route.post('/api/messages/:id/regenerate', ({ params, body }) => {
+  let msg = requireMessage(positiveId(params.id));
+  if (msg.role !== 'assistant') {
+    throw new HttpError(400, 'only assistant messages can be regenerated');
+  }
+  const b = objectBody(body);
+  const instruction = requiredString(b, 'instruction');
+  requireExpectedLeaf(msg, body);
+  requireIdle(msg.conversationId);
+  // requireIdle may have deleted the message itself (in-flight speculative
+  // sibling); re-fetch before building on it (same as duplicate).
+  msg = requireMessage(msg.id);
+  const conv = getConversation(msg.conversationId);
+  // Snapshot the steered prompt at route time (the tool-generation pattern):
+  // retries must resend exactly this prompt, whatever changes later. Simple
+  // macro substitution, not the template engine. Function replacer so '$'
+  // sequences in the instruction stay literal.
+  const steer = getSettings().steerTemplate.replaceAll(/\{\{instruction\}\}/gi, () => instruction);
+  const prompt = buildSteeredPrompt(conv, getPathToMessage(msg.parentId), steer, msg.name);
+  const mid = spawnAssistantReply(conv, msg.parentId, msg.name, prompt);
   invalidate('conversations');
   return { activeLeafId: mid, assistantMessageId: mid };
 });

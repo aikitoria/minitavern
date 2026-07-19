@@ -191,6 +191,14 @@ async function makeNextMockResponseEndWithoutNewline(): Promise<void> {
   if (!res.ok) throw new Error(`could not configure terminal mock event: ${await res.text()}`);
 }
 
+async function makeNextMockResponseDieAfterContent(content: string): Promise<void> {
+  const res = await fetch(
+    `${MOCK_CONTROL}/control/die-after-content?content=${encodeURIComponent(content)}`,
+    { method: 'POST' },
+  );
+  if (!res.ok) throw new Error(`could not configure mid-stream mock death: ${await res.text()}`);
+}
+
 async function putSettings(patch: Partial<Settings>): Promise<Settings> {
   const current = await req<Settings>('GET', '/api/settings');
   return req<Settings>('PUT', '/api/settings', {
@@ -777,6 +785,31 @@ async function main() {
   assert(reimported.name === 'Card Imported Hero', 'exported card reimports with same name');
   assert(reimported.personality.includes('brave'), 'exported card keeps personality text');
 
+  console.log('== avatars accept PNG only ==');
+  // Magic bytes decide, not the content-type: a renamed JPEG stored as .png
+  // would break PNG card export later.
+  const jpegBytes = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.alloc(60)]);
+  const webpBytes = Buffer.concat([Buffer.from('RIFF\0\0\0\0WEBP', 'latin1'), Buffer.alloc(48)]);
+  const putAvatar = (path: string, body: Uint8Array) =>
+    fetch(`${BASE}${path}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/octet-stream' },
+      body,
+    });
+  const jpegCharRes = await putAvatar(`/api/characters/${character.id}/avatar`, jpegBytes);
+  assert(jpegCharRes.status === 415, 'character avatar upload rejects JPEG magic bytes');
+  const webpCharRes = await putAvatar(`/api/characters/${character.id}/avatar`, webpBytes);
+  assert(webpCharRes.status === 415, 'character avatar upload rejects WebP magic bytes');
+  const pngCharRes = await putAvatar(
+    `/api/characters/${character.id}/avatar`,
+    new Uint8Array(makeCardPng()),
+  );
+  assert(pngCharRes.ok, 'character avatar upload accepts a valid PNG');
+  const pngChar = (await pngCharRes.json()) as { avatar: string | null };
+  assert(pngChar.avatar?.includes('.png') === true, 'stored avatar is served as a .png file');
+  const jpegPersonaRes = await putAvatar(`/api/personas/${persona.id}/avatar`, jpegBytes);
+  assert(jpegPersonaRes.status === 415, 'persona avatar upload rejects JPEG magic bytes');
+
   console.log('== templates: prologue, name prefixing, /char, resume ==');
   const tpl = await req<{ id: number }>('POST', '/api/templates', {
     name: 'e2e-prefix',
@@ -1252,6 +1285,33 @@ async function main() {
     'exhausted retries surface the upstream error on the message',
   );
 
+  console.log('== held-back name prefix survives a transient retry ==');
+  await putSettings({ defaultTemplateId: tpl.id });
+  const holdbackConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  await req('PATCH', `/api/conversations/${holdbackConv.id}`, { speakerName: 'Hal' });
+  ws.sub(holdbackConv.id);
+  await ws.waitFor(
+    (e) => e.t === 'tree' && e.conversationId === holdbackConv.id,
+    'holdback conversation tree',
+  );
+  // The mock dies after "Ha" — a case-insensitive prefix of the "Hal:" prefill,
+  // so the server is still holding it back when the stream cuts out. The retry
+  // resumes prefill-style from the flushed holdback and streams normally.
+  await makeNextMockResponseDieAfterContent('Ha');
+  const holdbackSend = await sendMessage(holdbackConv.id, 'holdback check');
+  const holdbackFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === holdbackSend.assistantMessageId,
+    'held-back prefix generation retried to completion',
+    20_000,
+  );
+  assert(
+    holdbackFinal.t === 'final' &&
+      holdbackFinal.message.status === 'done' &&
+      holdbackFinal.message.content.startsWith('HaYou said:'),
+    'held-back prefix characters are kept exactly once across the retry',
+  );
+  await putSettings({ defaultTemplateId: prevSettings.defaultTemplateId });
+
   console.log('== background swipe generation stays one reply ahead ==');
   await putSettings({ backgroundSwipeGeneration: false });
   const backgroundConv = await req<{ id: number }>('POST', '/api/conversations', {});
@@ -1436,6 +1496,61 @@ async function main() {
   assert(
     retriedFinal.t === 'final' && retriedFinal.message.generationKind === 'speculative',
     'background refill retries transient failures with backoff',
+  );
+  await putSettings({ backgroundSwipeGeneration: false });
+
+  console.log('== speculative swipes wait for a subscribed client ==');
+  await putSettings({ backgroundSwipeGeneration: true });
+  // Fresh conversation, never subscribed: ws is still on retryConv, and each
+  // ws client subscribes to at most one conversation.
+  const gatedConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  const gatedSend = await sendMessage(gatedConv.id, 'no spectators here');
+  let gatedReply: Message | undefined;
+  for (let i = 0; i < 60 && !gatedReply; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const message = (await tree(gatedConv.id)).messages.find(
+      (m) => m.id === gatedSend.assistantMessageId,
+    );
+    if (message?.status === 'done') gatedReply = message;
+  }
+  assert(gatedReply != null, 'unwatched foreground reply finished');
+  // Grace period: an ungated onDone would spawn the speculative sibling within
+  // a microtask of finalize; 1.5s is far beyond any legitimate delay.
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  const unwatchedSnap = await tree(gatedConv.id);
+  assert(
+    unwatchedSnap.messages.filter((m) => m.parentId === gatedSend.userMessageId).length === 1 &&
+      !unwatchedSnap.messages.some((m) => m.generationKind === 'speculative'),
+    'no speculative swipe is generated while nobody is subscribed',
+  );
+  ws.sub(gatedConv.id);
+  await ws.waitFor(
+    (e) => e.t === 'tree' && e.conversationId === gatedConv.id,
+    'gated conversation tree after subscribing',
+  );
+  const gatedPreparedTree = await ws.waitFor(
+    (e) =>
+      e.t === 'treePatch' &&
+      e.conversationId === gatedConv.id &&
+      e.nodes.some(
+        (node) =>
+          node.parentId === gatedSend.userMessageId &&
+          node.id !== gatedSend.assistantMessageId &&
+          node.status === 'streaming',
+      ),
+    'subscribing starts the held-off speculative swipe',
+  );
+  if (gatedPreparedTree.t !== 'treePatch') throw new Error('unreachable');
+  const gatedPrepared = gatedPreparedTree.nodes.find(
+    (node) => node.parentId === gatedSend.userMessageId && node.id !== gatedSend.assistantMessageId,
+  )!;
+  const gatedFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === gatedPrepared.id,
+    'gated speculative swipe finished',
+  );
+  assert(
+    gatedFinal.t === 'final' && gatedFinal.message.generationKind === 'speculative',
+    'the speculative swipe generates once a client is watching',
   );
   await putSettings({ backgroundSwipeGeneration: false });
 

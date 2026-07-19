@@ -9,6 +9,7 @@ import {
 } from '../state/store.ts';
 import MessageNode from './MessageNode.tsx';
 import TraceView from './TraceView.tsx';
+import TreeView from './TreeView.tsx';
 
 export default function ChatView() {
   let scroller!: HTMLDivElement;
@@ -82,7 +83,12 @@ export default function ChatView() {
   });
 
   return (
-    <div class="chat" ref={scroller} onScroll={onScroll}>
+    <div
+      class="chat"
+      classList={{ 'chat-tree': state.viewMode === 'tree' }}
+      ref={scroller}
+      onScroll={onScroll}
+    >
       <Show
         when={selectedConversation()}
         fallback={
@@ -101,7 +107,14 @@ export default function ChatView() {
         }
       >
         <div class="chat-inner" ref={(el) => resizeObserver.observe(el)}>
-          <Show when={state.viewMode === 'chat'} fallback={<TraceView />}>
+          <Show
+            when={state.viewMode === 'chat'}
+            fallback={
+              <Show when={state.viewMode === 'trace'} fallback={<TreeView />}>
+                <TraceView />
+              </Show>
+            }
+          >
             <For each={activePath()}>{(message) => <MessageNode message={message} />}</For>
           </Show>
         </div>

@@ -1,0 +1,183 @@
+/* Branch tree view: full conversation-pane view (like the trace view), no
+   conversation width cap — deep trees scroll horizontally. The search bar
+   replaces the composer at the bottom while the view is active. */
+
+.treeview {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* Tree mode layout: lift the 820px conversation cap and let the tree grow
+   past the viewport to the right instead of squeezing. */
+.chat.chat-tree {
+  overflow: auto;
+}
+
+.chat-tree .chat-inner {
+  max-width: none;
+  width: max-content;
+  min-width: 100%;
+}
+
+/* Search bar: reuses the .composer pill, minus the width cap, with a plain
+   input in place of the textarea. */
+.treeview-search {
+  max-width: none;
+}
+
+.treeview-search input {
+  flex: 1;
+  background: none;
+  border: none;
+  border-radius: 18px;
+  padding: 9px var(--space-3);
+}
+
+.treeview-search input:focus {
+  outline: none;
+}
+
+@media (max-width: 767px), (pointer: coarse) and (max-width: 1024px) {
+  .treeview-search input {
+    background: var(--bg-raised);
+  }
+}
+
+.treeview-match .treeview-snippet {
+  color: var(--text);
+}
+
+.treeview-match .treeview-name {
+  color: var(--accent);
+}
+
+.treeview-tree,
+.treeview-children {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.treeview-children {
+  margin-left: 7px;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border);
+}
+
+.treeview-item {
+  margin: var(--space-1) 0;
+}
+
+.treeview-node {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  /* Hug the row's own content: the outline/background must not stretch to the
+     widest row (the pane is uncapped and scrolls horizontally). */
+  width: max-content;
+  max-width: 100%;
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid transparent;
+  border-radius: var(--radius-panel);
+  background: none;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.treeview-node:hover:not(:disabled) {
+  background: var(--bg-raised);
+}
+
+.treeview-node:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.treeview-role {
+  flex: none;
+  align-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+/* Same role colors as the trace view. */
+.treeview-role-user {
+  background: #6fa8dc;
+}
+
+.treeview-role-assistant {
+  background: #4caf7d;
+}
+
+.treeview-role-system {
+  background: var(--accent);
+}
+
+.treeview-role-tool {
+  background: var(--text-dim);
+}
+
+.treeview-name {
+  flex: none;
+  max-width: 40%;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+.treeview-snippet {
+  flex: 1;
+  min-width: 0;
+  /* Long rows would make the uncapped pane needlessly wide — clip at 100ch. */
+  max-width: 100ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-dim);
+}
+
+/* The active path stands out; the leaf gets the accent fill. */
+.treeview-on-path {
+  border-color: var(--border);
+  background: var(--bg-raised);
+}
+
+.treeview-on-path .treeview-name,
+.treeview-on-path .treeview-snippet {
+  color: var(--text);
+}
+
+.treeview-active-leaf {
+  border-color: var(--accent);
+}
+
+.treeview-active-leaf::after {
+  content: '●';
+  flex: none;
+  align-self: center;
+  font-size: 10px;
+  color: var(--accent);
+}
+
+.treeview-status {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+
+.treeview-status-streaming {
+  color: var(--accent);
+}
+
+.treeview-status-error {
+  color: var(--danger);
+}

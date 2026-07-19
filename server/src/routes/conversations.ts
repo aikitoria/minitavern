@@ -13,6 +13,7 @@ import {
   getActiveLeafId,
   getActivePath,
   getMessage,
+  getPathToMessage,
   getTreeMessages,
   setActiveLeaf,
   takeDirtyMessageIds,
@@ -25,8 +26,10 @@ import {
   getPersona,
   substituteMacros,
 } from '../prompt.ts';
+import type { BuiltPrompt } from '../prompt.ts';
 import { clearSettingReference, getSettings } from '../settingsStore.ts';
 import {
+  chatCompletionOnce,
   hasActiveGeneration,
   hasForegroundGeneration,
   startGeneration,
@@ -145,12 +148,14 @@ export function prepareActiveSwipe(conversationId: number): void {
 /**
  * Creates the empty streaming assistant message and kicks off generation.
  * `speakerName` overrides the conversation's current speaker (e.g. a
- * regeneration keeps the name its siblings were sent with).
+ * regeneration keeps the name its siblings were sent with). `promptOverride`
+ * pins a pre-built prompt (steered regenerations) so retries stay consistent.
  */
 export function spawnAssistantReply(
   conversation: Conversation,
   parentId: number | null,
   speakerName: string | null = conversation.speakerName,
+  promptOverride?: BuiltPrompt,
 ): number {
   const msg = appendMessage(
     conversation.id,
@@ -164,11 +169,85 @@ export function spawnAssistantReply(
   touchConversation(conversation.id);
   broadcastTree(conversation.id);
   startGeneration(getConversation(conversation.id), msg.id, undefined, {
+    prompt: promptOverride,
     onDone: () => {
       if (isConversationWatched(conversation.id)) prepareNextSwipe(msg.id);
+      maybeAutoTitle(conversation.id, msg.id);
     },
   });
   return msg.id;
+}
+
+/** The placeholder title a greeting-less conversation gets from its first message. */
+function derivedTitle(content: string): string {
+  return content.length > 60 ? `${content.slice(0, 57)}…` : content;
+}
+
+const TITLE_INSTRUCTION =
+  'Summarize this conversation in 3-6 words for a sidebar title. Reply with only the title, no quotes.';
+
+/** One-shot title completion; null on any failure (caller keeps the old title). */
+async function requestTitle(
+  conv: Conversation,
+  userText: string,
+  assistantText: string,
+): Promise<string | null> {
+  const clip = (s: string) => (s.length > 1000 ? `${s.slice(0, 1000)}…` : s);
+  try {
+    const raw = await chatCompletionOnce(
+      conv,
+      [
+        {
+          role: 'user',
+          content: `${TITLE_INSTRUCTION}\n\nUser: ${clip(userText)}\n\nAssistant: ${clip(assistantText)}`,
+        },
+      ],
+      30,
+    );
+    const title = raw
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
+      .trim();
+    if (!title) return null;
+    return title.length > 60 ? `${title.slice(0, 57)}…` : title;
+  } catch (err) {
+    console.warn(
+      `[conversations] auto-title failed for conversation ${conv.id}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
+  }
+}
+
+/**
+ * LLM auto-titling: after the FIRST assistant reply in a "New chat"
+ * conversation completes, replace the placeholder/fallback title with a
+ * generated one. Runs even with no subscribed client (the reply itself was
+ * foreground) and is silent on failure — the existing title stays.
+ */
+function maybeAutoTitle(conversationId: number, assistantMessageId: number): void {
+  const conv = getConversation(conversationId);
+  const history = getPathToMessage(getMessage(assistantMessageId)?.parentId ?? null);
+  // The first exchange is exactly one user message below the root.
+  const first = history.length === 1 && history[0]!.role === 'user' ? history[0]! : null;
+  if (!first) return;
+  // Anything but the placeholder or the first-message-derived fallback counts
+  // as a title the user (or a previous auto-title run) chose — leave it alone.
+  const fallback = derivedTitle(first.content);
+  if (conv.title !== 'New chat' && conv.title !== fallback) return;
+  const reply = getMessage(assistantMessageId)?.content ?? '';
+  void requestTitle(conv, first.content, reply).then((title) => {
+    if (!title) return;
+    // The call is async: re-check that nobody renamed (or deleted) meanwhile.
+    const latest = stmt('SELECT title FROM conversations WHERE id = ?').get(conversationId) as
+      { title: string } | undefined;
+    if (!latest || (latest.title !== 'New chat' && latest.title !== fallback)) return;
+    // No updated_at bump: a title is metadata, not "new content" (same
+    // doctrine as the PATCH rename route).
+    stmt('UPDATE conversations SET title = ? WHERE id = ?').run(title, conversationId);
+    invalidate('conversations');
+  });
 }
 
 function getAlternateGreetings(characterId: number): string[] {
@@ -457,8 +536,7 @@ route.post('/api/conversations/:id/messages', ({ params, body }) => {
 
   const userMsg = appendMessage(id, 'user', content, conv.activeLeafId);
   if (conv.title === 'New chat') {
-    const title = content.length > 60 ? `${content.slice(0, 57)}…` : content;
-    stmt('UPDATE conversations SET title = ? WHERE id = ?').run(title, id);
+    stmt('UPDATE conversations SET title = ? WHERE id = ?').run(derivedTitle(content), id);
   }
   const mid = spawnAssistantReply(conv, userMsg.id);
   invalidate('conversations');

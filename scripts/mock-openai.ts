@@ -19,6 +19,8 @@ const MOCK_PNG = Buffer.from(
 
 let failuresRemaining = 0;
 let terminalWithoutNewline = false;
+/** Next request streams this partial output, then dies mid-stream. */
+let dieAfterContent: string | null = null;
 let lastComfyWorkflow: unknown = null;
 /** Next N /prompt submissions are rejected with a 500. */
 let comfyFailPrompts = 0;
@@ -43,6 +45,12 @@ const server = http.createServer((req, res) => {
     terminalWithoutNewline = true;
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ terminalWithoutNewline }));
+    return;
+  }
+  if (req.method === 'POST' && req.url?.startsWith('/control/die-after-content')) {
+    dieAfterContent = new URL(req.url, 'http://mock').searchParams.get('content');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ dieAfterContent }));
     return;
   }
   if (req.method === 'GET' && req.url === '/control/last-workflow') {
@@ -168,25 +176,58 @@ const server = http.createServer((req, res) => {
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
       console.log('[mock] body received:', body.length, 'bytes');
-      if (failuresRemaining > 0) {
-        failuresRemaining--;
-        res.writeHead(503, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'controlled mock failure' }));
-        return;
-      }
       // A malformed body must fail the one request, not throw in the 'end'
       // handler and kill the whole mock (cascading e2e timeouts).
-      let parsed: { messages: { role: string; content: string }[] };
+      let parsed: { messages: { role: string; content: string }[]; stream?: boolean };
       try {
-        parsed = JSON.parse(body) as { messages: { role: string; content: string }[] };
+        parsed = JSON.parse(body) as {
+          messages: { role: string; content: string }[];
+          stream?: boolean;
+        };
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid JSON' }));
         return;
       }
       const lastUser = [...parsed.messages].reverse().find((m) => m.role === 'user');
+      // Non-streaming callers (the server's auto-title side task) get a plain
+      // JSON completion and must never consume the one-shot controls below —
+      // those are armed for streaming chat generations only.
+      if (parsed.stream === false) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  role: 'assistant',
+                  content: `Mock title: ${(lastUser?.content ?? '(nothing)').slice(0, 40)}`,
+                },
+                finish_reason: 'stop',
+              },
+            ],
+            usage: { prompt_tokens: 42, completion_tokens: 8 },
+          }),
+        );
+        return;
+      }
+      if (failuresRemaining > 0) {
+        failuresRemaining--;
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'controlled mock failure' }));
+        return;
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
       const send = (obj: unknown) => res.write(`data: ${JSON.stringify(obj)}\n\n`);
+
+      // Mid-stream connection death: emit the armed partial output, then cut
+      // the socket so the client's retry path has to resume from it.
+      if (dieAfterContent != null) {
+        send({ choices: [{ delta: { content: dieAfterContent } }] });
+        dieAfterContent = null;
+        setTimeout(() => res.socket?.destroy(), 50);
+        return;
+      }
 
       const system = parsed.messages[0]?.role === 'system' ? parsed.messages[0].content : '';
       const text =

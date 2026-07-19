@@ -1,0 +1,175 @@
+import { For, Show, createMemo, createSignal } from 'solid-js';
+import type { Message } from '@minitavern/shared';
+import { api } from '../state/api.ts';
+import {
+  activePath,
+  childrenByParent,
+  navigateTree,
+  personasEnabled,
+  selectedCharacter,
+  selectedPersona,
+  setState,
+  state,
+} from '../state/store.ts';
+import '../styles/treeview.css';
+
+/** Branch icon for the header button (kept here so the feature is self-contained). */
+export function TreeIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="18"
+      height="18"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2.25"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M6 3v12" />
+      <circle cx="18" cy="6" r="3" />
+      <circle cx="6" cy="18" r="3" />
+      <path d="M18 9a9 9 0 0 1-9 9" />
+    </svg>
+  );
+}
+
+/** Mirrors MessageNode's name resolution: persona for user, tool label, character default. */
+function speakerName(message: Message): string {
+  if (message.role === 'user') {
+    return (personasEnabled() ? selectedPersona() : null)?.name ?? 'You';
+  }
+  if (message.role === 'tool') return message.name ?? 'Tool';
+  if (message.role === 'system') return message.name ?? 'System';
+  return message.name ?? selectedCharacter()?.name ?? 'Assistant';
+}
+
+function snippet(message: Message): string {
+  // No visual truncation here: the row clips with a CSS ellipsis at its right
+  // edge. The 500-char slice is only a DOM-size cap for huge messages.
+  const text = message.content.replace(/\s+/g, ' ').trim();
+  if (text) return text.length > 500 ? text.slice(0, 500) : text;
+  if (message.images.length > 0 || message.imagePending) return '[image]';
+  return '(empty)';
+}
+
+/** Activating a node restores the chain beneath it (deep-restore), so any click
+ * is a full branch switch; the chat updates itself from the resulting treePatch. */
+async function activate(message: Message): Promise<void> {
+  if (state.treeNavigationPending) return;
+  if (message.id === state.tree.activeLeafId) {
+    setState('viewMode', 'chat');
+    return;
+  }
+  const ok = await navigateTree(() => api.activate(message.id, state.tree.activeLeafId));
+  if (ok) setState('viewMode', 'chat');
+}
+
+/** Search query, shared between the pane (filtering) and the bottom bar (input). */
+const [query, setQuery] = createSignal('');
+
+/** Search result: matching message ids, plus their ancestors so the tree keeps its shape. */
+interface TreeFilter {
+  visible: Set<number>;
+  matches: Set<number>;
+}
+
+function TreeNode(props: { message: Message; activeIds: Set<number>; filter: TreeFilter | null }) {
+  const children = () =>
+    (childrenByParent().get(props.message.id) ?? []).filter(
+      (child) => !props.filter || props.filter.visible.has(child.id),
+    );
+  return (
+    <li class="treeview-item">
+      <button
+        class="treeview-node"
+        classList={{
+          'treeview-on-path': props.activeIds.has(props.message.id),
+          'treeview-active-leaf': props.message.id === state.tree.activeLeafId,
+          'treeview-match': props.filter?.matches.has(props.message.id) ?? false,
+        }}
+        disabled={state.treeNavigationPending}
+        title={`Activate this branch (#${props.message.id})`}
+        onClick={() => void activate(props.message)}
+      >
+        <span class={`treeview-role treeview-role-${props.message.role}`} />
+        <span class="treeview-name">{speakerName(props.message)}</span>
+        <span class="treeview-snippet">{snippet(props.message)}</span>
+        <Show when={props.message.status !== 'done'}>
+          <span
+            class={`treeview-status treeview-status-${props.message.status}`}
+            title={props.message.genMeta?.error ?? undefined}
+          >
+            {props.message.status}
+          </span>
+        </Show>
+      </button>
+      <Show when={children().length > 0}>
+        <ul class="treeview-children">
+          <For each={children()}>
+            {(child) => (
+              <TreeNode message={child} activeIds={props.activeIds} filter={props.filter} />
+            )}
+          </For>
+        </ul>
+      </Show>
+    </li>
+  );
+}
+
+/** Full-pane branch tree for the active conversation (drawn like the trace view). */
+export default function TreeView() {
+  /** Ids on the active path, root -> active leaf. */
+  const activeIds = createMemo(() => new Set(activePath().map((message) => message.id)));
+  /** Non-null while searching: matches plus the ancestor chains that reach them. */
+  const filter = createMemo<TreeFilter | null>(() => {
+    const q = query().trim().toLowerCase();
+    if (!q) return null;
+    const visible = new Set<number>();
+    const matches = new Set<number>();
+    for (const message of Object.values(state.tree.messages)) {
+      const haystack = `${speakerName(message)}\n${message.content}`.toLowerCase();
+      if (!haystack.includes(q)) continue;
+      matches.add(message.id);
+      let cursor: Message | undefined = message;
+      while (cursor && !visible.has(cursor.id)) {
+        visible.add(cursor.id);
+        cursor = cursor.parentId != null ? state.tree.messages[cursor.parentId] : undefined;
+      }
+    }
+    return { visible, matches };
+  });
+  const roots = () =>
+    (childrenByParent().get(-1) ?? []).filter(
+      (message) => !filter() || filter()!.visible.has(message.id),
+    );
+  return (
+    <div class="treeview">
+      <Show
+        when={roots().length > 0}
+        fallback={<p class="hint">{query().trim() ? 'No matches.' : 'No messages yet.'}</p>}
+      >
+        <ul class="treeview-tree">
+          <For each={roots()}>
+            {(message) => <TreeNode message={message} activeIds={activeIds()} filter={filter()} />}
+          </For>
+        </ul>
+      </Show>
+    </div>
+  );
+}
+
+/** Search bar rendered in place of the composer while the tree view is active. */
+export function TreeSearch() {
+  return (
+    <div class="composer treeview-search">
+      <input
+        type="search"
+        placeholder="Search messages…"
+        value={query()}
+        onInput={(e) => setQuery(e.currentTarget.value)}
+      />
+    </div>
+  );
+}

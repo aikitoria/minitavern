@@ -1,8 +1,8 @@
-import type { Conversation, GenMeta, Message } from '@minitavern/shared';
+import type { Conversation, Endpoint, GenMeta, Message } from '@minitavern/shared';
 import { stmt, toEndpoint } from './db.ts';
 import { getMessage, getPathToMessage } from './tree.ts';
 import { buildChatMessages } from './prompt.ts';
-import type { BuiltPrompt } from './prompt.ts';
+import type { BuiltPrompt, ChatMessage } from './prompt.ts';
 import { getSettings } from './settingsStore.ts';
 import { broadcastConv, invalidate } from './events.ts';
 
@@ -224,20 +224,8 @@ export function startGeneration(
 const IDLE_TIMEOUT_MS = 120_000;
 const MAX_UPSTREAM_RETRIES = 2;
 
-/** Retryable: network failures, upstream 5xx/429, and idle timeouts — not 4xx. */
-function isTransientFailure(err: unknown, gen: ActiveGen): boolean {
-  if (gen.meta.error?.startsWith('Upstream idle timeout')) return true;
-  const message = err instanceof Error ? err.message : String(err);
-  const status = message.match(/^Upstream error (\d{3})/);
-  if (status) {
-    const code = Number(status[1]);
-    return code >= 500 || code === 429;
-  }
-  return err instanceof TypeError; // fetch network-level failure
-}
-
-async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean): Promise<void> {
-  // Per-conversation override first, then the global active endpoint.
+/** Per-conversation endpoint override first, then the global active endpoint. */
+function resolveEndpoint(conversation: Conversation): Endpoint {
   const endpointId = conversation.endpointId ?? getSettings().activeEndpointId;
   const endpointRow = endpointId
     ? (stmt('SELECT * FROM endpoints WHERE id = ?').get(endpointId) as
@@ -252,6 +240,58 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
       `Endpoint "${endpoint.name}" has no model selected — set one in Settings → Endpoints`,
     );
   }
+  return endpoint;
+}
+
+/**
+ * One-shot non-streaming completion for silent side tasks (auto-titling).
+ * Deliberately outside the generation machinery: no message rows, no deltas,
+ * no retries — the caller decides what a failure means.
+ */
+export async function chatCompletionOnce(
+  conversation: Conversation,
+  messages: ChatMessage[],
+  maxTokens: number,
+): Promise<string> {
+  const endpoint = resolveEndpoint(conversation);
+  const res = await fetch(`${endpoint.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: endpoint.model,
+      messages,
+      stream: false,
+      max_tokens: maxTokens,
+    }),
+    signal: AbortSignal.timeout(30_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
+  }
+  const json = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
+  const content = json.choices?.[0]?.message?.content;
+  if (typeof content !== 'string') throw new Error('upstream returned no message content');
+  return content;
+}
+
+/** Retryable: network failures, upstream 5xx/429, and idle timeouts — not 4xx. */
+function isTransientFailure(err: unknown, gen: ActiveGen): boolean {
+  if (gen.meta.error?.startsWith('Upstream idle timeout')) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  const status = message.match(/^Upstream error (\d{3})/);
+  if (status) {
+    const code = Number(status[1]);
+    return code >= 500 || code === 429;
+  }
+  return err instanceof TypeError; // fetch network-level failure
+}
+
+async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean): Promise<void> {
+  const endpoint = resolveEndpoint(conversation);
   gen.model = endpoint.model;
 
   // A reply is based on its ancestors, not whichever sibling happens to be active.

@@ -16,7 +16,11 @@ export function putSettings(settings: Settings): void {
 
 export type SettingsReferenceKey = Exclude<
   keyof Settings,
-  'revision' | 'autoExpandThinking' | 'backgroundSwipeGeneration' | 'pluginSettings'
+  | 'revision'
+  | 'autoExpandThinking'
+  | 'backgroundSwipeGeneration'
+  | 'steerTemplate'
+  | 'pluginSettings'
 >;
 
 export function clearSettingReference(key: SettingsReferenceKey, id: number): boolean {

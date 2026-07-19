@@ -131,6 +131,12 @@ export const api = {
       `/api/messages/${messageId}/advance`,
       { expectedActiveLeafId },
     ),
+  regenerate: (messageId: number, instruction: string, expectedActiveLeafId: number | null) =>
+    request<{ activeLeafId: number; assistantMessageId: number }>(
+      'POST',
+      `/api/messages/${messageId}/regenerate`,
+      { instruction, expectedActiveLeafId },
+    ),
   deleteMessage: (messageId: number, expectedActiveLeafId: number | null) =>
     request<void>(
       'DELETE',

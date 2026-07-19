@@ -140,6 +140,9 @@ export interface Settings {
   autoExpandThinking: boolean;
   /** Keep one unread assistant sibling prepared ahead of the active reply. */
   backgroundSwipeGeneration: boolean;
+  /** Steer text for "regenerate with instruction"; {{instruction}} is replaced
+   * and the result is injected into that generation's prompt only. */
+  steerTemplate: string;
   /** Per-plugin settings blobs, keyed by plugin id (shapes are plugin-defined). */
   pluginSettings: Record<string, Record<string, unknown>>;
 }
@@ -168,6 +171,7 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultTemplateId: null,
   autoExpandThinking: false,
   backgroundSwipeGeneration: false,
+  steerTemplate: '[System note: adapt this reply as follows: {{instruction}}]',
   pluginSettings: {},
 };
 
