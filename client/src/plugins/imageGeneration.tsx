@@ -10,6 +10,7 @@ import MacroHelp from '../components/MacroHelp.tsx';
 import MacroTextarea from '../components/MacroTextarea.tsx';
 import Markdown from '../components/Markdown.tsx';
 import Select from '../components/Select.tsx';
+import { useSettingsGuard } from '../components/SettingsGuard.tsx';
 import type { SelectHandle } from '../components/Select.tsx';
 import './imageGeneration.css';
 
@@ -133,6 +134,7 @@ function SettingsPage() {
   /** Index into workflows(); -1 = none (describe only). Selected = active for /image. */
   const [selected, setSelected] = createSignal(-1);
   const [workflowText, setWorkflowText] = createSignal('');
+  let baseline = '';
 
   /** Read the editable fields back into the workflows list before switching/saving. */
   const stash = () => {
@@ -179,6 +181,20 @@ function SettingsPage() {
     showWorkflow(-1);
   };
 
+  const draft = (): ImageGenSettings => {
+    const idx = selected();
+    const currentWorkflows = workflows().map((workflow, i) =>
+      i === idx ? { name: nameEl.value.trim() || workflow.name, json: workflowEl.value } : workflow,
+    );
+    return {
+      describePrompt: describeEl.value,
+      instructionPrompt: instructionEl.value,
+      comfyUrl: comfyUrlEl.value.trim() || DEFAULTS.comfyUrl,
+      workflows: currentWorkflows,
+      activeWorkflow: currentWorkflows[idx]?.name ?? '',
+    };
+  };
+
   const load = () => {
     const cfg = settings();
     describeEl.value = cfg.describePrompt;
@@ -186,37 +202,47 @@ function SettingsPage() {
     comfyUrlEl.value = cfg.comfyUrl;
     setWorkflows(cfg.workflows);
     showWorkflow(cfg.workflows.findIndex((workflow) => workflow.name === cfg.activeWorkflow));
+    baseline = JSON.stringify(draft());
   };
   onMount(load);
 
   const save = async () => {
-    stash();
-    const names = workflows().map((workflow) => workflow.name);
+    const values = draft();
+    setWorkflows(values.workflows);
+    const names = values.workflows.map((workflow) => workflow.name);
     if (new Set(names).size !== names.length) {
       setError('Workflow names must be unique — the selected name identifies the /image workflow.');
-      return;
+      return false;
     }
-    for (const workflow of workflows()) {
+    for (const workflow of values.workflows) {
       const invalid = workflowError(workflow.json);
       if (invalid) {
         setError(`Workflow "${workflow.name}" ${invalid}`);
-        return;
+        return false;
       }
     }
     try {
-      await savePluginSettings(ID, {
-        describePrompt: describeEl.value,
-        instructionPrompt: instructionEl.value,
-        comfyUrl: comfyUrlEl.value.trim() || DEFAULTS.comfyUrl,
-        workflows: workflows(),
-        activeWorkflow: workflows()[selected()]?.name ?? '',
-      });
+      await savePluginSettings(ID, values);
+      baseline = JSON.stringify(values);
       setError('');
       flashSaved();
+      return true;
     } catch (err) {
       setError(errorMessage(err));
+      return false;
     }
   };
+
+  const discard = () => {
+    load();
+    setError('');
+  };
+
+  useSettingsGuard({
+    isDirty: () => JSON.stringify(draft()) !== baseline,
+    save,
+    discard,
+  });
 
   const hasPrompt = () => /\{\{prompt\}\}/i.test(workflowText());
   const hasSeed = () => /\{\{seed\}\}/i.test(workflowText());
@@ -297,14 +323,7 @@ function SettingsPage() {
         <button class="primary-btn" onClick={() => void save()}>
           Save
         </button>
-        <button
-          onClick={() => {
-            load();
-            setError('');
-          }}
-        >
-          Discard
-        </button>
+        <button onClick={discard}>Discard</button>
         <Show when={saved()}>
           <span class="saved-flash">✓ Saved</span>
         </Show>

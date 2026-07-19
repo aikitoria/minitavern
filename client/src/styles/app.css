@@ -15,7 +15,20 @@
   --md-em: #a6a69a;
   --md-strong: #f4f4ea;
   --md-quote: #e3a04c;
-  --radius: 10px;
+  /* Layout uses a 4px rhythm; nested corners step control → panel → modal. */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --control-pad-y: 7px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
+  --radius-modal: 16px;
+  --radius-pill: 999px;
+  /* Backwards-compatible panel radius for plugin-owned styles. */
+  --radius: var(--radius-panel);
   --sidebar-w: 280px;
   --bar-h: 46px;
 }
@@ -72,8 +85,8 @@ button {
   color: inherit;
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 12px;
+  border-radius: var(--radius-control);
+  padding: var(--control-pad-y) var(--space-3);
   cursor: pointer;
 }
 
@@ -93,8 +106,8 @@ textarea {
   color: var(--text);
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--control-pad-y) var(--space-3);
   width: 100%;
 }
 
@@ -117,7 +130,7 @@ textarea {
 .macro-box {
   position: relative;
   background: var(--bg-raised);
-  border-radius: 8px;
+  border-radius: var(--radius-control);
 }
 
 .macro-box textarea {
@@ -161,8 +174,8 @@ textarea {
   inset: 0;
   overflow: hidden;
   border: 1px solid transparent;
-  border-radius: 8px;
-  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--control-pad-y) var(--space-3);
   white-space: pre-wrap;
   overflow-wrap: break-word;
   color: transparent;
@@ -193,14 +206,14 @@ textarea {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   font: inherit;
   color: var(--text);
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 7px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--control-pad-y) var(--space-3);
   text-align: left;
   cursor: pointer;
 }
@@ -233,8 +246,9 @@ textarea {
   overflow-y: auto;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 5px;
+  /* 8px options + 4px inset = a concentric 12px outer corner. */
+  border-radius: var(--radius-panel);
+  padding: var(--space-1);
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.4);
 }
 
@@ -244,8 +258,8 @@ textarea {
   text-align: left;
   background: none;
   border: none;
-  border-radius: 6px;
-  padding: 7px 9px;
+  border-radius: var(--radius-control);
+  padding: var(--space-2);
   font: inherit;
   color: var(--text);
   cursor: pointer;
@@ -278,8 +292,8 @@ input[type='number']::-webkit-inner-spin-button {
 .icon-btn {
   background: none;
   border: none;
-  padding: 3px 7px;
-  border-radius: 6px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-control);
   color: var(--text-dim);
   font-size: 15px;
   line-height: 1;
@@ -299,18 +313,18 @@ input[type='number']::-webkit-inner-spin-button {
 .trace {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .trace-msg {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
   overflow: hidden;
 }
 
 .trace-role {
   display: block;
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
   font-size: 11.5px;
   font-weight: 600;
   text-transform: uppercase;
@@ -334,7 +348,7 @@ input[type='number']::-webkit-inner-spin-button {
 
 .trace-content {
   margin: 0;
-  padding: 10px 12px;
+  padding: var(--space-3);
   font-family: ui-monospace, 'Cascadia Code', Menlo, Consolas, monospace;
   font-size: 12.5px;
   white-space: pre-wrap;
@@ -381,7 +395,7 @@ textarea.mono,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 14px;
+  gap: var(--space-4);
   transition: opacity 0.3s ease;
 }
 
@@ -398,7 +412,7 @@ textarea.mono,
 
 .boot-dots {
   display: flex;
-  gap: 7px;
+  gap: var(--space-2);
 }
 
 .boot-dots i {
@@ -441,7 +455,7 @@ textarea.mono,
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   pointer-events: none;
 }
 
@@ -449,8 +463,8 @@ textarea.mono,
   background: var(--bg-raised);
   border: 1px solid var(--danger);
   color: var(--text);
-  border-radius: 10px;
-  padding: 8px 16px;
+  border-radius: var(--radius-panel);
+  padding: var(--space-2) var(--space-4);
   font-size: 13.5px;
   max-width: min(480px, 88vw);
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.4);
@@ -493,17 +507,17 @@ textarea.mono,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
   min-height: var(--bar-h);
-  margin-bottom: 10px;
+  margin-bottom: var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding-left: 12px;
+  gap: var(--space-2);
+  padding-left: var(--space-3);
 }
 
 .conn-dot {
@@ -519,7 +533,7 @@ textarea.mono,
 }
 
 .new-chat-wrap {
-  padding: 0 12px 10px;
+  padding: 0 var(--space-3) var(--space-3);
   position: relative;
 }
 
@@ -531,12 +545,12 @@ textarea.mono,
 
 .new-chat-menu {
   position: absolute;
-  left: 12px;
-  right: 12px;
+  left: var(--space-3);
+  right: var(--space-3);
   z-index: 30;
   background: var(--bg-raised);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: var(--radius-panel);
   overflow: hidden auto;
   max-height: 50dvh;
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
@@ -573,12 +587,12 @@ textarea.mono,
 .tools-menu button {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   border: none;
   border-radius: 0;
   background: none;
-  padding: 9px 12px;
+  padding: var(--space-2) var(--space-3);
   text-align: left;
 }
 
@@ -590,15 +604,15 @@ textarea.mono,
 .conv-list {
   flex: 1;
   overflow-y: auto;
-  padding: 0 12px 12px;
+  padding: var(--space-3);
 }
 
 .conv-item {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
-  border-radius: 8px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
   cursor: pointer;
   user-select: none;
 }
@@ -643,7 +657,7 @@ textarea.mono,
 
 .conv-item.search-result {
   align-items: flex-start;
-  padding-block: 10px;
+  padding-block: var(--space-3);
 }
 
 .conv-item.search-result .avatar,
@@ -663,17 +677,18 @@ textarea.mono,
 }
 
 .search-wrap {
-  padding: 0 12px 10px;
+  padding: 0 var(--space-3) var(--space-3);
+  border-bottom: 1px solid var(--border);
 }
 
 .search-input {
-  border-radius: 8px;
-  padding: 6px 10px;
+  border-radius: var(--radius-control);
+  padding: var(--control-pad-y) var(--space-3);
   font-size: 13.5px;
 }
 
 .search-empty {
-  padding: 4px 12px;
+  padding: var(--space-1) var(--space-3);
 }
 
 .conv-delete {
@@ -693,12 +708,12 @@ textarea.mono,
 .header {
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 3px 16px;
+  gap: var(--space-3);
+  padding: var(--space-1) var(--space-4);
   min-height: var(--bar-h);
   border-bottom: 1px solid var(--border);
   background: var(--bg-panel);
-  padding-top: calc(3px + env(safe-area-inset-top));
+  padding-top: calc(var(--space-1) + env(safe-area-inset-top));
 }
 
 .header .avatar,
@@ -717,7 +732,7 @@ textarea.mono,
   min-width: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .header-title {
@@ -731,7 +746,7 @@ textarea.mono,
 .header-info .header-title {
   cursor: text;
   flex-shrink: 1;
-  border-radius: 6px;
+  border-radius: var(--radius-control);
 }
 
 .header-info .header-title:hover {
@@ -742,13 +757,13 @@ textarea.mono,
 .header-title-input {
   font-weight: 600;
   font-size: 15.5px;
-  padding: 0 6px;
+  padding: 0 var(--space-2);
   max-width: 420px;
 }
 
 .header-chips {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
   overflow-x: auto;
   scrollbar-width: none;
 }
@@ -756,8 +771,8 @@ textarea.mono,
 .chip {
   border: 1px solid var(--border);
   background: var(--bg-raised);
-  border-radius: 20px;
-  padding: 0 9px;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-2);
   font-size: 11px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -788,10 +803,10 @@ textarea.mono,
 .chat-inner {
   max-width: 820px;
   margin: 0 auto;
-  padding: 14px 16px 22px;
+  padding: var(--space-4) var(--space-4) var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: var(--space-3);
 }
 
 .chat-empty {
@@ -800,9 +815,9 @@ textarea.mono,
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 10px;
+  gap: var(--space-3);
   text-align: center;
-  padding: 20px;
+  padding: var(--space-5);
 }
 
 .avatar,
@@ -827,7 +842,7 @@ textarea.mono,
 
 .msg {
   display: flex;
-  gap: 12px;
+  gap: var(--space-3);
   align-items: flex-start;
 }
 
@@ -840,8 +855,10 @@ textarea.mono,
 .msg-tool .msg-body {
   background: var(--bg-panel);
   border: 1px dashed var(--border);
-  border-radius: var(--radius);
-  padding: 8px 12px;
+  /* Generated media uses a 12px radius. A uniform 12px inset keeps its
+     bottom corners concentric with the card: 12px inner + 12px inset. */
+  border-radius: calc(var(--radius-panel) + var(--space-3));
+  padding: var(--space-3);
 }
 
 .msg-tool .msg-name {
@@ -850,6 +867,18 @@ textarea.mono,
 
 .msg-tool .msg-content {
   color: var(--text-dim);
+}
+
+/* The card padding supplies the bottom breathing room; the global Markdown
+   tail margin would otherwise make tool cards look bottom-heavy. */
+.msg-tool .md > :last-child {
+  margin-bottom: 0;
+}
+
+/* Generation and image-fetch failures can be the card's final child. Match
+   media's 12px corner so the shared 24px card radius stays concentric. */
+.msg-tool .msg-error {
+  border-radius: var(--radius-panel);
 }
 
 /* Fullscreen pan/zoom viewer. */
@@ -880,8 +909,8 @@ textarea.mono,
 
 .image-viewer-close {
   position: fixed;
-  top: 14px;
-  right: 14px;
+  top: var(--space-4);
+  right: var(--space-4);
   font-size: 20px;
   color: #fff;
 }
@@ -913,14 +942,14 @@ textarea.mono,
 .msg-head {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   margin-bottom: 2px;
 }
 
 .msg-tools-top {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: var(--space-2);
   margin-left: auto;
 }
 
@@ -937,22 +966,22 @@ textarea.mono,
 
 .msg-chip {
   border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 0 8px;
+  border-radius: var(--radius-pill);
+  padding: 0 var(--space-2);
 }
 
 .msg-error {
   color: var(--danger);
   font-size: 13px;
   border: 1px solid var(--danger);
-  border-radius: 8px;
-  padding: 6px 10px;
-  margin-top: 6px;
+  border-radius: var(--radius-control);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-2);
 }
 
 .msg-actions {
   display: inline-flex;
-  gap: 2px;
+  gap: var(--space-1);
 }
 
 .msg-actions,
@@ -986,14 +1015,14 @@ textarea.mono,
 .branch-nav {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: var(--space-1);
   font-size: 12.5px;
   color: var(--text-dim);
 }
 
 .branch-nav .icon-btn {
   font-size: 16px;
-  padding: 0 6px;
+  padding: 0 var(--space-2);
 }
 
 .msg-edit textarea {
@@ -1002,8 +1031,8 @@ textarea.mono,
 
 .msg-edit-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
   flex-wrap: wrap;
 }
 
@@ -1011,7 +1040,7 @@ textarea.mono,
   cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--space-1);
 }
 
 .spinner {
@@ -1038,9 +1067,9 @@ textarea.mono,
 .reasoning-text {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
-  border-radius: 8px;
-  margin: 4px 0 8px;
-  padding: 8px 12px;
+  border-radius: var(--radius-control);
+  margin: var(--space-1) 0 var(--space-2);
+  padding: var(--space-2) var(--space-3);
   font-size: 13px;
   color: var(--text-dim);
   white-space: pre-wrap;
@@ -1076,8 +1105,8 @@ textarea.mono,
 .md pre {
   background: var(--code-bg);
   border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: var(--radius-control);
+  padding: var(--space-3);
   overflow-x: auto;
   font-size: 13px;
 }
@@ -1091,7 +1120,7 @@ textarea.mono,
   background: var(--bg-raised);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0 4px;
+  padding: 0 var(--space-1);
 }
 
 .md em {
@@ -1115,7 +1144,7 @@ textarea.mono,
 .md blockquote {
   border-left: 3px solid var(--accent);
   margin: 0.6em 0;
-  padding-left: 12px;
+  padding-left: var(--space-3);
   color: var(--text-dim);
 }
 
@@ -1129,7 +1158,7 @@ textarea.mono,
 .md th,
 .md td {
   border: 1px solid var(--border);
-  padding: 4px 10px;
+  padding: var(--space-1) var(--space-3);
 }
 
 .md img {
@@ -1145,7 +1174,7 @@ textarea.mono,
   align-items: flex-end;
   width: calc(100% - 32px);
   max-width: 788px;
-  margin: 0 auto 16px;
+  margin: 0 auto var(--space-4);
   padding: 6px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
@@ -1166,7 +1195,7 @@ textarea.mono,
   background: none;
   border: none;
   border-radius: 18px;
-  padding: 9px 12px;
+  padding: 9px var(--space-3);
 }
 
 .composer textarea:focus {
@@ -1211,7 +1240,7 @@ textarea.mono,
   min-width: 200px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   overflow: hidden;
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
   transform-origin: bottom left;
@@ -1232,7 +1261,7 @@ textarea.mono,
   min-width: 140px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: var(--radius-panel);
   overflow: hidden;
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
   animation: menu-in 0.1s ease-out;
@@ -1241,12 +1270,12 @@ textarea.mono,
 .msg-more-menu button {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   border: none;
   border-radius: 0;
   background: none;
-  padding: 7px 12px;
+  padding: var(--space-2) var(--space-3);
   text-align: left;
   font-size: 13.5px;
 }
@@ -1289,7 +1318,7 @@ textarea.mono,
   right: 0;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: var(--radius-panel);
   overflow: hidden;
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.35);
 }
@@ -1297,12 +1326,12 @@ textarea.mono,
 .cmd-item {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
   width: 100%;
   background: none;
   border: none;
   border-radius: 0;
-  padding: 8px 14px;
+  padding: var(--space-2) var(--space-3);
   text-align: left;
 }
 
@@ -1314,8 +1343,8 @@ textarea.mono,
 .cmd-hint {
   display: flex;
   align-items: baseline;
-  gap: 8px;
-  padding: 8px 14px;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
 }
 
 .cmd-name {
@@ -1348,13 +1377,13 @@ textarea.mono,
   align-items: center;
   justify-content: center;
   z-index: 100;
-  padding: 20px;
+  padding: var(--space-5);
 }
 
 .modal {
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: var(--radius-modal);
   width: min(860px, 100%);
   /* fixed height so switching tabs never resizes/re-centers the dialog */
   height: min(85dvh, 720px);
@@ -1380,8 +1409,8 @@ textarea.mono,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 14px 18px;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--border);
 }
 
@@ -1395,7 +1424,7 @@ textarea.mono,
 }
 
 .modal-body {
-  padding: 16px 18px;
+  padding: var(--space-4);
   overflow-y: auto;
 }
 
@@ -1405,6 +1434,25 @@ textarea.mono,
   display: flex;
   overflow: hidden;
   padding: 0;
+}
+
+.settings-prompt-backdrop {
+  z-index: 110;
+}
+
+.settings-prompt {
+  width: min(420px, 100%);
+  padding: var(--space-5);
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-modal);
+  box-shadow: 0 16px 50px rgb(0 0 0 / 0.4);
+  animation: modal-in 0.1s ease-out;
+}
+
+.settings-prompt p {
+  margin: var(--space-3) 0 0;
+  color: var(--text-dim);
 }
 
 .tabs {
@@ -1417,8 +1465,8 @@ textarea.mono,
   scrollbar-width: none;
   /* fill the header's height so the active underline sits on its bottom border */
   align-self: stretch;
-  margin: -14px 0;
-  margin-left: 10px;
+  margin: calc(-1 * var(--space-3)) 0;
+  margin-left: var(--space-2);
 }
 
 .tab {
@@ -1427,7 +1475,7 @@ textarea.mono,
   background: none;
   border: none;
   border-radius: 0;
-  padding: 0 8px;
+  padding: 0 var(--space-2);
   font-size: 13.5px;
   color: var(--text-dim);
   white-space: nowrap;
@@ -1453,21 +1501,35 @@ textarea.mono,
 .form {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .form label {
   font-size: 13px;
   color: var(--text-dim);
-  margin-top: 8px;
+  margin-top: var(--space-2);
 }
 
 .form-actions {
   display: flex;
-  gap: 8px;
-  margin-top: 14px;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
   flex-wrap: wrap;
   align-items: center;
+}
+
+/* Keep settings actions reachable while the form itself scrolls. General is
+   a direct modal form; entity and tool tabs scroll their detail-side form. */
+.modal-body > .form > .form-actions,
+.master-detail > .form > .form-actions {
+  position: sticky;
+  bottom: calc(-1 * var(--space-4));
+  z-index: 2;
+  margin-inline: calc(-1 * var(--space-4));
+  margin-bottom: calc(-1 * var(--space-4));
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border);
 }
 
 .saved-flash {
@@ -1480,7 +1542,7 @@ textarea.mono,
 .macro-help {
   position: relative;
   display: inline-block;
-  margin-left: 6px;
+  margin-left: var(--space-2);
 }
 
 .help-btn {
@@ -1503,19 +1565,19 @@ textarea.mono,
 
 .help-card {
   position: absolute;
-  top: calc(100% + 6px);
-  left: -8px;
+  top: calc(100% + var(--space-2));
+  left: calc(-1 * var(--space-2));
   z-index: 50;
   width: min(460px, 82vw);
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 12px 14px;
+  border-radius: var(--radius-panel);
+  padding: var(--space-3);
   box-shadow: 0 8px 30px rgb(0 0 0 / 0.4);
   /* aligned two-column table: macros left, descriptions share one column */
   display: grid;
   grid-template-columns: max-content 1fr;
-  gap: 7px 14px;
+  gap: var(--space-2) var(--space-3);
   align-items: baseline;
 }
 
@@ -1549,7 +1611,7 @@ textarea.mono,
 .check-row {
   display: flex;
   align-items: baseline;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .form label.check-row {
@@ -1565,14 +1627,14 @@ textarea.mono,
 .param-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 10px;
-  margin-top: 8px;
+  gap: var(--space-3);
+  margin-top: var(--space-2);
 }
 
 .avatar-row {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--space-3);
 }
 
 /* An input or select with compact action buttons beside it (API key + Clear,
@@ -1580,7 +1642,7 @@ textarea.mono,
 .key-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
 }
 
 .key-row input,
@@ -1603,7 +1665,7 @@ textarea.mono,
 .master-detail {
   display: grid;
   grid-template-columns: 220px 1fr;
-  gap: 18px;
+  gap: 0;
   flex: 1;
   min-height: 0;
 }
@@ -1611,7 +1673,7 @@ textarea.mono,
 .master-detail > .form {
   overflow-y: auto;
   min-height: 0;
-  padding: 16px 18px 16px 0;
+  padding: var(--space-4);
 }
 
 /* Mobile-only "back to list" button in entity editors. */
@@ -1622,9 +1684,9 @@ textarea.mono,
 .entity-list {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--space-1);
   border-right: 1px solid var(--border);
-  padding: 16px 14px 16px 18px;
+  padding: var(--space-4);
   overflow-y: auto;
   min-height: 0;
 }
@@ -1632,12 +1694,12 @@ textarea.mono,
 .entity-list button {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--space-2);
   background: none;
   border: none;
   text-align: left;
-  padding: 7px 10px;
-  border-radius: 8px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-control);
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -1649,7 +1711,7 @@ textarea.mono,
 
 .entity-list-actions {
   display: flex;
-  gap: 6px;
+  gap: var(--space-2);
 }
 
 .entity-list-actions button {
@@ -1715,20 +1777,20 @@ textarea.mono,
      avatar and info chips are desktop luxuries; only warnings stay.
      Header and modal title bar share the same height. */
   .header {
-    gap: 8px;
-    padding: 4px 10px;
-    padding-top: calc(4px + env(safe-area-inset-top));
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3);
+    padding-top: calc(var(--space-1) + env(safe-area-inset-top));
     min-height: calc(46px + env(safe-area-inset-top));
   }
 
   .modal-head {
-    padding: 4px 12px;
+    padding: var(--space-1) var(--space-3);
     min-height: 46px;
   }
 
   .modal-head .tabs {
-    margin: -4px 0;
-    margin-left: 8px;
+    margin: calc(-1 * var(--space-1)) 0;
+    margin-left: var(--space-2);
   }
 
   .header > .avatar,
@@ -1759,7 +1821,7 @@ textarea.mono,
   }
 
   .sidebar-head {
-    padding: 4px 12px;
+    padding: var(--space-1) var(--space-3);
     min-height: 46px; /* .sidebar already pads for the safe-area inset */
   }
 
@@ -1781,7 +1843,7 @@ textarea.mono,
   }
 
   .composer textarea {
-    padding: 7px 10px;
+    padding: var(--control-pad-y) var(--space-3);
   }
 
   .send-btn {
@@ -1791,8 +1853,8 @@ textarea.mono,
   }
 
   .chat-inner {
-    padding: 8px 10px 12px;
-    gap: 8px;
+    padding: var(--space-2) var(--space-3) var(--space-3);
+    gap: var(--space-2);
   }
 
   .master-detail {
@@ -1802,18 +1864,18 @@ textarea.mono,
   /* Entity editors page between full-width list and detail form. */
   .entity-list {
     border-right: none;
-    padding: 14px 16px;
-    gap: 6px;
+    padding: var(--space-4);
+    gap: var(--space-2);
   }
 
   .master-detail > .form {
-    padding: 14px 16px;
+    padding: var(--space-4);
   }
 
   .entity-list button {
-    padding: 11px 14px;
+    padding: var(--space-3);
     background: var(--bg-raised);
-    border-radius: 10px;
+    border-radius: var(--radius-panel);
   }
 
   .entity-list button.active {
@@ -1837,7 +1899,7 @@ textarea.mono,
     align-self: flex-start;
     background: none;
     border: none;
-    padding: 4px 0;
+    padding: var(--space-1) 0;
     color: var(--accent);
     font-size: 14px;
   }
@@ -1854,7 +1916,7 @@ textarea.mono,
   .cmd-hint {
     flex-wrap: wrap;
     row-gap: 2px;
-    padding: 8px 10px;
+    padding: var(--space-2) var(--space-3);
   }
 
   .cmd-desc {

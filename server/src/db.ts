@@ -316,7 +316,12 @@ db.prepare('UPDATE messages SET image_pending = 0 WHERE image_pending = 1').run(
 
 let txDepth = 0;
 
-/** Nestable: only the outermost call opens/commits; an inner throw rolls back everything. */
+/**
+ * Nestable: only the outermost call opens/commits; an inner throw rolls back everything.
+ * There are NO savepoint semantics: an inner transaction that throws is only
+ * rolled back if the outer caller lets the exception propagate — catching it
+ * inside the outer transaction keeps the inner writes and commits them.
+ */
 export function transaction<T>(fn: () => T): T {
   if (txDepth > 0) {
     txDepth++;

@@ -171,6 +171,11 @@ function persistSelectedConversation(id: number | null): void {
 // are dropped.
 const fetchSeq = new Map<InvalidateEntity, number>();
 
+// Conversation deletes broadcast an invalidation before the initiating HTTP
+// request resolves. Remember locally initiated deletes so that refresh can't
+// mistake that race for a deletion performed by another client.
+const locallyDeletingConversationIds = new Set<number>();
+
 /** Marks now as the entity's newest state: any in-flight refetch started
  * earlier is stale and its response will be discarded. */
 function bumpFetchSeq(entity: InvalidateEntity): number {
@@ -201,8 +206,11 @@ const loaders: Record<InvalidateEntity, () => Promise<void>> = {
       state.selectedId != null &&
       !conversations.some((conversation) => conversation.id === state.selectedId)
     ) {
+      const deletedId = state.selectedId;
       selectConversation(null);
-      toast('This conversation was deleted on another device.');
+      if (!locallyDeletingConversationIds.has(deletedId)) {
+        toast('This conversation was deleted on another device.');
+      }
     }
   }),
   characters: loader('characters', api.characters, (data) =>
@@ -240,6 +248,7 @@ export function handleServerEvent(ev: ServerEvent): void {
       break;
     case 'tree':
       if (ev.conversationId === state.selectedId) {
+        resyncPendingFor = null;
         setInitialTreeLoaded(true);
         batch(() => {
           setState('tree', 'conversationId', ev.conversationId);
@@ -271,7 +280,13 @@ export function handleServerEvent(ev: ServerEvent): void {
       const bodies = new Map(ev.messages.map((m) => [m.id, m]));
       // A node we've never seen and no body for means a missed frame — resync.
       if (ev.nodes.some((node) => !bodies.has(node.id) && !state.tree.messages[node.id])) {
-        resyncTree();
+        // Every repeat subscribe() makes the server push a full snapshot, so
+        // don't stack resyncs while one is already in flight (cleared when the
+        // `tree` snapshot arrives).
+        if (resyncPendingFor !== ev.conversationId) {
+          resyncPendingFor = ev.conversationId;
+          resyncTree();
+        }
         break;
       }
       batch(() => {
@@ -323,17 +338,28 @@ export function handleServerEvent(ev: ServerEvent): void {
       );
       break;
     }
-    case 'final':
+    case 'final': {
+      // A final for an abandoned conversation (mid-switch) must not toast here.
+      if (ev.conversationId !== state.selectedId) break;
       // Surface upstream API failures (e.g. context length exceeded) loudly.
       // Speculative swipes retry quietly in the background.
       if (ev.message.status === 'error' && ev.message.generationKind !== 'speculative') {
         toast(ev.message.genMeta?.error ?? 'Generation failed');
       }
-      if (ev.conversationId === state.selectedId && state.tree.messages[ev.message.id]) {
-        setState('tree', 'messages', ev.message.id, ev.message);
+      if (state.tree.messages[ev.message.id]) {
+        // Merge into the existing object like treePatch does: replacing it
+        // would change identity and remount the whole MessageNode (destroying
+        // UI state like open viewers) since the timeline is keyed by reference.
+        setState(
+          'tree',
+          'messages',
+          ev.message.id,
+          produce((msg) => Object.assign(msg, ev.message)),
+        );
         if (!ev.message.imagePending) clearImageProgress(ev.message.id);
       }
       break;
+    }
     case 'imageProgress':
       if (ev.conversationId !== state.selectedId) break;
       setImageProgress((progress) => ({ ...progress, [ev.mid]: { value: ev.value, max: ev.max } }));
@@ -358,6 +384,10 @@ function clearImageProgress(mid: number): void {
 }
 
 // ---- Actions ----
+
+/** Conversation a gap-triggered resync is already in flight for (null = none).
+ * Cleared when the requested `tree` snapshot arrives. */
+let resyncPendingFor: number | null = null;
 
 /**
  * Re-request the tree by re-subscribing: the server pushes a fresh snapshot
@@ -394,14 +424,26 @@ export function selectConversation(id: number | null): void {
 export async function navigateTree(action: () => Promise<unknown>): Promise<boolean> {
   if (state.treeNavigationPending) return false;
   setState('treeNavigationPending', true);
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    await action();
+    // A blackholed fetch never settles; without a timeout the pending flag
+    // would stay set and wedge every tree navigation on this client.
+    await Promise.race([
+      action(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Request timed out — check your connection.')),
+          15000,
+        );
+      }),
+    ]);
     return true;
   } catch (err) {
     toast(err instanceof Error ? err.message : String(err));
     if (err instanceof ApiError && err.status === 409) resyncTree();
     return false;
   } finally {
+    clearTimeout(timer);
     setState('treeNavigationPending', false);
   }
 }
@@ -463,6 +505,26 @@ export async function newConversation(characterId: number | null): Promise<void>
   bumpFetchSeq('conversations');
   setState('conversations', (list) => [conv, ...list]);
   selectConversation(conv.id);
+}
+
+/**
+ * Applies a local settings write (PUT response), marking refetches started
+ * before it as stale so an invalidate-triggered GET that resolves late can't
+ * briefly revert the settings — same guard as newConversation's insert.
+ */
+export function applySettings(next: Settings): void {
+  bumpFetchSeq('settings');
+  setState('settings', next);
+}
+
+export async function deleteConversation(id: number): Promise<void> {
+  locallyDeletingConversationIds.add(id);
+  try {
+    await api.deleteConversation(id);
+    if (state.selectedId === id) selectConversation(null);
+  } finally {
+    locallyDeletingConversationIds.delete(id);
+  }
 }
 
 export function restoreConversationSelection(): void {

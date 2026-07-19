@@ -392,20 +392,36 @@ async function consumeStream(
       ...(r ? { r } : {}),
     });
   };
-  for await (const chunk of body) {
-    resetIdle();
-    buffer += decoder.decode(chunk as Uint8Array, { stream: true });
-    let idx: number;
-    while ((idx = buffer.indexOf('\n')) !== -1) {
-      const line = buffer.slice(0, idx);
-      buffer = buffer.slice(idx + 1);
-      processLine(line);
-      if (active.get(gen.mid) !== gen) return; // stopped while iterating
+  try {
+    for await (const chunk of body) {
+      resetIdle();
+      buffer += decoder.decode(chunk as Uint8Array, { stream: true });
+      let idx: number;
+      while ((idx = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        processLine(line);
+        if (active.get(gen.mid) !== gen) return; // stopped while iterating
+      }
     }
-  }
-  buffer += decoder.decode();
-  if (buffer) {
-    for (const line of buffer.split('\n')) processLine(line);
+    buffer += decoder.decode();
+    if (buffer) {
+      for (const line of buffer.split('\n')) processLine(line);
+    }
+  } catch (err) {
+    // The stream died mid-holdback: a transient retry resumes from
+    // gen.content, so apply the same flush semantics as stream end or the
+    // held-back characters are silently lost. A holdback equal to the full
+    // prefill (case-insensitive) is dropped instead — the retry re-sends the
+    // prefill itself.
+    if (holdback?.trim() && active.get(gen.mid) === gen) {
+      const probe = holdback.trimStart();
+      if (probe.toLowerCase() !== namePrefill!.toLowerCase()) {
+        gen.content += holdback;
+        broadcastConv(gen.conversationId, { t: 'delta', mid: gen.mid, d: holdback });
+      }
+    }
+    throw err;
   }
   // A reply shorter than the name prefix may still be held back — flush it.
   if (holdback?.trim() && active.get(gen.mid) === gen) {

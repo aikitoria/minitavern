@@ -9,7 +9,8 @@ interface PaneEditor {
   status: () => string;
   nav: { detailOpen: () => boolean; closeDetail: () => void };
   select: (id: EditorId) => void;
-  save: () => Promise<void>;
+  save: () => Promise<boolean>;
+  discard: () => void;
   remove: () => Promise<void>;
 }
 
@@ -67,7 +68,7 @@ export default function EntityEditorPane<T extends { id: number }>(props: {
           <button class="primary-btn" onClick={() => void editor.save()}>
             {editor.selectedId() === 'new' ? 'Create' : 'Save'}
           </button>
-          <button onClick={() => editor.select(editor.selectedId())}>Discard</button>
+          <button onClick={editor.discard}>Discard</button>
           <Show when={editor.selectedId() !== 'new'}>
             {props.extraActions}
             <button class="danger-btn" onClick={() => void editor.remove()}>

@@ -1,4 +1,4 @@
-import { unlinkSync, writeFileSync } from 'node:fs';
+import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { AVATAR_DIR } from '../db.ts';
 import { HttpError } from '../router.ts';
@@ -36,9 +36,24 @@ export function deleteAvatarFiles(kind: AvatarKind, id: number): void {
   }
 }
 
+/** Reads the stored avatar file regardless of extension (legacy avatars may
+ * be jpg/webp from before uploads were restricted to PNG). */
+export function readAvatarFile(kind: AvatarKind, id: number): Buffer | null {
+  for (const ext of IMAGE_EXTS) {
+    try {
+      return readFileSync(join(AVATAR_DIR, `${kind}-${id}.${ext}`));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    }
+  }
+  return null;
+}
+
 export function saveAvatar(kind: AvatarKind, id: number, data: Buffer): string {
   const ext = sniffImageExt(data);
-  if (!ext) throw new HttpError(415, 'avatar must be a PNG, JPEG or WebP image');
+  // PNG only: character card export embeds the card JSON into the avatar PNG,
+  // and dependency-free transcoding isn't available — accept nothing else.
+  if (ext !== 'png') throw new HttpError(415, 'avatar must be a PNG image');
   deleteAvatarFiles(kind, id);
   const filename = `${kind}-${id}.${ext}`;
   writeFileSync(join(AVATAR_DIR, filename), data);

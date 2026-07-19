@@ -1,7 +1,7 @@
 import type { Component, JSX } from 'solid-js';
 import type { Message } from '@minitavern/shared';
 import { api } from '../state/api.ts';
-import { setState, state } from '../state/store.ts';
+import { applySettings, state } from '../state/store.ts';
 
 /** A button in the composer's tools menu. */
 export interface PluginTool {
@@ -70,5 +70,5 @@ export async function savePluginSettings(
     { pluginSettings: { ...state.settings.pluginSettings, [id]: values } },
     state.settings.revision,
   );
-  setState('settings', next);
+  applySettings(next);
 }

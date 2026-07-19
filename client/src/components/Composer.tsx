@@ -4,8 +4,8 @@ import type { PluginCommand } from '../plugins/api.ts';
 import { pluginCommands, pluginTools } from '../plugins/index.ts';
 import {
   activePath,
+  deleteConversation,
   navigateTree,
-  selectConversation,
   setEditRequestId,
   state,
   streamingMessage,
@@ -92,8 +92,7 @@ const BUILTIN_COMMANDS: PluginCommand[] = [
       if (args.trim()) throw new Error('Usage: /delchat');
       const id = state.selectedId;
       if (id == null) throw new Error('no conversation selected');
-      await api.deleteConversation(id);
-      if (state.selectedId === id) selectConversation(null);
+      await deleteConversation(id);
     },
   },
 ];

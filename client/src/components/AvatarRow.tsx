@@ -26,7 +26,7 @@ export default function AvatarRow(props: {
       <input
         ref={input}
         type="file"
-        accept="image/png,image/jpeg,image/webp"
+        accept="image/png"
         hidden
         onChange={(e) => void uploadFile(e.currentTarget.files?.[0])}
       />

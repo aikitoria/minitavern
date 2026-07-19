@@ -1,14 +1,12 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import type { Character, CustomTemplate } from '@minitavern/shared';
-import { AVATAR_DIR, stmt, toCharacter } from '../db.ts';
+import { stmt, toCharacter } from '../db.ts';
 import { invalidate } from '../events.ts';
 import { buildCharacterCard, isPng, makePlaceholderPng, parseCharacterCard } from '../pngCard.ts';
 import { route, HttpError } from '../router.ts';
 import type { Ctx } from '../router.ts';
 import { optionalBoolean, optionalString, positiveId } from '../validation.ts';
 import type { JsonObject } from '../validation.ts';
-import { deleteAvatarFiles, saveAvatar } from './avatarStore.ts';
+import { deleteAvatarFiles, readAvatarFile, saveAvatar } from './avatarStore.ts';
 import {
   defineEntityRoutes,
   nameField,
@@ -126,12 +124,7 @@ route.get('/api/characters/:id/card', ({ params, res }) => {
       system_prompt: character.customPrompt ?? original?.data?.system_prompt ?? '',
     },
   };
-  let base: Buffer | null = null;
-  try {
-    base = readFileSync(join(AVATAR_DIR, `character-${id}.png`));
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
-  }
+  let base = readAvatarFile('character', id);
   // Legacy uploads trusted the content-type header, so an old .png file may
   // not actually be one — export with the placeholder instead of a 500.
   if (base && !isPng(base)) base = null;

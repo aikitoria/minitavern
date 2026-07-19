@@ -3,8 +3,9 @@ import Select from '../Select.tsx';
 import { createStore, reconcile } from 'solid-js/store';
 import type { Settings } from '@minitavern/shared';
 import { api, ApiError } from '../../state/api.ts';
-import { setState, state } from '../../state/store.ts';
+import { applySettings, setState, state } from '../../state/store.ts';
 import { createSavedFlash, errorMessage, numberOrNull } from '../../util.ts';
+import { useSettingsGuard } from '../SettingsGuard.tsx';
 
 function snapshot(): Settings {
   return { ...state.settings };
@@ -50,14 +51,15 @@ export default function GeneralTab() {
       const patch = Object.fromEntries(
         SETTING_KEYS.filter((key) => dirty[key]).map((key) => [key, draft[key]]),
       ) as Partial<Settings>;
-      if (!isDirty()) return;
+      if (!isDirty()) return true;
       const next = await api.putSettings(patch, baseRevision());
-      setState('settings', next);
+      applySettings(next);
       setDraft(reconcile(next));
       for (const key of SETTING_KEYS) setDirty(key, false);
       setBaseRevision(next.revision);
       setError('');
       flashSaved();
+      return true;
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         try {
@@ -73,6 +75,7 @@ export default function GeneralTab() {
         }
       }
       setError(errorMessage(err));
+      return false;
     }
   };
 
@@ -82,6 +85,8 @@ export default function GeneralTab() {
     setBaseRevision(state.settings.revision);
     setError('');
   };
+
+  useSettingsGuard({ isDirty, save, discard });
 
   return (
     <div class="form">

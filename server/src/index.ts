@@ -159,7 +159,11 @@ if (certPath && keyPath) {
       .end();
   });
   listener = net.createServer((socket) => {
+    // A peer that connects but never sends a byte must not pin the socket
+    // forever — destroy it if the first byte doesn't arrive in time.
+    const sniffTimeout = setTimeout(() => socket.destroy(), 10_000);
     socket.once('readable', () => {
+      clearTimeout(sniffTimeout);
       const first = socket.read(1) as Buffer | null;
       if (!first) {
         socket.destroy();
@@ -168,6 +172,7 @@ if (certPath && keyPath) {
       socket.unshift(first);
       (first[0] === 0x16 ? tlsServer : redirect).emit('connection', socket);
     });
+    socket.once('close', () => clearTimeout(sniffTimeout));
     socket.on('error', () => socket.destroy());
   });
   console.log('[tls] HTTPS enabled (plain http redirects)');
@@ -177,8 +182,14 @@ if (certPath && keyPath) {
 }
 
 setSubscribeHandler((ws, conversationId) => {
-  sendTreeTo(ws, conversationId);
-  prepareActiveSwipe(conversationId);
+  // Runs inside the ws 'message' listener with no upstream containment (the
+  // HTTP side has one in router.ts) — an escaping throw would crash the process.
+  try {
+    sendTreeTo(ws, conversationId);
+    prepareActiveSwipe(conversationId);
+  } catch (err) {
+    console.error(`[ws] subscribe handler failed for conversation ${conversationId}:`, err);
+  }
 });
 setSpeculativeRefillHandler((conversationId) => {
   const subscribed = subscribedConversationIds();

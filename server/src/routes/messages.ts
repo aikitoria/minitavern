@@ -1,3 +1,9 @@
+// RACE-FREE-BY-SYNCHRONY: every route handler in this file is race-free only
+// because it runs fully synchronously between check and act (no `await`
+// mid-handler) — Node's single thread then serializes handlers against each
+// other and against generation/streaming callbacks. A single future `await`
+// mid-handler reopens the double-generation and active-leaf races the guards
+// below protect against.
 import { stmt } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import {
@@ -23,6 +29,7 @@ import { invalidate } from '../events.ts';
 import {
   cancelBackgroundSwipe,
   getConversation,
+  isConversationWatched,
   prepareNextSwipe,
   spawnAssistantReply,
   touchConversation,
@@ -73,7 +80,11 @@ route.post('/api/messages/:id/continue', ({ params, body }) => {
     conv,
     msg.id,
     { content: msg.content, reasoning: msg.reasoning ?? '' },
-    { onDone: () => prepareNextSwipe(msg.id) },
+    {
+      onDone: () => {
+        if (isConversationWatched(msg.conversationId)) prepareNextSwipe(msg.id);
+      },
+    },
   );
   invalidate('conversations');
   return { assistantMessageId: msg.id };
@@ -285,7 +296,12 @@ route.post('/api/messages/:id/render-image', ({ params, body }) => {
   } else {
     try {
       config = parseImageConfig(b);
-    } catch {
+    } catch (err) {
+      // A supplied-but-invalid config gets the specific validation error; the
+      // generic note only applies when nothing was supplied at all.
+      if (Object.keys(b).length > 0) {
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
       throw new HttpError(400, 'message has no image render configuration');
     }
     stmt('UPDATE messages SET image_render_json = ? WHERE id = ?').run(

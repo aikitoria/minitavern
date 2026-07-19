@@ -65,8 +65,12 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY) {
+        // Don't destroy the socket — that would reset the connection before
+        // the 413 response could be delivered. Stop buffering and drain the
+        // rest of the body so the response goes out on a healthy connection.
+        req.removeAllListeners('data');
+        req.resume();
         reject(new HttpError(413, 'body too large'));
-        req.destroy();
         return;
       }
       chunks.push(chunk);

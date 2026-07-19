@@ -1,3 +1,9 @@
+// RACE-FREE-BY-SYNCHRONY: every route handler in this file is race-free only
+// because it runs fully synchronously between check and act (no `await`
+// mid-handler) — Node's single thread then serializes handlers against each
+// other and against generation/streaming callbacks. A single future `await`
+// mid-handler reopens the double-generation and active-leaf races the guards
+// below protect against.
 import type { Conversation } from '@minitavern/shared';
 import { stmt, toConversation, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
@@ -28,7 +34,7 @@ import {
   stopConversationGenerations,
 } from '../generation.ts';
 import { broadcastTree, treeSnapshot } from '../sync.ts';
-import { invalidate } from '../events.ts';
+import { invalidate, subscribedConversationIds } from '../events.ts';
 import {
   cancelSpeculativeRetries,
   discardSpeculativeSwipes,
@@ -74,6 +80,20 @@ export function cancelBackgroundSwipe(conversationId: number): boolean {
   return true;
 }
 
+/**
+ * Speculative swipe work is only worthwhile while at least one client is
+ * subscribed to the conversation. Every asynchronous continuation of the
+ * speculative chain (spawn after a foreground reply, refill after a
+ * speculative reply, retry after a failure) is gated on this, so closing all
+ * clients stops the chain instead of burning upstream quota on replies nobody
+ * will read. Synchronous entry points (routes, the subscribe/refill handlers)
+ * stay ungated: an explicit user action or a new subscription always restarts
+ * speculation.
+ */
+export function isConversationWatched(conversationId: number): boolean {
+  return subscribedConversationIds().includes(conversationId);
+}
+
 /** Ensures the active assistant reply has one unread sibling ready or in progress. */
 export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
   const message = getMessage(messageId);
@@ -100,15 +120,19 @@ export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
   broadcastTree(conversation.id);
   startGeneration(getConversation(conversation.id), speculative.id, undefined, {
     background: true,
-    onDone: () => prepareNextSwipe(speculative.id),
+    onDone: () => {
+      if (isConversationWatched(conversation.id)) prepareNextSwipe(speculative.id);
+    },
     onError: () => {
       const row = getMessage(speculative.id);
       if (row?.generationKind !== 'speculative') return;
       deleteMessage(speculative.id);
       broadcastTree(conversation.id);
-      scheduleSpeculativeRetry(conversation.id, retryAttempt + 1, () =>
-        prepareNextSwipe(message.id, retryAttempt + 1),
-      );
+      if (!isConversationWatched(conversation.id)) return;
+      scheduleSpeculativeRetry(conversation.id, retryAttempt + 1, () => {
+        // Re-check at fire time: the last client may have left during the backoff.
+        if (isConversationWatched(conversation.id)) prepareNextSwipe(message.id, retryAttempt + 1);
+      });
     },
   });
 }
@@ -140,7 +164,9 @@ export function spawnAssistantReply(
   touchConversation(conversation.id);
   broadcastTree(conversation.id);
   startGeneration(getConversation(conversation.id), msg.id, undefined, {
-    onDone: () => prepareNextSwipe(msg.id),
+    onDone: () => {
+      if (isConversationWatched(conversation.id)) prepareNextSwipe(msg.id);
+    },
   });
   return msg.id;
 }

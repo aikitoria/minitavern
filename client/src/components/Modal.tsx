@@ -6,6 +6,7 @@ export default function Modal(props: {
   title: string;
   headerExtra?: JSX.Element;
   children: JSX.Element;
+  onClose?: () => void;
 }) {
   return (
     <Portal>
@@ -15,7 +16,7 @@ export default function Modal(props: {
           <div class="modal-head">
             <span class="modal-title">{props.title}</span>
             {props.headerExtra}
-            <button class="icon-btn" onClick={() => openModal(null)}>
+            <button class="icon-btn" onClick={() => (props.onClose ?? (() => openModal(null)))()}>
               ✕
             </button>
           </div>

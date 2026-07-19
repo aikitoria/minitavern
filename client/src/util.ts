@@ -1,4 +1,5 @@
 import { createSignal, onCleanup, onMount } from 'solid-js';
+import { useSettingsGuard } from './components/SettingsGuard.tsx';
 
 export type EditorId = number | 'new';
 
@@ -53,25 +54,34 @@ export function createEntityEditor<T extends { id: number }, D>(
   const [saved, flashSaved] = createSavedFlash();
   const [status, setStatus] = createSignal('');
   const nav = createDetailNav();
+  let baseline = '';
+
+  const captureBaseline = () => {
+    baseline = JSON.stringify(options.data());
+  };
+  const load = (item: T | undefined) => {
+    options.load(item);
+    captureBaseline();
+  };
 
   const selected = () => options.items().find((item) => item.id === selectedId());
   const select = (id: EditorId) => {
     nav.openDetail();
     setSelectedId(id);
     setStatus('');
-    options.load(options.items().find((item) => item.id === id));
+    load(options.items().find((item) => item.id === id));
   };
   /** Select-and-load an item that may not be in items() yet (e.g. a fresh
    * import whose WS invalidate refetch hasn't landed). */
   const adopt = (item: T) => {
     nav.openDetail();
     setSelectedId(item.id);
-    options.load(item);
+    load(item);
   };
   // Seed the initial "new entity" form once the refs exist: raw DOM defaults
   // diverge from load(undefined) (e.g. a Select with no '' option stays '').
   onMount(() => {
-    if (selectedId() === 'new') options.load(undefined);
+    if (selectedId() === 'new') load(undefined);
   });
   const save = async () => {
     try {
@@ -82,9 +92,14 @@ export function createEntityEditor<T extends { id: number }, D>(
           : await options.patch(id, options.data());
       setSelectedId(item.id);
       setStatus('');
+      // Reload the server's representation so normalized values (and secrets
+      // such as an endpoint key) do not immediately look dirty after saving.
+      load(item);
       flashSaved();
+      return true;
     } catch (err) {
       setStatus(errorMessage(err));
+      return false;
     }
   };
   const remove = async () => {
@@ -98,6 +113,13 @@ export function createEntityEditor<T extends { id: number }, D>(
       setStatus(errorMessage(err));
     }
   };
+  const discard = () => select(selectedId());
+
+  useSettingsGuard({
+    isDirty: () => JSON.stringify(options.data()) !== baseline,
+    save,
+    discard,
+  });
 
   return {
     selectedId,
@@ -109,6 +131,7 @@ export function createEntityEditor<T extends { id: number }, D>(
     select,
     adopt,
     save,
+    discard,
     remove,
     flashSaved,
   };

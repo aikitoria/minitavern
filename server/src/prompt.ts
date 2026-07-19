@@ -51,17 +51,21 @@ export function substituteMacros(text: string, charName: string, userName: strin
 export function renderTemplate(template: string, vars: Record<string, string>): string {
   // Innermost-first (body may not contain another opener), looped to fixpoint so
   // nested blocks resolve outward instead of the first opener grabbing the first closer.
+  // vars is a plain object: only own properties are slots, otherwise
+  // {{constructor}}/{{hasownproperty}} would resolve to Object.prototype members.
+  const lookup = (key: string): string | undefined =>
+    Object.hasOwn(vars, key) ? vars[key] : undefined;
   let out = template;
   for (let prev; prev !== out;) {
     prev = out;
     out = out.replaceAll(
       /\{\{#if ([a-z]+)\}\}((?:(?!\{\{#if )[\s\S])*?)\{\{\/if\}\}/gi,
-      (_, key: string, body: string) => (vars[key.toLowerCase()]?.trim() ? body : ''),
+      (_, key: string, body: string) => (lookup(key.toLowerCase())?.trim() ? body : ''),
     );
   }
   out = out.replaceAll(
     /\{\{([a-z]+)\}\}/gi,
-    (match, key: string) => vars[key.toLowerCase()] ?? match,
+    (match, key: string) => lookup(key.toLowerCase()) ?? match,
   );
   return out.replaceAll(/\n{3,}/g, '\n\n').trim();
 }

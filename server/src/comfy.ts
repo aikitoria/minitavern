@@ -17,6 +17,7 @@ import { deleteImageFiles, saveImage } from './images.ts';
 
 const RENDER_TIMEOUT_MS = 5 * 60_000;
 const POLL_INTERVAL_MS = 1500;
+const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 
 export interface RenderJob {
   conversationId: number;
@@ -200,7 +201,22 @@ async function render(job: RenderJob): Promise<void> {
     });
     const download = await fetch(`${base}/view?${params}`, { signal: AbortSignal.timeout(60_000) });
     if (!download.ok) throw new Error(`failed to download image (${download.status})`);
-    const data = Buffer.from(await download.arrayBuffer());
+    // Cap the download: /view is server-controlled output, but a huge (or
+    // content-length-less) response must not balloon memory/disk.
+    const declared = Number(download.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+      throw new Error(`rendered image exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    for await (const chunk of download.body!) {
+      size += chunk.byteLength;
+      if (size > MAX_IMAGE_BYTES) {
+        throw new Error(`rendered image exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
+      }
+      chunks.push(Buffer.from(chunk));
+    }
+    const data = Buffer.concat(chunks);
 
     const ext = image.filename.includes('.')
       ? image.filename.slice(image.filename.lastIndexOf('.'))

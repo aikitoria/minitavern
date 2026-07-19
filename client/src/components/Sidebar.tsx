@@ -1,7 +1,14 @@
 import { For, Show, createEffect, createSignal, on } from 'solid-js';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
-import { newConversation, openModal, selectConversation, state, toast } from '../state/store.ts';
+import {
+  deleteConversation,
+  newConversation,
+  openModal,
+  selectConversation,
+  state,
+  toast,
+} from '../state/store.ts';
 import { errorMessage, useDismiss } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
@@ -68,8 +75,7 @@ export default function Sidebar() {
     event.stopPropagation();
     if (!confirm('Delete this conversation?')) return;
     try {
-      await api.deleteConversation(id);
-      if (state.selectedId === id) selectConversation(null);
+      await deleteConversation(id);
     } catch (err) {
       toast(errorMessage(err));
     }
