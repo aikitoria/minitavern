@@ -7,6 +7,8 @@ export default function AvatarRow(props: {
   src: string | null | undefined;
   name: string;
   upload: (file: File) => Promise<unknown>;
+  /** Delete the stored avatar; the row falls back to the initial letter. */
+  remove: () => Promise<unknown>;
   /** LLM+ComfyUI avatar generation (image plugin); omitted when unavailable. */
   generate?: () => Promise<void>;
   onDone: () => void;
@@ -18,6 +20,14 @@ export default function AvatarRow(props: {
     if (!file) return;
     try {
       await props.upload(file);
+      props.onDone();
+    } catch (err) {
+      props.onError(errorMessage(err));
+    }
+  };
+  const remove = async () => {
+    try {
+      await props.remove();
       props.onDone();
     } catch (err) {
       props.onError(errorMessage(err));
@@ -36,6 +46,9 @@ export default function AvatarRow(props: {
     <div class="avatar-row">
       <Avatar src={props.src} name={props.name} />
       <button onClick={() => input.click()}>Change avatar</button>
+      <Show when={props.src}>
+        <button onClick={() => void remove()}>Remove</button>
+      </Show>
       <Show when={props.generate}>
         <button disabled={generating()} onClick={() => void generate()}>
           <Show when={generating()} fallback="Generate">

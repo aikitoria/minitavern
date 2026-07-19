@@ -233,6 +233,8 @@ export const api = {
       rawBody: file,
       contentType: file.type,
     }),
+  deleteCharacterAvatar: (id: number) =>
+    request<Character>('DELETE', `/api/characters/${id}/avatar`),
   importCard: (file: File) =>
     request<Character>('POST', '/api/characters/import-card', undefined, {
       rawBody: file,
@@ -261,6 +263,7 @@ export const api = {
       rawBody: file,
       contentType: file.type,
     }),
+  deletePersonaAvatar: (id: number) => request<Persona>('DELETE', `/api/personas/${id}/avatar`),
 
   streamAvatarPrompt,
   renderAvatar,

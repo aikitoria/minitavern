@@ -130,6 +130,7 @@ export default function CharactersTab() {
           src={editor.selected()?.avatar}
           name={editor.selected()?.name ?? '?'}
           upload={(file) => api.uploadCharacterAvatar(editor.selectedId() as number, file)}
+          remove={() => api.deleteCharacterAvatar(editor.selectedId() as number)}
           generate={
             avatarGenerationAvailable()
               ? async () => {

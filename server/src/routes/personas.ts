@@ -33,3 +33,12 @@ route.put(
   },
   { rawBody: true },
 );
+
+route.del('/api/personas/:id/avatar', ({ params }: Ctx) => {
+  const id = positiveId(params.id);
+  rowById('personas', id);
+  deleteAvatarFiles('persona', id);
+  stmt('UPDATE personas SET avatar = NULL WHERE id = ?').run(id);
+  invalidate('personas');
+  return toPersona(rowById('personas', id));
+});

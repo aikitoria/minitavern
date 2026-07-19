@@ -68,6 +68,15 @@ route.put(
   { rawBody: true },
 );
 
+route.del('/api/characters/:id/avatar', ({ params }: Ctx) => {
+  const id = positiveId(params.id);
+  rowById('characters', id);
+  deleteAvatarFiles('character', id);
+  stmt('UPDATE characters SET avatar = NULL WHERE id = ?').run(id);
+  invalidate('characters');
+  return toCharacter(rowById('characters', id));
+});
+
 route.post(
   '/api/characters/import-card',
   ({ raw }: Ctx) => {

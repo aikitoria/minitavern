@@ -2,11 +2,10 @@
  * progress, and the settings-page workflow editor. Imported by the plugin
  * module — core styles stay in styles/app.css. */
 
-/* Generated image attached to a tool message. */
+/* Generated image attached to a tool message: fills the message width. */
 .msg-image {
   display: block;
-  max-width: min(100%, 512px);
-  max-height: 512px;
+  width: 100%;
   margin-top: var(--space-2);
   border-radius: var(--radius);
   border: 1px solid var(--border);

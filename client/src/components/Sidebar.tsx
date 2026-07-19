@@ -170,9 +170,19 @@ export default function Sidebar() {
             title={state.connected ? 'Connected' : 'Disconnected'}
           />
         </span>
-        <button class="icon-btn" title="Settings" onClick={() => openModal('settings')}>
-          <GearIcon />
-        </button>
+        <span class="sidebar-head-actions">
+          <button
+            class="icon-btn"
+            classList={{ 'icon-btn-active': state.groupByCharacter }}
+            title="Group by character"
+            onClick={toggleGroupByCharacter}
+          >
+            <GroupIcon />
+          </button>
+          <button class="icon-btn" title="Settings" onClick={() => openModal('settings')}>
+            <GearIcon />
+          </button>
+        </span>
       </div>
 
       <div class="new-chat-wrap" ref={newChatWrap}>
@@ -205,14 +215,6 @@ export default function Sidebar() {
           value={query()}
           onInput={(e) => onSearchInput(e.currentTarget.value)}
         />
-        <button
-          class="icon-btn"
-          classList={{ 'icon-btn-active': state.groupByCharacter }}
-          title="Group by character"
-          onClick={toggleGroupByCharacter}
-        >
-          <GroupIcon />
-        </button>
       </div>
 
       <nav class="conv-list">

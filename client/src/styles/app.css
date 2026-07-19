@@ -29,7 +29,7 @@
   --radius-pill: 999px;
   /* Backwards-compatible panel radius for plugin-owned styles. */
   --radius: var(--radius-panel);
-  --sidebar-w: 280px;
+  --sidebar-w: 192px;
   --bar-h: 46px;
 }
 
@@ -507,9 +507,9 @@ textarea.mono,
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-2);
   min-height: var(--bar-h);
-  margin-bottom: var(--space-3);
+  margin-bottom: var(--space-2);
   border-bottom: 1px solid var(--border);
 }
 
@@ -517,7 +517,12 @@ textarea.mono,
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding-left: var(--space-3);
+  padding-left: var(--space-2);
+}
+
+.sidebar-head-actions {
+  display: flex;
+  align-items: center;
 }
 
 .conn-dot {
@@ -533,7 +538,7 @@ textarea.mono,
 }
 
 .new-chat-wrap {
-  padding: 0 var(--space-3) var(--space-3);
+  padding: 0 var(--space-2) var(--space-2);
   position: relative;
 }
 
@@ -545,8 +550,8 @@ textarea.mono,
 
 .new-chat-menu {
   position: absolute;
-  left: var(--space-3);
-  right: var(--space-3);
+  left: var(--space-2);
+  right: var(--space-2);
   z-index: 30;
   background: var(--bg-raised);
   border: 1px solid var(--border);
@@ -604,20 +609,20 @@ textarea.mono,
 .conv-list {
   flex: 1;
   overflow-y: auto;
-  padding: var(--space-3);
+  padding: var(--space-2);
 }
 
 .conv-item {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
+  padding: var(--space-2);
   border-radius: var(--radius-control);
   cursor: pointer;
   user-select: none;
 }
 
-/* Sidebar rows share the same 12px grid: text edges line up at 24px. */
+/* Sidebar rows share the same 8px grid: text edges line up at 16px. */
 .sidebar .avatar,
 .sidebar .avatar-fallback {
   width: 26px;
@@ -677,10 +682,7 @@ textarea.mono,
 }
 
 .search-wrap {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  padding: 0 var(--space-3) var(--space-3);
+  padding: 0 var(--space-2) var(--space-2);
   border-bottom: 1px solid var(--border);
 }
 
@@ -696,7 +698,7 @@ textarea.mono,
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3) var(--space-1);
+  padding: var(--space-2) var(--space-2) var(--space-1);
   margin-top: var(--space-2);
   user-select: none;
 }
@@ -715,17 +717,17 @@ textarea.mono,
 }
 
 .search-empty {
-  padding: var(--space-1) var(--space-3);
+  padding: var(--space-1) var(--space-2);
 }
 
 .conv-duplicate,
 .conv-delete {
-  visibility: hidden;
+  display: none;
 }
 
 .conv-item:hover .conv-duplicate,
 .conv-item:hover .conv-delete {
-  visibility: visible;
+  display: inline-flex;
 }
 
 .backdrop {
@@ -1201,14 +1203,14 @@ textarea.mono,
   display: flex;
   gap: 6px;
   align-items: flex-end;
-  width: calc(100% - 32px);
+  width: calc(100% - 24px);
   max-width: 788px;
-  margin: 0 auto var(--space-4);
-  padding: 6px;
+  margin: 0 auto var(--space-3);
+  padding: 4px;
   background: var(--bg-panel);
   border: 1px solid var(--border);
-  /* concentric with the round send button: 21px button radius + 6px padding */
-  border-radius: 27px;
+  /* concentric with the round send button: 19px button radius + 4px padding */
+  border-radius: 23px;
   transition: border-color 0.15s;
 }
 
@@ -1224,7 +1226,7 @@ textarea.mono,
   background: none;
   border: none;
   border-radius: 18px;
-  padding: 9px var(--space-3);
+  padding: 8px var(--space-3);
 }
 
 .composer textarea:focus {
@@ -1239,8 +1241,8 @@ textarea.mono,
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 42px;
-  height: 42px;
+  width: 38px;
+  height: 38px;
   padding: 0;
   border-radius: 50%;
   background: var(--accent);
@@ -1794,7 +1796,7 @@ textarea.mono,
 
   .conv-duplicate,
   .conv-delete {
-    visibility: visible;
+    display: inline-flex;
   }
 
   /* Tighter messages: no avatars, tools inline with the author name. */
@@ -1860,8 +1862,8 @@ textarea.mono,
   .composer {
     width: 100%;
     margin: 0;
-    padding: 6px;
-    padding-bottom: calc(6px + env(safe-area-inset-bottom));
+    padding: 4px;
+    padding-bottom: calc(4px + env(safe-area-inset-bottom));
     border: none;
     border-top: 1px solid var(--border);
     border-radius: 0;
