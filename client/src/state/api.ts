@@ -59,6 +59,8 @@ export const api = {
   patchConversation: (id: number, patch: Partial<Conversation>) =>
     request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
   deleteConversation: (id: number) => request<void>('DELETE', `/api/conversations/${id}`),
+  duplicateConversation: (id: number) =>
+    request<Conversation>('POST', `/api/conversations/${id}/duplicate`),
   search: (q: string) =>
     request<{ conversation: Conversation; snippet: string | null }[]>(
       'GET',

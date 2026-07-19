@@ -1,4 +1,4 @@
-import { readdirSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readdirSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { IMAGES_DIR, stmt } from './db.ts';
 
@@ -19,6 +19,24 @@ function imageFile(imagePath: string): string | null {
 export function saveImage(name: string, data: Buffer): string {
   writeFileSync(join(IMAGES_DIR, basename(name)), data);
   return `/images/${basename(name)}`;
+}
+
+/**
+ * Copies a served image file under a new name (conversation duplication — two
+ * message rows must never reference the same file, or hard-deleting one would
+ * break the other). Returns the new served path, or null when the source file
+ * is already missing (the reference was dangling before the copy).
+ */
+export function copyImage(imagePath: string, newName: string): string | null {
+  const file = imageFile(imagePath);
+  if (!file) return null;
+  try {
+    copyFileSync(file, join(IMAGES_DIR, basename(newName)));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
+  }
+  return `/images/${basename(newName)}`;
 }
 
 export function deleteImageFiles(imagePaths: string[]): void {

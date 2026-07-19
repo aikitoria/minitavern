@@ -1,21 +1,29 @@
-import { For, Show, createEffect, createSignal, on } from 'solid-js';
-import type { Conversation } from '@minitavern/shared';
+import { For, Show, createEffect, createMemo, createSignal, on } from 'solid-js';
+import type { Character, Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
 import {
   deleteConversation,
+  duplicateConversation,
   newConversation,
   openModal,
   selectConversation,
   state,
   toast,
+  toggleGroupByCharacter,
 } from '../state/store.ts';
 import { errorMessage, useDismiss } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
+import GroupIcon from './GroupIcon.tsx';
 
 interface SearchResult {
   conversation: Conversation;
   snippet: string | null;
+}
+
+interface ConvGroup {
+  character: Character | null;
+  conversations: Conversation[];
 }
 
 export default function Sidebar() {
@@ -81,8 +89,37 @@ export default function Sidebar() {
     }
   };
 
+  const duplicate = async (id: number, event: MouseEvent) => {
+    event.stopPropagation();
+    try {
+      await duplicateConversation(id);
+    } catch (err) {
+      toast(errorMessage(err));
+    }
+  };
+
   const characterOf = (characterId: number | null) =>
     characterId != null ? state.characters.find((c) => c.id === characterId) : undefined;
+
+  // state.conversations is sorted by updatedAt desc, so first-appearance
+  // order gives groups ordered by their most recent conversation and keeps
+  // each group's conversations in the same order as the flat list.
+  const convGroups = createMemo<ConvGroup[]>(() => {
+    const byKey = new Map<string, ConvGroup>();
+    const groups: ConvGroup[] = [];
+    for (const conv of state.conversations) {
+      const character = characterOf(conv.characterId) ?? null;
+      const key = character ? String(character.id) : 'none';
+      let group = byKey.get(key);
+      if (!group) {
+        group = { character, conversations: [] };
+        byKey.set(key, group);
+        groups.push(group);
+      }
+      group.conversations.push(conv);
+    }
+    return groups;
+  });
 
   const ConvItem = (props: { conv: Conversation; snippet?: string | null; expanded?: boolean }) => (
     <div
@@ -105,6 +142,13 @@ export default function Sidebar() {
           <span class="conv-snippet">{props.snippet}</span>
         </Show>
       </span>
+      <button
+        class="icon-btn conv-duplicate"
+        title="Duplicate"
+        onClick={(e) => void duplicate(props.conv.id, e)}
+      >
+        ⧉
+      </button>
       <button
         class="icon-btn conv-delete"
         title="Delete"
@@ -161,12 +205,42 @@ export default function Sidebar() {
           value={query()}
           onInput={(e) => onSearchInput(e.currentTarget.value)}
         />
+        <button
+          class="icon-btn"
+          classList={{ 'icon-btn-active': state.groupByCharacter }}
+          title="Group by character"
+          onClick={toggleGroupByCharacter}
+        >
+          <GroupIcon />
+        </button>
       </div>
 
       <nav class="conv-list">
         <Show
           when={results()}
-          fallback={<For each={state.conversations}>{(conv) => <ConvItem conv={conv} />}</For>}
+          fallback={
+            <Show
+              when={state.groupByCharacter}
+              fallback={<For each={state.conversations}>{(conv) => <ConvItem conv={conv} />}</For>}
+            >
+              <For each={convGroups()}>
+                {(group) => (
+                  <section class="conv-group">
+                    <div class="conv-group-head">
+                      <Show
+                        when={group.character}
+                        fallback={<span class="avatar avatar-fallback">A</span>}
+                      >
+                        {(character) => <Avatar src={character().avatar} name={character().name} />}
+                      </Show>
+                      <span class="conv-group-name">{group.character?.name ?? 'No character'}</span>
+                    </div>
+                    <For each={group.conversations}>{(conv) => <ConvItem conv={conv} />}</For>
+                  </section>
+                )}
+              </For>
+            </Show>
+          }
         >
           {(found) => (
             <>

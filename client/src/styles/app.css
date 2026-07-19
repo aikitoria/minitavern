@@ -677,24 +677,53 @@ textarea.mono,
 }
 
 .search-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   padding: 0 var(--space-3) var(--space-3);
   border-bottom: 1px solid var(--border);
 }
 
 .search-input {
+  flex: 1;
+  min-width: 0;
   border-radius: var(--radius-control);
   padding: var(--control-pad-y) var(--space-3);
   font-size: 13.5px;
+}
+
+.conv-group-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  margin-top: var(--space-2);
+  user-select: none;
+}
+
+.conv-group:first-child .conv-group-head {
+  margin-top: 0;
+}
+
+.conv-group-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
 }
 
 .search-empty {
   padding: var(--space-1) var(--space-3);
 }
 
+.conv-duplicate,
 .conv-delete {
   visibility: hidden;
 }
 
+.conv-item:hover .conv-duplicate,
 .conv-item:hover .conv-delete {
   visibility: visible;
 }
@@ -1763,6 +1792,7 @@ textarea.mono,
     display: block;
   }
 
+  .conv-duplicate,
   .conv-delete {
     visibility: visible;
   }

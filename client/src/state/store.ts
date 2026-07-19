@@ -18,6 +18,17 @@ import { subscribe } from './ws.ts';
 
 export type ModalKind = 'settings' | 'conversation' | null;
 
+const GROUP_BY_CHARACTER_KEY = 'minitavern.groupByCharacter';
+
+function loadGroupByCharacter(): boolean {
+  try {
+    return localStorage.getItem(GROUP_BY_CHARACTER_KEY) === '1';
+  } catch {
+    /* Storage may be unavailable in hardened/private browser contexts. */
+    return false;
+  }
+}
+
 interface TreeState {
   conversationId: number | null;
   messages: Record<number, Message>;
@@ -36,6 +47,8 @@ interface AppState {
   booted: boolean;
   selectedId: number | null;
   sidebarOpen: boolean;
+  /** Sidebar: group the browse list by character instead of one flat list. */
+  groupByCharacter: boolean;
   modal: ModalKind;
   /** 'trace' replaces the timeline with the assembled upstream request. */
   viewMode: 'chat' | 'trace' | 'tree';
@@ -56,6 +69,7 @@ export const [state, setState] = createStore<AppState>({
   booted: false,
   selectedId: null,
   sidebarOpen: false,
+  groupByCharacter: loadGroupByCharacter(),
   modal: null,
   viewMode: 'chat',
   treeNavigationPending: false,
@@ -527,6 +541,15 @@ export async function deleteConversation(id: number): Promise<void> {
   }
 }
 
+export async function duplicateConversation(id: number): Promise<void> {
+  const conv = await api.duplicateConversation(id);
+  // Same guard as newConversation: insert immediately and mark earlier
+  // refetches stale, then open the copy.
+  bumpFetchSeq('conversations');
+  setState('conversations', (list) => [conv, ...list]);
+  selectConversation(conv.id);
+}
+
 export function restoreConversationSelection(): void {
   selectionRestored = true;
   const exists = (id: number) => state.conversations.some((conversation) => conversation.id === id);
@@ -552,6 +575,15 @@ export function openModal(modal: ModalKind): void {
 
 export function toggleSidebar(): void {
   setState('sidebarOpen', (open) => !open);
+}
+
+export function toggleGroupByCharacter(): void {
+  setState('groupByCharacter', (on) => !on);
+  try {
+    localStorage.setItem(GROUP_BY_CHARACTER_KEY, state.groupByCharacter ? '1' : '0');
+  } catch {
+    /* Storage may be unavailable in hardened/private browser contexts. */
+  }
 }
 
 /** True until the initial server state (and the hash-selected tree, if any) has arrived. */

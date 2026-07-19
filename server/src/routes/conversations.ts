@@ -4,7 +4,8 @@
 // other and against generation/streaming callbacks. A single future `await`
 // mid-handler reopens the double-generation and active-leaf races the guards
 // below protect against.
-import type { Conversation } from '@minitavern/shared';
+import { randomUUID } from 'node:crypto';
+import type { Conversation, GenerationKind, MessageStatus, Role } from '@minitavern/shared';
 import { stmt, toConversation, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import {
@@ -48,6 +49,7 @@ import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import {
   collectConversationImages,
   collectSiblingSubtreeImages,
+  copyImage,
   deleteImageFiles,
 } from '../images.ts';
 import { parseImageConfig, startImageRender } from '../comfy.ts';
@@ -367,6 +369,130 @@ route.del('/api/conversations/:id', ({ params }) => {
   deleteImageFiles(doomedImages);
   takeDirtyMessageIds(id); // drop pending patch state for the deleted tree
   invalidate('conversations');
+});
+
+interface MessageRow {
+  id: number;
+  parent_id: number | null;
+  role: Role;
+  content: string;
+  reasoning: string | null;
+  status: MessageStatus;
+  active_child_id: number | null;
+  model: string | null;
+  gen_meta_json: string | null;
+  created_at: number;
+  name: string | null;
+  generation_kind: GenerationKind;
+  images_json: string;
+  active_image: number;
+  image_render_json: string | null;
+}
+
+/**
+ * Duplicates a whole conversation: every message row is copied with its tree
+ * links (parentId, activeChildId, activeLeafId) remapped through an old-id ->
+ * new-id map, and every generated image file is copied so no file is ever
+ * shared between two messages (hard-deleting one row would break the other).
+ * In-flight generations are copied as plain rows: a 'streaming' status
+ * becomes 'stopped' and a pending image render flag is dropped — the copy has
+ * no process behind it (same doctrine as the boot repair for stuck rows).
+ */
+route.post('/api/conversations/:id/duplicate', ({ params }) => {
+  const id = positiveId(params.id);
+  const conv = getConversation(id);
+  // Ordered by id so every parent is inserted before its children.
+  const rows = stmt('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id').all(
+    id,
+  ) as unknown as MessageRow[];
+  // Titles follow the 60-char convention of derivedTitle/auto-title.
+  const suffix = ' (copy)';
+  const title =
+    conv.title.length + suffix.length > 60
+      ? `${conv.title.slice(0, 60 - suffix.length - 1)}…${suffix}`
+      : `${conv.title}${suffix}`;
+  const now = Date.now();
+  // Image files can't roll back with the SQL: files are created before the
+  // commit (so a committed row never references a missing file) and unlinked
+  // if anything fails; the startup orphan sweep is the crash-window backstop.
+  const writtenImages: string[] = [];
+  try {
+    const newId = transaction(() => {
+      const convResult = stmt(
+        `INSERT INTO conversations (title, character_id, persona_id, endpoint_id, speaker_name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(title, conv.characterId, conv.personaId, conv.endpointId, conv.speakerName, now, now);
+      const newConvId = Number(convResult.lastInsertRowid);
+      const idMap = new Map<number, number>();
+      for (const row of rows) {
+        const images: string[] = [];
+        for (const imagePath of JSON.parse(row.images_json) as string[]) {
+          const ext = imagePath.includes('.')
+            ? imagePath.slice(imagePath.lastIndexOf('.'))
+            : '.png';
+          const copied = copyImage(imagePath, `msg-dup-${randomUUID()}${ext}`);
+          if (copied == null) {
+            console.warn(`[conversations] duplicate: source image ${imagePath} is missing`);
+            continue;
+          }
+          writtenImages.push(copied);
+          images.push(copied);
+        }
+        const result = stmt(
+          `INSERT INTO messages
+             (conversation_id, parent_id, role, content, reasoning, status, active_child_id,
+              model, gen_meta_json, created_at, name, generation_kind, images_json, active_image,
+              image_pending, image_render_json)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+        ).run(
+          newConvId,
+          // Old databases may contain dangling references (a parent deleted by
+          // an ancient bug); remap what we can, null the rest.
+          row.parent_id != null ? (idMap.get(row.parent_id) ?? null) : null,
+          row.role,
+          row.content,
+          row.reasoning,
+          row.status === 'streaming' ? 'stopped' : row.status,
+          row.model,
+          row.gen_meta_json,
+          row.created_at,
+          row.name,
+          row.generation_kind,
+          JSON.stringify(images),
+          images.length > 0 ? Math.min(row.active_image, images.length - 1) : 0,
+          row.image_render_json,
+        );
+        idMap.set(row.id, Number(result.lastInsertRowid));
+      }
+      // active_child_id can point at a row inserted later than its parent, so
+      // it is remapped in a second pass; the conversation's active leaf too.
+      // Dangling references (see above) are simply skipped — they stay NULL.
+      for (const row of rows) {
+        if (row.active_child_id == null) continue;
+        const mappedChild = idMap.get(row.active_child_id);
+        if (mappedChild == null) continue;
+        stmt('UPDATE messages SET active_child_id = ? WHERE id = ?').run(
+          mappedChild,
+          idMap.get(row.id)!,
+        );
+      }
+      if (conv.activeLeafId != null) {
+        const mappedLeaf = idMap.get(conv.activeLeafId);
+        if (mappedLeaf != null) {
+          stmt('UPDATE conversations SET active_leaf_id = ? WHERE id = ?').run(
+            mappedLeaf,
+            newConvId,
+          );
+        }
+      }
+      return newConvId;
+    });
+    invalidate('conversations');
+    return getConversation(newId);
+  } catch (err) {
+    deleteImageFiles(writtenImages);
+    throw err;
+  }
 });
 
 route.get('/api/conversations/:id/tree', ({ params }) => {
