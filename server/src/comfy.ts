@@ -16,7 +16,8 @@ import { deleteImageFiles, saveImage } from './images.ts';
  */
 
 const RENDER_TIMEOUT_MS = 5 * 60_000;
-const POLL_INTERVAL_MS = 1500;
+/** Render poll interval; e2e runs (E2E_BASE is set) default to a fast cadence. */
+const POLL_INTERVAL_MS = Number(process.env.COMFY_POLL_MS ?? (process.env.E2E_BASE ? 100 : 1500));
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
 
 export interface RenderJob {
@@ -78,10 +79,10 @@ interface ComfyHistoryEntry {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** Best-effort progress socket; rendering works without it (polling drives completion). */
-function openProgressSocket(
-  job: RenderJob,
+export function openProgressSocket(
   base: string,
   clientId: string,
+  onProgress: (value: number, max: number) => void,
 ): Promise<WebSocket | null> {
   return new Promise((resolve) => {
     let ws: WebSocket;
@@ -117,13 +118,7 @@ function openProgressSocket(
           data?: { value?: number; max?: number };
         };
         if (ev.type === 'progress' && typeof ev.data?.value === 'number' && ev.data.max) {
-          broadcastConv(job.conversationId, {
-            t: 'imageProgress',
-            conversationId: job.conversationId,
-            mid: job.mid,
-            value: ev.data.value,
-            max: ev.data.max,
-          });
+          onProgress(ev.data.value, ev.data.max);
         }
       } catch {
         /* Binary preview frames and malformed events are ignored. */
@@ -132,95 +127,133 @@ function openProgressSocket(
   });
 }
 
-async function render(job: RenderJob): Promise<void> {
-  if (!job.description.trim()) throw new Error('empty image description');
-  const workflowObj: unknown = JSON.parse(expandWorkflow(job.workflow, job.description));
-  const base = job.comfyUrl.replace(/\/+$/, '');
-  const clientId = randomUUID();
-  const ws = await openProgressSocket(job, base, clientId);
-  try {
-    const submit = await fetch(`${base}/prompt`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt: workflowObj, client_id: clientId }),
-      signal: AbortSignal.timeout(30_000),
-    }).catch((err: unknown) => {
-      // Node's bare "fetch failed" hides the interesting part (ENOTFOUND, ECONNREFUSED, …).
-      const cause = (err as { cause?: { code?: string; message?: string } }).cause;
-      throw new Error(
-        `ComfyUI unreachable at ${base}: ${cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err))}`,
-      );
-    });
-    if (!submit.ok) {
-      const text = await submit.text().catch(() => '');
-      throw new Error(`ComfyUI rejected the workflow (${submit.status}): ${text.slice(0, 300)}`);
+/** The message-independent render request: expand the workflow, submit to
+ * ComfyUI, poll to completion and download the preferred output file. */
+export interface RenderRequest {
+  comfyUrl: string;
+  /** Workflow JSON template with {{prompt}}/{{seed}} slots. */
+  workflow: string;
+  /** The text substituted into {{prompt}}. */
+  prompt: string;
+  /** Correlates ComfyUI progress events with a caller-owned progress socket. */
+  clientId?: string;
+}
+
+/** Renders a workflow and returns the raw output image — no message
+ * persistence, no broadcasts (used by the avatar generator). */
+export async function renderToBuffer(
+  request: RenderRequest,
+): Promise<{ ext: string; data: Buffer; promptId: string }> {
+  if (!request.prompt.trim()) throw new Error('empty image description');
+  const workflowObj: unknown = JSON.parse(expandWorkflow(request.workflow, request.prompt));
+  const base = request.comfyUrl.replace(/\/+$/, '');
+  const clientId = request.clientId ?? randomUUID();
+  const submit = await fetch(`${base}/prompt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: workflowObj, client_id: clientId }),
+    signal: AbortSignal.timeout(30_000),
+  }).catch((err: unknown) => {
+    // Node's bare "fetch failed" hides the interesting part (ENOTFOUND, ECONNREFUSED, …).
+    const cause = (err as { cause?: { code?: string; message?: string } }).cause;
+    throw new Error(
+      `ComfyUI unreachable at ${base}: ${cause?.code ?? cause?.message ?? (err instanceof Error ? err.message : String(err))}`,
+    );
+  });
+  if (!submit.ok) {
+    const text = await submit.text().catch(() => '');
+    throw new Error(`ComfyUI rejected the workflow (${submit.status}): ${text.slice(0, 300)}`);
+  }
+  const { prompt_id: promptId } = (await submit.json()) as { prompt_id: string };
+  if (!promptId) throw new Error('ComfyUI returned no prompt id');
+
+  const deadline = Date.now() + RENDER_TIMEOUT_MS;
+  let outputs: ComfyHistoryEntry['outputs'];
+  while (!outputs) {
+    if (Date.now() > deadline) throw new Error('ComfyUI render timed out');
+    await sleep(POLL_INTERVAL_MS);
+    const res = await fetch(`${base}/history/${promptId}`, {
+      signal: AbortSignal.timeout(10_000),
+    }).catch(() => null);
+    if (!res?.ok) continue;
+    const history = (await res.json()) as Record<string, ComfyHistoryEntry>;
+    const entry = history[promptId];
+    if (!entry) continue;
+    if (entry.status?.status_str === 'error') {
+      // Surface node tracebacks (à la SillyTavern) instead of a bare failure.
+      const details = (entry.status.messages ?? [])
+        .filter((message) => message[0] === 'execution_error')
+        .map((message) => message[1])
+        .map((d) => `${d.node_type} [${d.node_id}] ${d.exception_type}: ${d.exception_message}`)
+        .join('; ');
+      throw new Error(`ComfyUI workflow execution failed${details ? `: ${details}` : ''}`);
     }
-    const { prompt_id: promptId } = (await submit.json()) as { prompt_id: string };
-    if (!promptId) throw new Error('ComfyUI returned no prompt id');
+    if (entry.outputs && Object.keys(entry.outputs).length > 0) outputs = entry.outputs;
+    // A workflow with no output node completes with empty outputs — fail
+    // fast instead of polling out the whole timeout.
+    else if (entry.status?.completed) throw new Error('ComfyUI produced no output image');
+  }
 
-    const deadline = Date.now() + RENDER_TIMEOUT_MS;
-    let outputs: ComfyHistoryEntry['outputs'];
-    while (!outputs) {
-      if (Date.now() > deadline) throw new Error('ComfyUI render timed out');
-      await sleep(POLL_INTERVAL_MS);
-      const res = await fetch(`${base}/history/${promptId}`, {
-        signal: AbortSignal.timeout(10_000),
-      }).catch(() => null);
-      if (!res?.ok) continue;
-      const history = (await res.json()) as Record<string, ComfyHistoryEntry>;
-      const entry = history[promptId];
-      if (!entry) continue;
-      if (entry.status?.status_str === 'error') {
-        // Surface node tracebacks (à la SillyTavern) instead of a bare failure.
-        const details = (entry.status.messages ?? [])
-          .filter((message) => message[0] === 'execution_error')
-          .map((message) => message[1])
-          .map((d) => `${d.node_type} [${d.node_id}] ${d.exception_type}: ${d.exception_message}`)
-          .join('; ');
-        throw new Error(`ComfyUI workflow execution failed${details ? `: ${details}` : ''}`);
-      }
-      if (entry.outputs && Object.keys(entry.outputs).length > 0) outputs = entry.outputs;
-      // A workflow with no output node completes with empty outputs — fail
-      // fast instead of polling out the whole timeout.
-      else if (entry.status?.completed) throw new Error('ComfyUI produced no output image');
-    }
+  // Prefer a saved output; fall back to previews/temp and animated outputs
+  // so preview-only workflows still produce something.
+  const files = Object.values(outputs).flatMap((node) => [
+    ...(node.images ?? []),
+    ...(node.gifs ?? []),
+  ]);
+  const image = files.find((file) => file.type === 'output') ?? files[0];
+  if (!image) throw new Error('ComfyUI produced no output image');
 
-    // Prefer a saved output; fall back to previews/temp and animated outputs
-    // so preview-only workflows still produce something.
-    const files = Object.values(outputs).flatMap((node) => [
-      ...(node.images ?? []),
-      ...(node.gifs ?? []),
-    ]);
-    const image = files.find((file) => file.type === 'output') ?? files[0];
-    if (!image) throw new Error('ComfyUI produced no output image');
-
-    const params = new URLSearchParams({
-      filename: image.filename,
-      subfolder: image.subfolder,
-      type: image.type,
-    });
-    const download = await fetch(`${base}/view?${params}`, { signal: AbortSignal.timeout(60_000) });
-    if (!download.ok) throw new Error(`failed to download image (${download.status})`);
-    // Cap the download: /view is server-controlled output, but a huge (or
-    // content-length-less) response must not balloon memory/disk.
-    const declared = Number(download.headers.get('content-length'));
-    if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+  const params = new URLSearchParams({
+    filename: image.filename,
+    subfolder: image.subfolder,
+    type: image.type,
+  });
+  const download = await fetch(`${base}/view?${params}`, { signal: AbortSignal.timeout(60_000) });
+  if (!download.ok) throw new Error(`failed to download image (${download.status})`);
+  // Cap the download: /view is server-controlled output, but a huge (or
+  // content-length-less) response must not balloon memory/disk.
+  const declared = Number(download.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) {
+    throw new Error(`rendered image exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of download.body!) {
+    size += chunk.byteLength;
+    if (size > MAX_IMAGE_BYTES) {
       throw new Error(`rendered image exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
     }
-    const chunks: Buffer[] = [];
-    let size = 0;
-    for await (const chunk of download.body!) {
-      size += chunk.byteLength;
-      if (size > MAX_IMAGE_BYTES) {
-        throw new Error(`rendered image exceeds the ${MAX_IMAGE_BYTES / 1024 / 1024} MB limit`);
-      }
-      chunks.push(Buffer.from(chunk));
-    }
-    const data = Buffer.concat(chunks);
+    chunks.push(Buffer.from(chunk));
+  }
+  const data = Buffer.concat(chunks);
 
-    const ext = image.filename.includes('.')
-      ? image.filename.slice(image.filename.lastIndexOf('.'))
-      : '.png';
+  const ext = image.filename.includes('.')
+    ? image.filename.slice(image.filename.lastIndexOf('.'))
+    : '.png';
+  return { ext, data, promptId };
+}
+
+/** Message-bound render: ComfyUI progress is relayed to subscribers and the
+ * output file is persisted onto the message as a new selected alternative. */
+async function render(job: RenderJob): Promise<void> {
+  const base = job.comfyUrl.replace(/\/+$/, '');
+  const clientId = randomUUID();
+  const ws = await openProgressSocket(base, clientId, (value, max) =>
+    broadcastConv(job.conversationId, {
+      t: 'imageProgress',
+      conversationId: job.conversationId,
+      mid: job.mid,
+      value,
+      max,
+    }),
+  );
+  try {
+    const { ext, data, promptId } = await renderToBuffer({
+      comfyUrl: job.comfyUrl,
+      workflow: job.workflow,
+      prompt: job.description,
+      clientId,
+    });
     const url = saveImage(`msg-${job.mid}-${promptId.slice(0, 8)}${ext}`, data);
     // Append as a new image alternative and select it; a cleared pending flag
     // means the message was deleted (or reset) mid-render — discard the file.

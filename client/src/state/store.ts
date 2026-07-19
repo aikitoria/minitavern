@@ -50,8 +50,9 @@ interface AppState {
   /** Sidebar: group the browse list by character instead of one flat list. */
   groupByCharacter: boolean;
   modal: ModalKind;
-  /** 'trace' replaces the timeline with the assembled upstream request. */
-  viewMode: 'chat' | 'trace' | 'tree';
+  /** 'trace' replaces the timeline with the assembled upstream request;
+   * 'tree'/'map' show the conversation tree as an outline / zoomable 2D map. */
+  viewMode: 'chat' | 'trace' | 'tree' | 'map';
   treeNavigationPending: boolean;
   toasts: { id: number; text: string }[];
   tree: TreeState;
@@ -378,12 +379,24 @@ export function handleServerEvent(ev: ServerEvent): void {
       if (ev.conversationId !== state.selectedId) break;
       setImageProgress((progress) => ({ ...progress, [ev.mid]: { value: ev.value, max: ev.max } }));
       break;
+    case 'renderProgress':
+      setRenderProgress((progress) => ({
+        ...progress,
+        [ev.jobId]: { value: ev.value, max: ev.max },
+      }));
+      break;
   }
 }
 
 /** Per-message image render progress (ephemeral; only read while imagePending). */
 export const [imageProgress, setImageProgress] = createSignal<
   Record<number, { value: number; max: number }>
+>({});
+
+/** Per-job progress for stateless renders (avatar generator), keyed by the
+ * caller-provided jobId. Ephemeral; only read while a render is in flight. */
+export const [renderProgress, setRenderProgress] = createSignal<
+  Record<string, { value: number; max: number }>
 >({});
 
 /** Dropped once a body shows the render finished — a later render on the same

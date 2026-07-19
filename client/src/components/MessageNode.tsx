@@ -35,7 +35,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') setMoreMenuId(null);
 });
 
-export default function MessageNode(props: { message: Message }) {
+export default function MessageNode(props: { message: Message; inMap?: boolean }) {
   const [editing, setEditing] = createSignal(false);
   const [showReasoning, setShowReasoning] = createSignal(false);
   let editArea: HTMLTextAreaElement | undefined;
@@ -240,11 +240,15 @@ export default function MessageNode(props: { message: Message }) {
         'msg-tool': isTool(),
         touched: touchedId() === props.message.id,
       }}
-      onClick={() => setTouchedId(props.message.id)}
-      onTouchStart={onTouchStart}
-      onTouchMove={onTouchMove}
-      onTouchEnd={onTouchEnd}
-      onTouchCancel={onTouchEnd}
+      // In the tree map the card handles clicks (branch activation) and pans on
+      // touch, so tap-to-reveal and the swipe gesture are disabled via inMap.
+      onClick={() => {
+        if (!props.inMap) setTouchedId(props.message.id);
+      }}
+      onTouchStart={props.inMap ? undefined : onTouchStart}
+      onTouchMove={props.inMap ? undefined : onTouchMove}
+      onTouchEnd={props.inMap ? undefined : onTouchEnd}
+      onTouchCancel={props.inMap ? undefined : onTouchEnd}
     >
       <Show when={!isTool()} fallback={<span class="avatar avatar-fallback">⚙</span>}>
         <Avatar src={avatarSrc()} name={name()} />

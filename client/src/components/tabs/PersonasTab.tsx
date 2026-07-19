@@ -1,6 +1,8 @@
-import { Show } from 'solid-js';
+import { Show, createSignal } from 'solid-js';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
+import { avatarGenerationAvailable } from '../../plugins/imageGeneration.tsx';
+import AvatarGenerateModal from '../../plugins/AvatarGenerateModal.tsx';
 import { createEntityEditor } from '../../util.ts';
 import Avatar from '../Avatar.tsx';
 import AvatarRow from '../AvatarRow.tsx';
@@ -9,6 +11,7 @@ import MacroHelp from '../MacroHelp.tsx';
 import MacroTextarea from '../MacroTextarea.tsx';
 
 export default function PersonasTab() {
+  const [avatarGen, setAvatarGen] = createSignal(false);
   let nameEl!: HTMLInputElement;
   let descriptionEl!: HTMLTextAreaElement;
 
@@ -41,9 +44,23 @@ export default function PersonasTab() {
           src={editor.selected()?.avatar}
           name={editor.selected()?.name ?? '?'}
           upload={(file) => api.uploadPersonaAvatar(editor.selectedId() as number, file)}
+          generate={
+            avatarGenerationAvailable()
+              ? async () => {
+                  setAvatarGen(true);
+                }
+              : undefined
+          }
           onDone={editor.flashSaved}
           onError={editor.setStatus}
         />
+        <Show when={avatarGen()}>
+          <AvatarGenerateModal
+            kind="persona"
+            id={editor.selectedId() as number}
+            onClose={() => setAvatarGen(false)}
+          />
+        </Show>
       </Show>
       <label>Name (used as {'{{user}}'})</label>
       <input ref={nameEl} placeholder="Your name" />

@@ -27,24 +27,39 @@ interface ImageGenSettings extends Record<string, unknown> {
   describePrompt: string;
   /** Used by /image <instruction>; {{instruction}} expands to the argument. */
   instructionPrompt: string;
+  /** Asks the model to write a portrait prompt for the avatar generator. */
+  avatarPrompt: string;
   comfyUrl: string;
   workflows: ImageWorkflow[];
   /** Name of the workflow /image renders with; '' = describe only, no image. */
   activeWorkflow: string;
+  /** Name of the workflow avatars render with; '' = same as activeWorkflow. */
+  avatarWorkflow: string;
 }
 
 const DEFAULTS: ImageGenSettings = {
   describePrompt:
     "Describe {{char}}'s current appearance and surroundings as a single detailed image-generation prompt. Reply with only the prompt.",
   instructionPrompt: '{{instruction}}',
+  avatarPrompt:
+    'Write an image-generation prompt for a portrait avatar of {{char}}, based on their description: {{description}}. Head and shoulders, facing forward. Reply with only the prompt.',
   comfyUrl: 'http://comfy:8588',
   workflows: [],
   activeWorkflow: '',
+  avatarWorkflow: '',
 };
 
 const WORKFLOW_MACROS: [string, string][] = [
   ['{{prompt}}', 'The generated image description (JSON-string-escaped into the workflow)'],
   ['{{seed}}', 'A random integer seed, fresh per render'],
+];
+
+const AVATAR_MACROS: [string, string][] = [
+  ['{{char}}', 'Character name (characters only)'],
+  ['{{user}}', 'Persona name (the default persona for characters)'],
+  ['{{description}}', 'Character personality / persona description'],
+  ['{{personality}}', 'Character personality (characters only)'],
+  ['{{scenario}}', 'Character scenario (characters only)'],
 ];
 
 function settings(): ImageGenSettings {
@@ -83,6 +98,27 @@ function activeRenderConfig(): { workflow: string; comfyUrl: string } | undefine
   const cfg = settings();
   const active = cfg.workflows.find((workflow) => workflow.name === cfg.activeWorkflow);
   return active?.json.trim() ? { workflow: active.json, comfyUrl: cfg.comfyUrl } : undefined;
+}
+
+/** The avatar workflow as a render config: the dedicated avatarWorkflow
+ * selection, falling back to the /image one; undefined when none resolves. */
+export function avatarRenderConfig(): { workflow: string; comfyUrl: string } | undefined {
+  const cfg = settings();
+  const avatar = cfg.workflows.find((workflow) => workflow.name === cfg.avatarWorkflow);
+  return avatar?.json.trim()
+    ? { workflow: avatar.json, comfyUrl: cfg.comfyUrl }
+    : activeRenderConfig();
+}
+
+/** Avatar generation is available once a workflow resolves (dedicated avatar
+ * selection or the /image fallback). */
+export function avatarGenerationAvailable(): boolean {
+  return avatarRenderConfig() != null;
+}
+
+/** The avatarPrompt template, expanded server-side by the prompt stream route. */
+export function avatarPromptTemplate(): string {
+  return settings().avatarPrompt;
 }
 
 /** Streams the image description into a tool message as a foreground
@@ -124,16 +160,20 @@ const ImageIcon = () => (
 function SettingsPage() {
   let describeEl!: HTMLTextAreaElement;
   let instructionEl!: HTMLTextAreaElement;
+  let avatarEl!: HTMLTextAreaElement;
   let comfyUrlEl!: HTMLInputElement;
   let nameEl!: HTMLInputElement;
   let workflowEl!: HTMLTextAreaElement;
   let pickerEl!: SelectHandle;
+  let avatarPickerEl!: SelectHandle;
   const [saved, flashSaved] = createSavedFlash();
   const [error, setError] = createSignal('');
   const [workflows, setWorkflows] = createSignal<ImageWorkflow[]>([]);
   /** Index into workflows(); -1 = none (describe only). Selected = active for /image. */
   const [selected, setSelected] = createSignal(-1);
   const [workflowText, setWorkflowText] = createSignal('');
+  /** Workflow name for avatar generation; '' = same as the /image selection. */
+  const [avatarSel, setAvatarSel] = createSignal('');
   let baseline = '';
 
   /** Read the editable fields back into the workflows list before switching/saving. */
@@ -189,9 +229,14 @@ function SettingsPage() {
     return {
       describePrompt: describeEl.value,
       instructionPrompt: instructionEl.value,
+      avatarPrompt: avatarEl.value,
       comfyUrl: comfyUrlEl.value.trim() || DEFAULTS.comfyUrl,
       workflows: currentWorkflows,
       activeWorkflow: currentWorkflows[idx]?.name ?? '',
+      // A name that no longer exists (deleted/renamed here) saves as the fallback.
+      avatarWorkflow: currentWorkflows.some((workflow) => workflow.name === avatarSel())
+        ? avatarSel()
+        : '',
     };
   };
 
@@ -199,9 +244,15 @@ function SettingsPage() {
     const cfg = settings();
     describeEl.value = cfg.describePrompt;
     instructionEl.value = cfg.instructionPrompt;
+    avatarEl.value = cfg.avatarPrompt;
     comfyUrlEl.value = cfg.comfyUrl;
     setWorkflows(cfg.workflows);
     showWorkflow(cfg.workflows.findIndex((workflow) => workflow.name === cfg.activeWorkflow));
+    const avatarName = cfg.workflows.some((workflow) => workflow.name === cfg.avatarWorkflow)
+      ? cfg.avatarWorkflow
+      : '';
+    setAvatarSel(avatarName);
+    avatarPickerEl.value = avatarName;
     baseline = JSON.stringify(draft());
   };
   onMount(load);
@@ -263,6 +314,15 @@ function SettingsPage() {
         extraKeys={['instruction']}
         placeholder="Leave empty to use the instruction verbatim"
       />
+      <label>
+        Avatar prompt — the model writes the portrait prompt for the Generate avatar button{' '}
+        <MacroHelp extra={AVATAR_MACROS} />
+      </label>
+      <MacroTextarea
+        ref={avatarEl}
+        extraKeys={['description', 'personality', 'scenario']}
+        placeholder={DEFAULTS.avatarPrompt}
+      />
       <label>ComfyUI URL</label>
       <input ref={comfyUrlEl} placeholder={DEFAULTS.comfyUrl} />
 
@@ -318,6 +378,16 @@ function SettingsPage() {
           </div>
         </Show>
       </div>
+
+      <label>Workflow used for avatar generation (defaults to the /image workflow)</label>
+      <Select
+        ref={avatarPickerEl}
+        onChange={(value) => setAvatarSel(value)}
+        options={[
+          { value: '', label: '— same as /image workflow —' },
+          ...workflows().map((workflow) => ({ value: workflow.name, label: workflow.name })),
+        ]}
+      />
 
       <div class="form-actions">
         <button class="primary-btn" onClick={() => void save()}>

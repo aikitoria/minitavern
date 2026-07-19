@@ -224,9 +224,10 @@ export function startGeneration(
 const IDLE_TIMEOUT_MS = 120_000;
 const MAX_UPSTREAM_RETRIES = 2;
 
-/** Per-conversation endpoint override first, then the global active endpoint. */
-function resolveEndpoint(conversation: Conversation): Endpoint {
-  const endpointId = conversation.endpointId ?? getSettings().activeEndpointId;
+/** Per-conversation endpoint override first, then the global active endpoint.
+ * A null conversation resolves the global active endpoint directly. */
+function resolveEndpoint(conversation: Conversation | null): Endpoint {
+  const endpointId = conversation?.endpointId ?? getSettings().activeEndpointId;
   const endpointRow = endpointId
     ? (stmt('SELECT * FROM endpoints WHERE id = ?').get(endpointId) as
         Record<string, unknown> | undefined)
@@ -244,12 +245,13 @@ function resolveEndpoint(conversation: Conversation): Endpoint {
 }
 
 /**
- * One-shot non-streaming completion for silent side tasks (auto-titling).
- * Deliberately outside the generation machinery: no message rows, no deltas,
- * no retries — the caller decides what a failure means.
+ * One-shot non-streaming completion for silent side tasks (auto-titling,
+ * avatar prompt writing). Deliberately outside the generation machinery: no
+ * message rows, no deltas, no retries — the caller decides what a failure
+ * means. A null conversation uses the globally active endpoint.
  */
 export async function chatCompletionOnce(
-  conversation: Conversation,
+  conversation: Conversation | null,
   messages: ChatMessage[],
   maxTokens: number,
 ): Promise<string> {
@@ -272,10 +274,102 @@ export async function chatCompletionOnce(
     const text = await res.text().catch(() => '');
     throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
   }
-  const json = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
-  const content = json.choices?.[0]?.message?.content;
-  if (typeof content !== 'string') throw new Error('upstream returned no message content');
-  return content;
+  const json = (await res.json()) as {
+    choices?: { message?: { content?: unknown; refusal?: unknown; reasoning_content?: unknown } }[];
+  };
+  const message = json.choices?.[0]?.message;
+  const content = message?.content;
+  if (typeof content === 'string' && content.trim()) return content;
+  // Empty content has a few distinct causes worth naming: a moderation
+  // refusal, a reasoning model that spent the whole token budget on
+  // reasoning_content, or an upstream that returned nothing at all.
+  if (typeof message?.refusal === 'string' && message.refusal.trim()) {
+    throw new Error(`The model refused: ${message.refusal.trim().slice(0, 300)}`);
+  }
+  if (typeof message?.reasoning_content === 'string' && message.reasoning_content.trim()) {
+    throw new Error(
+      'The model returned only reasoning and no message content (reasoning models may need a larger token budget)',
+    );
+  }
+  throw new Error('The model returned an empty reply');
+}
+
+/**
+ * Streaming variant of chatCompletionOnce: relays content deltas to onDelta
+ * as they arrive and resolves with the full text. Reasoning deltas are
+ * skipped; the same refusal/empty diagnosis applies to the final text.
+ */
+export async function streamChatCompletion(
+  conversation: Conversation | null,
+  messages: ChatMessage[],
+  maxTokens: number,
+  onDelta: (text: string) => void,
+): Promise<string> {
+  const endpoint = resolveEndpoint(conversation);
+  const res = await fetch(`${endpoint.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
+    },
+    body: JSON.stringify({
+      model: endpoint.model,
+      messages,
+      stream: true,
+      max_tokens: maxTokens,
+    }),
+    signal: AbortSignal.timeout(120_000),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
+  }
+  if (!res.body) throw new Error('Upstream returned no response body');
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let content = '';
+  let refusal = '';
+  let sawReasoning = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (data === '[DONE]') continue;
+      try {
+        const json = JSON.parse(data) as {
+          choices?: {
+            delta?: { content?: unknown; refusal?: unknown; reasoning_content?: unknown };
+          }[];
+        };
+        const delta = json.choices?.[0]?.delta;
+        if (typeof delta?.content === 'string' && delta.content) {
+          content += delta.content;
+          onDelta(delta.content);
+        }
+        if (typeof delta?.refusal === 'string') refusal += delta.refusal;
+        if (typeof delta?.reasoning_content === 'string' && delta.reasoning_content) {
+          sawReasoning = true;
+        }
+      } catch {
+        // Keepalive comments and partial frames are skippable.
+      }
+    }
+  }
+  if (content.trim()) return content;
+  if (refusal.trim()) throw new Error(`The model refused: ${refusal.trim().slice(0, 300)}`);
+  if (sawReasoning) {
+    throw new Error(
+      'The model returned only reasoning and no message content (reasoning models may need a larger token budget)',
+    );
+  }
+  throw new Error('The model returned an empty reply');
 }
 
 /** Retryable: network failures, upstream 5xx/429, and idle timeouts — not 4xx. */

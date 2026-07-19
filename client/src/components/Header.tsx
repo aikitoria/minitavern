@@ -14,6 +14,7 @@ import {
 import { errorMessage } from '../util.ts';
 import Avatar from './Avatar.tsx';
 import GearIcon from './GearIcon.tsx';
+import MapIcon from './MapIcon.tsx';
 import TraceIcon from './TraceIcon.tsx';
 import { TreeIcon } from './TreeView.tsx';
 
@@ -121,6 +122,14 @@ export default function Header() {
               onClick={() => setState('viewMode', state.viewMode === 'tree' ? 'chat' : 'tree')}
             >
               <TreeIcon />
+            </button>
+            <button
+              class="icon-btn"
+              classList={{ 'icon-btn-active': state.viewMode === 'map' }}
+              title="Toggle tree map"
+              onClick={() => setState('viewMode', state.viewMode === 'map' ? 'chat' : 'map')}
+            >
+              <MapIcon />
             </button>
             <button
               class="icon-btn"

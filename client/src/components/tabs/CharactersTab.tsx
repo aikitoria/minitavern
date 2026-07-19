@@ -2,6 +2,8 @@ import { Show, createSignal } from 'solid-js';
 import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_STEER_TEMPLATE } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
+import { avatarGenerationAvailable } from '../../plugins/imageGeneration.tsx';
+import AvatarGenerateModal from '../../plugins/AvatarGenerateModal.tsx';
 import { createEntityEditor, download, errorMessage } from '../../util.ts';
 import Avatar from '../Avatar.tsx';
 import AvatarRow from '../AvatarRow.tsx';
@@ -14,6 +16,7 @@ import type { SelectHandle } from '../Select.tsx';
 export default function CharactersTab() {
   const [customPrompt, setCustomPrompt] = createSignal(false);
   const [customTemplate, setCustomTemplate] = createSignal(false);
+  const [avatarGen, setAvatarGen] = createSignal(false);
   let nameEl!: HTMLInputElement;
   let personalityEl!: HTMLTextAreaElement;
   let scenarioEl!: HTMLTextAreaElement;
@@ -127,9 +130,23 @@ export default function CharactersTab() {
           src={editor.selected()?.avatar}
           name={editor.selected()?.name ?? '?'}
           upload={(file) => api.uploadCharacterAvatar(editor.selectedId() as number, file)}
+          generate={
+            avatarGenerationAvailable()
+              ? async () => {
+                  setAvatarGen(true);
+                }
+              : undefined
+          }
           onDone={editor.flashSaved}
           onError={editor.setStatus}
         />
+        <Show when={avatarGen()}>
+          <AvatarGenerateModal
+            kind="character"
+            id={editor.selectedId() as number}
+            onClose={() => setAvatarGen(false)}
+          />
+        </Show>
       </Show>
 
       <label>Name</label>

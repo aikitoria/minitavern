@@ -52,6 +52,77 @@ async function request<T>(
   return (await res.json()) as T;
 }
 
+/** Error-message extraction shared by the non-JSON (SSE / binary) endpoints. */
+async function errorFromResponse(res: Response): Promise<ApiError> {
+  let message = `${res.status}`;
+  try {
+    const json = (await res.json()) as { error?: string };
+    if (json.error) message = json.error;
+  } catch {
+    /* keep status */
+  }
+  return new ApiError(res.status, message);
+}
+
+/** Reads the avatar prompt SSE stream ({d} deltas, {error}, {done}), invoking
+ * onDelta per token and resolving with the assembled text. */
+async function streamAvatarPrompt(
+  kind: 'character' | 'persona',
+  id: number,
+  prompt: string,
+  onDelta: (text: string) => void,
+  signal?: AbortSignal,
+): Promise<string> {
+  const res = await fetch(
+    `/api/${kind === 'character' ? 'characters' : 'personas'}/${id}/avatar/prompt`,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+      signal: signal ?? null,
+    },
+  );
+  if (!res.ok || !res.body) throw await errorFromResponse(res);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buffer.indexOf('\n')) !== -1) {
+      const line = buffer.slice(0, nl).trim();
+      buffer = buffer.slice(nl + 1);
+      if (!line.startsWith('data:')) continue;
+      const payload = JSON.parse(line.slice(5)) as { d?: string; error?: string };
+      if (payload.error) throw new ApiError(502, payload.error);
+      if (payload.d) {
+        text += payload.d;
+        onDelta(payload.d);
+      }
+    }
+  }
+  return text;
+}
+
+/** Stateless avatar render: prompt + workflow in, image bytes out. A jobId
+ * gets live sampler progress as renderProgress WS events. */
+async function renderAvatar(body: {
+  prompt: string;
+  image: { workflow: string; comfyUrl: string };
+  jobId?: string;
+}): Promise<Blob> {
+  const res = await fetch('/api/avatar/render', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw await errorFromResponse(res);
+  return res.blob();
+}
+
 export const api = {
   conversations: () => request<Conversation[]>('GET', '/api/conversations'),
   createConversation: (characterId: number | null) =>
@@ -190,6 +261,9 @@ export const api = {
       rawBody: file,
       contentType: file.type,
     }),
+
+  streamAvatarPrompt,
+  renderAvatar,
 
   endpoints: () => request<Endpoint[]>('GET', '/api/endpoints'),
   createEndpoint: (data: Partial<Endpoint>) => request<Endpoint>('POST', '/api/endpoints', data),

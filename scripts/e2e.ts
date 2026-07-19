@@ -810,6 +810,172 @@ async function main() {
   const jpegPersonaRes = await putAvatar(`/api/personas/${persona.id}/avatar`, jpegBytes);
   assert(jpegPersonaRes.status === 415, 'persona avatar upload rejects JPEG magic bytes');
 
+  console.log('== avatar generation (prompt stream + comfy render) ==');
+  const AVATAR_WORKFLOW =
+    '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}';
+  // The client builds the request from the plugin settings — do the same.
+  await putSettings({
+    pluginSettings: {
+      imageGeneration: {
+        avatarPrompt: 'Portrait of {{char}}. Details: {{description}}. Setting: {{scenario}}.',
+        comfyUrl: MOCK_CONTROL,
+        workflows: [{ name: 'Avatar', json: AVATAR_WORKFLOW }],
+        activeWorkflow: 'Avatar',
+      },
+    },
+  });
+  const imageGenCfg = ((await req<Settings>('GET', '/api/settings')).pluginSettings
+    .imageGeneration as {
+    avatarPrompt: string;
+    comfyUrl: string;
+    workflows: { name: string; json: string }[];
+    activeWorkflow: string;
+  })!;
+  const avatarImage = {
+    workflow: imageGenCfg.workflows.find((w) => w.name === imageGenCfg.activeWorkflow)!.json,
+    comfyUrl: imageGenCfg.comfyUrl,
+  };
+  const avatarChar = await req<{ id: number }>('POST', '/api/characters', {
+    name: 'Avatar Hero',
+    personality: 'a brave knight with silver hair',
+    scenario: 'a mountain keep',
+  });
+
+  /** Reads an avatar prompt SSE stream, returning the assembled text. */
+  const streamAvatarPrompt = async (path: string, prompt: string): Promise<string> => {
+    const res = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt }),
+    });
+    assert(
+      res.ok && res.headers.get('content-type')?.includes('text/event-stream') === true,
+      `prompt stream at ${path} responds with SSE`,
+    );
+    const body = await res.text();
+    let text = '';
+    let sawDone = false;
+    let sawError = false;
+    for (const line of body.split('\n')) {
+      if (!line.startsWith('data:')) continue;
+      const payload = JSON.parse(line.slice(5)) as { d?: string; error?: string; done?: boolean };
+      if (payload.error !== undefined) sawError = true;
+      if (payload.d) text += payload.d;
+      if (payload.done) sawDone = true;
+    }
+    assert(!sawError, `prompt stream at ${path} carries no error event`);
+    assert(sawDone, `prompt stream at ${path} terminates with a done event`);
+    return text;
+  };
+
+  // A second stream for the same entity 409s while the first is in flight.
+  const firstStream = streamAvatarPrompt(
+    `/api/characters/${avatarChar.id}/avatar/prompt`,
+    imageGenCfg.avatarPrompt,
+  );
+  // Let the first request reach the server and claim the per-entity slot.
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await expectStatus(
+    'POST',
+    `/api/characters/${avatarChar.id}/avatar/prompt`,
+    { prompt: imageGenCfg.avatarPrompt },
+    409,
+  );
+  const avatarPrompt = await firstStream;
+  assert(avatarPrompt.includes('Avatar Hero'), 'prompt stream relays the LLM completion text');
+
+  // The streamed request hit the mock with macros expanded from the character.
+  const { completion: avatarCompletion } = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as { completion: { system: string | null; user: string | null } };
+  assert(
+    avatarCompletion.system ===
+      'Portrait of Avatar Hero. Details: a brave knight with silver hair. Setting: a mountain keep.',
+    'avatar prompt macros expand from the character fields',
+  );
+  assert(
+    avatarCompletion.user?.includes('Avatar Hero') === true &&
+      avatarCompletion.user.includes('a brave knight with silver hair'),
+    'the model is given the serialized character fields',
+  );
+
+  // Render: the (possibly edited) prompt goes in, image bytes come out.
+  const renderRes = await fetch(`${BASE}/api/avatar/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: avatarPrompt, image: avatarImage }),
+  });
+  assert(
+    renderRes.ok && renderRes.headers.get('content-type') === 'image/png',
+    'avatar render returns PNG bytes',
+  );
+  const renderedPng = Buffer.from(await renderRes.arrayBuffer());
+  assert(renderedPng[0] === 0x89 && renderedPng[1] === 0x50, 'avatar render is a real PNG');
+  const { workflow: avatarWorkflow } = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-workflow`)
+  ).json()) as { workflow: { 6: { inputs: { text: string } } } };
+  assert(
+    avatarWorkflow[6].inputs.text.includes(avatarPrompt.slice(0, 30)),
+    'the prompt lands in the workflow {{prompt}} slot',
+  );
+
+  // Saving the rendered bytes goes through the normal avatar upload route.
+  const genCharRes = await putAvatar(`/api/characters/${avatarChar.id}/avatar`, renderedPng);
+  assert(genCharRes.ok, 'rendered avatar saves through the avatar upload route');
+
+  // A jobId gets live sampler progress as renderProgress broadcasts.
+  const avatarWs = new WsClient();
+  await avatarWs.open();
+  const avatarJobId = 'e2e-avatar-job';
+  const progressSeen = avatarWs.waitFor(
+    (ev) => ev.t === 'renderProgress' && ev.jobId === avatarJobId && ev.max > 0,
+    'avatar render progress event',
+  );
+  const progressRenderRes = await fetch(`${BASE}/api/avatar/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'progress check', image: avatarImage, jobId: avatarJobId }),
+  });
+  assert(progressRenderRes.ok, 'avatar render with jobId succeeds');
+  await progressSeen;
+  assert(true, 'jobId render broadcasts renderProgress events');
+  avatarWs.close();
+
+  // Persona variant: {{user}}/{{description}} from the persona row.
+  await streamAvatarPrompt(
+    `/api/personas/${persona.id}/avatar/prompt`,
+    'Portrait of {{user}}: {{description}}',
+  );
+  const { completion: personaCompletion } = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as { completion: { system: string | null } };
+  assert(
+    personaCompletion.system === 'Portrait of Aiki: A performance-obsessed developer.',
+    'persona avatar prompt macros expand from the persona fields',
+  );
+
+  await expectStatus(
+    'POST',
+    `/api/characters/${avatarChar.id}/avatar/prompt`,
+    { prompt: '  ' },
+    400,
+  );
+  await expectStatus('POST', '/api/characters/999999999/avatar/prompt', { prompt: 'x' }, 404);
+  await expectStatus('POST', '/api/personas/999999999/avatar/prompt', { prompt: 'x' }, 404);
+  await expectStatus('POST', '/api/avatar/render', { prompt: '  ', image: avatarImage }, 400);
+  await expectStatus(
+    'POST',
+    '/api/avatar/render',
+    { prompt: 'x', image: { workflow: '', comfyUrl: MOCK_CONTROL } },
+    400,
+  );
+  await expectStatus(
+    'POST',
+    '/api/avatar/render',
+    { prompt: 'x', image: { workflow: '{not json', comfyUrl: MOCK_CONTROL } },
+    400,
+  );
+
   console.log('== templates: prologue, name prefixing, /char, resume ==');
   const tpl = await req<{ id: number }>('POST', '/api/templates', {
     name: 'e2e-prefix',

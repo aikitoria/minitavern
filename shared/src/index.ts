@@ -249,7 +249,9 @@ export type ServerEvent =
   | { t: 'delta'; mid: number; d?: string; r?: string }
   | { t: 'final'; conversationId: number; message: Message }
   /** Image render progress for a message with imagePending (e.g. sampler steps). */
-  | { t: 'imageProgress'; conversationId: number; mid: number; value: number; max: number };
+  | { t: 'imageProgress'; conversationId: number; mid: number; value: number; max: number }
+  /** Render progress for a caller-keyed stateless render (avatar generator). */
+  | { t: 'renderProgress'; jobId: string; value: number; max: number };
 
 /** Client -> server WebSocket commands. */
 export type ClientCommand = { sub: number | null };

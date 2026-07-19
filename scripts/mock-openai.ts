@@ -7,6 +7,11 @@ import { WebSocketServer } from 'ws';
 
 const PORT = Number(process.env.PORT ?? 9800);
 
+/** Per-token streaming delay; e2e runs (E2E_MOCK is set) default to a fast
+ * cadence. Keep >= ~3 ms: several tests act mid-stream and need the
+ * generation to still be in flight. */
+const TOKEN_MS = Number(process.env.MOCK_TOKEN_MS ?? (process.env.E2E_MOCK ? 3 : 15));
+
 const LOREM =
   'Streaming works token by token, so latency stays low even through the relay. ' +
   'Branching, swiping and edits can all be exercised against this mock without a real model.';
@@ -22,6 +27,8 @@ let terminalWithoutNewline = false;
 /** Next request streams this partial output, then dies mid-stream. */
 let dieAfterContent: string | null = null;
 let lastComfyWorkflow: unknown = null;
+/** Last chat completion request, streaming or not (auto-title, avatar prompt). */
+let lastCompletion: { system: string | null; user: string | null } | null = null;
 /** Next N /prompt submissions are rejected with a 500. */
 let comfyFailPrompts = 0;
 /** Next N accepted jobs fail during execution (error status in /history). */
@@ -56,6 +63,11 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/control/last-workflow') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ workflow: lastComfyWorkflow }));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/control/last-completion') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ completion: lastCompletion }));
     return;
   }
   if (req.method === 'POST' && req.url?.startsWith('/control/comfy-fail-next')) {
@@ -190,6 +202,10 @@ const server = http.createServer((req, res) => {
         return;
       }
       const lastUser = [...parsed.messages].reverse().find((m) => m.role === 'user');
+      lastCompletion = {
+        system: parsed.messages.find((m) => m.role === 'system')?.content ?? null,
+        user: lastUser?.content ?? null,
+      };
       // Non-streaming callers (the server's auto-title side task) get a plain
       // JSON completion and must never consume the one-shot controls below —
       // those are armed for streaming chat generations only.
@@ -263,7 +279,7 @@ const server = http.createServer((req, res) => {
           res.end();
           clearInterval(timer);
         }
-      }, 15);
+      }, TOKEN_MS);
       // 'close' on req fires once the body is consumed; the response signals disconnects.
       res.on('close', () => clearInterval(timer));
     });

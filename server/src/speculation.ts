@@ -7,6 +7,12 @@ import { deleteImageFiles } from './images.ts';
 const retryTimers = new Map<number, NodeJS.Timeout>();
 let refillHandler: ((conversationId?: number) => void) | null = null;
 
+/** Base backoff between background refill retries; e2e runs (E2E_BASE is
+ * set) default to a fast cadence. */
+const RETRY_BACKOFF_MS = Number(
+  process.env.SPECULATION_BACKOFF_MS ?? (process.env.E2E_BASE ? 50 : 500),
+);
+
 /** Installed at startup to lazily restore the one-ahead invariant for visible chats. */
 export function setSpeculativeRefillHandler(handler: (conversationId?: number) => void): void {
   refillHandler = handler;
@@ -42,7 +48,7 @@ export function scheduleSpeculativeRetry(
     );
     return;
   }
-  const delay = Math.min(500 * 2 ** Math.min(Math.max(attempt - 1, 0), 6), 30_000);
+  const delay = Math.min(RETRY_BACKOFF_MS * 2 ** Math.min(Math.max(attempt - 1, 0), 6), 30_000);
   retryTimers.set(
     conversationId,
     setTimeout(() => {

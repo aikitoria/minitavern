@@ -1,3 +1,4 @@
+import { Show, createSignal } from 'solid-js';
 import { errorMessage } from '../util.ts';
 import Avatar from './Avatar.tsx';
 
@@ -6,10 +7,13 @@ export default function AvatarRow(props: {
   src: string | null | undefined;
   name: string;
   upload: (file: File) => Promise<unknown>;
+  /** LLM+ComfyUI avatar generation (image plugin); omitted when unavailable. */
+  generate?: () => Promise<void>;
   onDone: () => void;
   onError: (message: string) => void;
 }) {
   let input!: HTMLInputElement;
+  const [generating, setGenerating] = createSignal(false);
   const uploadFile = async (file: File | undefined) => {
     if (!file) return;
     try {
@@ -19,10 +23,26 @@ export default function AvatarRow(props: {
       props.onError(errorMessage(err));
     }
   };
+  const generate = async () => {
+    if (!props.generate || generating()) return;
+    setGenerating(true);
+    try {
+      await props.generate();
+    } finally {
+      setGenerating(false);
+    }
+  };
   return (
     <div class="avatar-row">
       <Avatar src={props.src} name={props.name} />
       <button onClick={() => input.click()}>Change avatar</button>
+      <Show when={props.generate}>
+        <button disabled={generating()} onClick={() => void generate()}>
+          <Show when={generating()} fallback="Generate">
+            <span class="spinner" /> Generating…
+          </Show>
+        </button>
+      </Show>
       <input
         ref={input}
         type="file"
