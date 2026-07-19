@@ -1,5 +1,5 @@
 import { Show, createSignal } from 'solid-js';
-import { DEFAULT_PROMPT_TEMPLATE } from '@minitavern/shared';
+import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_STEER_TEMPLATE } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createEntityEditor, download, errorMessage } from '../../util.ts';
@@ -17,6 +17,7 @@ export default function CharactersTab() {
   let nameEl!: HTMLInputElement;
   let personalityEl!: HTMLTextAreaElement;
   let scenarioEl!: HTMLTextAreaElement;
+  let examplesEl!: HTMLTextAreaElement;
   let firstMessageEl!: HTMLTextAreaElement;
   let presetEl!: SelectHandle;
   let customEl!: HTMLTextAreaElement;
@@ -25,6 +26,7 @@ export default function CharactersTab() {
   let customPrologueEl!: HTMLTextAreaElement;
   let customPrefixEl!: HTMLInputElement;
   let customUsesPersonasEl!: HTMLInputElement;
+  let customSteerEl!: HTMLTextAreaElement;
   let cardInput!: HTMLInputElement;
 
   const editor = createEntityEditor({
@@ -33,6 +35,7 @@ export default function CharactersTab() {
       nameEl.value = character?.name ?? '';
       personalityEl.value = character?.personality ?? '';
       scenarioEl.value = character?.scenario ?? '';
+      examplesEl.value = character?.examples ?? '';
       firstMessageEl.value = character?.firstMessage ?? '';
       presetEl.value =
         character?.customPrompt != null ? 'custom' : String(character?.presetId ?? '');
@@ -43,6 +46,7 @@ export default function CharactersTab() {
       customPrologueEl.value = character?.customTemplate?.userPrologue ?? '';
       customPrefixEl.checked = character?.customTemplate?.prefixNames ?? false;
       customUsesPersonasEl.checked = character?.customTemplate?.usesPersonas ?? true;
+      customSteerEl.value = character?.customTemplate?.steerTemplate ?? DEFAULT_STEER_TEMPLATE;
       setCustomPrompt(character?.customPrompt != null);
       setCustomTemplate(character?.customTemplate != null);
     },
@@ -53,6 +57,7 @@ export default function CharactersTab() {
         name: nameEl.value,
         personality: personalityEl.value,
         scenario: scenarioEl.value,
+        examples: examplesEl.value,
         firstMessage: firstMessageEl.value,
         presetId: promptChoice && promptChoice !== 'custom' ? Number(promptChoice) : null,
         customPrompt: promptChoice === 'custom' ? customEl.value : null,
@@ -64,6 +69,7 @@ export default function CharactersTab() {
                 userPrologue: customPrologueEl.value,
                 prefixNames: customPrefixEl.checked,
                 usesPersonas: customUsesPersonasEl.checked,
+                steerTemplate: customSteerEl.value,
               }
             : null,
       };
@@ -136,6 +142,13 @@ export default function CharactersTab() {
         Scenario <MacroHelp />
       </label>
       <MacroTextarea ref={scenarioEl} placeholder="Setting / situation (optional)" />
+      <label>
+        Example conversations <MacroHelp />
+      </label>
+      <MacroTextarea
+        ref={examplesEl}
+        placeholder="Example dialogue between {{user}} and {{char}} (optional; separate with <START>)"
+      />
       <label>
         First message <MacroHelp />
       </label>
@@ -214,6 +227,21 @@ export default function CharactersTab() {
         Uses personas — when off, chats with this character ignore the persona entirely ("
         {'{{user}}'}" becomes "User", the persona description is not sent)
       </label>
+      <Show when={customTemplate()}>
+        <label>Custom template — steer template (regenerate with instruction)</label>
+      </Show>
+      <MacroTextarea
+        ref={customSteerEl}
+        keys={['instruction']}
+        rows={2}
+        classList={{ hidden: !customTemplate() }}
+      />
+      <Show when={customTemplate()}>
+        <p class="hint">
+          {'{{instruction}}'} is replaced with your instruction and injected into that
+          regeneration's prompt only. Leave empty to use the built-in default.
+        </p>
+      </Show>
     </EntityEditorPane>
   );
 }

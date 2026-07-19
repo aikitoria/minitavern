@@ -40,8 +40,7 @@ import { optionalNullableId } from '../validation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import { discardSpeculativeSwipes, markSwipeRead, nextUnreadSibling } from '../speculation.ts';
 import { parseImageConfig, startImageRender } from '../comfy.ts';
-import { getSettings } from '../settingsStore.ts';
-import { buildSteeredPrompt } from '../prompt.ts';
+import { buildSteeredPrompt, resolveSteerTemplate } from '../prompt.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -136,7 +135,8 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
 
 /**
  * Steered regeneration: a new assistant sibling whose generation is steered by
- * a one-off instruction. The instruction is rendered into settings.steerTemplate
+ * a one-off instruction. The instruction is rendered into the conversation's
+ * resolved steer template (per-template, same chain as the prompt template)
  * and injected into this generation's prompt only — it never enters history.
  */
 route.post('/api/messages/:id/regenerate', ({ params, body }) => {
@@ -156,7 +156,7 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
   // retries must resend exactly this prompt, whatever changes later. Simple
   // macro substitution, not the template engine. Function replacer so '$'
   // sequences in the instruction stay literal.
-  const steer = getSettings().steerTemplate.replaceAll(/\{\{instruction\}\}/gi, () => instruction);
+  const steer = resolveSteerTemplate(conv).replaceAll(/\{\{instruction\}\}/gi, () => instruction);
   const prompt = buildSteeredPrompt(conv, getPathToMessage(msg.parentId), steer, msg.name);
   const mid = spawnAssistantReply(conv, msg.parentId, msg.name, prompt);
   invalidate('conversations');

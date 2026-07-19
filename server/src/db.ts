@@ -302,6 +302,29 @@ if (version < 15) {
   `);
 }
 
+// Steer format moves from a global setting to a per-template field, resolved
+// through the same chain as the template itself. Existing rows keep the empty
+// default, which resolves to DEFAULT_STEER_TEMPLATE (same text as before).
+if (version < 16) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE templates ADD COLUMN steer_template TEXT NOT NULL DEFAULT '';
+    PRAGMA user_version = 16;
+    COMMIT;
+  `);
+}
+
+// Example conversation partials on characters (SillyTavern mes_example),
+// substituted into templates via the {{examples}} slot.
+if (version < 17) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE characters ADD COLUMN examples TEXT NOT NULL DEFAULT '';
+    PRAGMA user_version = 17;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(
@@ -356,10 +379,18 @@ function parseCustomTemplate(raw: string | null): CustomTemplate | null {
       userPrologue: typeof parsed.userPrologue === 'string' ? parsed.userPrologue : '',
       prefixNames: parsed.prefixNames === true,
       usesPersonas: parsed.usesPersonas !== false,
+      // Old blobs predate this key; empty resolves to DEFAULT_STEER_TEMPLATE.
+      steerTemplate: typeof parsed.steerTemplate === 'string' ? parsed.steerTemplate : '',
     };
   } catch {
     // Tolerate pre-JSON dev builds that stored the raw template text.
-    return { content: raw, userPrologue: '', prefixNames: false, usesPersonas: true };
+    return {
+      content: raw,
+      userPrologue: '',
+      prefixNames: false,
+      usesPersonas: true,
+      steerTemplate: '',
+    };
   }
 }
 
@@ -406,6 +437,7 @@ export function toCharacter(r: Row): Character {
     avatar: r.avatar as string | null,
     personality: r.personality as string,
     scenario: r.scenario as string,
+    examples: r.examples as string,
     firstMessage: r.first_message as string,
     presetId: r.preset_id as number | null,
     customPrompt: r.custom_prompt as string | null,
@@ -432,6 +464,7 @@ export function toTemplate(r: Row): Template {
     userPrologue: r.user_prologue as string,
     prefixNames: (r.prefix_names as number) !== 0,
     usesPersonas: (r.uses_personas as number) !== 0,
+    steerTemplate: r.steer_template as string,
     createdAt: r.created_at as number,
   };
 }

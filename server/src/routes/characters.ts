@@ -23,6 +23,7 @@ defineEntityRoutes<Character>({
     nameField((cur) => cur.name),
     textField('personality', 'personality', (cur) => cur.personality),
     textField('scenario', 'scenario', (cur) => cur.scenario),
+    textField('examples', 'examples', (cur) => cur.examples),
     textField('firstMessage', 'first_message', (cur) => cur.firstMessage),
     refIdField('presetId', 'preset_id', 'presets', (cur) => cur.presetId),
     nullableTextField('customPrompt', 'custom_prompt', (cur) => cur.customPrompt),
@@ -43,6 +44,7 @@ defineEntityRoutes<Character>({
           userPrologue: optionalString(t, 'userPrologue') ?? '',
           prefixNames: optionalBoolean(t, 'prefixNames') ?? false,
           usesPersonas: optionalBoolean(t, 'usesPersonas') ?? true,
+          steerTemplate: optionalString(t, 'steerTemplate') ?? '',
         };
         return JSON.stringify(custom);
       },
@@ -77,12 +79,13 @@ route.post(
       throw new HttpError(400, err instanceof Error ? err.message : 'invalid character card');
     }
     const result = stmt(
-      `INSERT INTO characters (name, personality, scenario, first_message, custom_prompt, card_json, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO characters (name, personality, scenario, examples, first_message, custom_prompt, card_json, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       card.name,
       card.personality,
       card.scenario,
+      card.examples,
       card.firstMessage,
       card.systemPrompt,
       JSON.stringify(card.raw),
@@ -120,6 +123,7 @@ route.get('/api/characters/:id/card', ({ params, res }) => {
       description: character.personality,
       personality: '',
       scenario: character.scenario,
+      mes_example: character.examples,
       first_mes: character.firstMessage,
       system_prompt: character.customPrompt ?? original?.data?.system_prompt ?? '',
     },

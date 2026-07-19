@@ -19,6 +19,7 @@ defineEntityRoutes<Template>({
       value: (b, cur) =>
         (optionalBoolean(b, 'usesPersonas') ?? cur?.usesPersonas ?? true) ? 1 : 0,
     },
+    textField('steerTemplate', 'steer_template', (cur) => cur.steerTemplate),
   ],
   settingsRef: 'defaultTemplateId',
   invalidateOnDelete: ['characters'],

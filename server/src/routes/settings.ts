@@ -4,13 +4,7 @@ import { route, HttpError } from '../router.ts';
 import { getSettings, putSettings } from '../settingsStore.ts';
 import { invalidate } from '../events.ts';
 import { requireReference, type EntityTable } from './entityUtils.ts';
-import {
-  objectBody,
-  optionalBoolean,
-  optionalNullableId,
-  optionalNumber,
-  optionalString,
-} from '../validation.ts';
+import { objectBody, optionalBoolean, optionalNullableId, optionalNumber } from '../validation.ts';
 import { discardSpeculativeSwipes } from '../speculation.ts';
 import { subscribedConversationIds } from '../events.ts';
 import { prepareActiveSwipe } from './conversations.ts';
@@ -42,7 +36,6 @@ route.put('/api/settings', ({ body }) => {
   }
   const autoExpandThinking = optionalBoolean(b, 'autoExpandThinking');
   const backgroundSwipeGeneration = optionalBoolean(b, 'backgroundSwipeGeneration');
-  const steerTemplate = optionalString(b, 'steerTemplate');
   const pluginSettings = b.pluginSettings as Settings['pluginSettings'] | undefined;
   if (pluginSettings !== undefined) {
     const isPlainObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -56,7 +49,6 @@ route.put('/api/settings', ({ body }) => {
     ...Object.fromEntries(Object.entries(ids).filter(([, value]) => value !== undefined)),
     ...(autoExpandThinking === undefined ? {} : { autoExpandThinking }),
     ...(backgroundSwipeGeneration === undefined ? {} : { backgroundSwipeGeneration }),
-    ...(steerTemplate === undefined ? {} : { steerTemplate }),
     ...(pluginSettings === undefined ? {} : { pluginSettings }),
     revision: current.revision + 1,
   };

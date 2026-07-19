@@ -4,6 +4,7 @@ export interface ParsedCard {
   name: string;
   personality: string;
   scenario: string;
+  examples: string;
   firstMessage: string;
   systemPrompt: string | null;
   raw: unknown;
@@ -92,6 +93,7 @@ interface CardData {
   description?: string;
   personality?: string;
   scenario?: string;
+  mes_example?: string;
   first_mes?: string;
   system_prompt?: string;
 }
@@ -116,6 +118,9 @@ export function parseCharacterCard(png: Buffer): ParsedCard {
     name: data.name,
     personality,
     scenario: data.scenario?.trim() ?? '',
+    // Stored as-is: SillyTavern separates multiple examples with <START>
+    // lines, which is exactly the format this field keeps.
+    examples: data.mes_example?.trim() ?? '',
     firstMessage: data.first_mes?.trim() ?? '',
     systemPrompt: data.system_prompt?.trim() || null,
     raw: json,

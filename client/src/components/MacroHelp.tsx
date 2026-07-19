@@ -14,9 +14,10 @@ const TEMPLATE: [string, string][] = [
   ['{{personality}}', "The character's personality text"],
   ['{{persona}}', "The persona's description text"],
   ['{{scenario}}', "The character's scenario text"],
+  ['{{examples}}', "The character's example conversations"],
   [
     '{{#if x}}…{{/if}}',
-    'Include the block only when slot x is non-empty (x = system, personality, persona, scenario)',
+    'Include the block only when slot x is non-empty (x = system, personality, persona, scenario, examples)',
   ],
 ];
 

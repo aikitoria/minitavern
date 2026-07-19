@@ -2,7 +2,15 @@ import { For, createEffect, createSignal, onCleanup } from 'solid-js';
 
 const TOKEN_RE = /\{\{[^{}]*\}\}/g;
 const BASIC_KEYS = new Set(['char', 'user']);
-const TEMPLATE_KEYS = new Set(['char', 'user', 'system', 'personality', 'persona', 'scenario']);
+const TEMPLATE_KEYS = new Set([
+  'char',
+  'user',
+  'system',
+  'personality',
+  'persona',
+  'scenario',
+  'examples',
+]);
 
 type MacroKind = 'valid' | 'invalid' | 'cond';
 

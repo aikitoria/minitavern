@@ -1,5 +1,13 @@
-import type { Character, Conversation, Message, Persona, Role, Template } from '@minitavern/shared';
-import { DEFAULT_PROMPT_TEMPLATE } from '@minitavern/shared';
+import type {
+  Character,
+  Conversation,
+  CustomTemplate,
+  Message,
+  Persona,
+  Role,
+  Template,
+} from '@minitavern/shared';
+import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_STEER_TEMPLATE } from '@minitavern/shared';
 import { stmt, toCharacter, toPersona, toPreset, toTemplate } from './db.ts';
 import { getSettings } from './settingsStore.ts';
 
@@ -35,6 +43,38 @@ function getTemplate(id: number | null): Template | null {
   const row = stmt('SELECT * FROM templates WHERE id = ?').get(id) as
     Record<string, unknown> | undefined;
   return row ? toTemplate(row) : null;
+}
+
+interface ResolvedTemplate {
+  custom: CustomTemplate | null;
+  template: Template | null;
+}
+
+/**
+ * The template chain for a conversation: the character's inline customTemplate
+ * wins, then the character's templateId reference, then the global default
+ * template. An inline template replaces the referenced template entirely (it
+ * carries the same settings a template entity has); per-field built-in
+ * defaults (DEFAULT_PROMPT_TEMPLATE, DEFAULT_STEER_TEMPLATE) apply at the
+ * point of use when the resolved value is absent or empty.
+ */
+function resolveTemplate(character: Character | null): ResolvedTemplate {
+  const custom = character?.customTemplate ?? null;
+  const template = custom
+    ? null
+    : (getTemplate(character?.templateId ?? null) ?? getTemplate(getSettings().defaultTemplateId));
+  return { custom, template };
+}
+
+/**
+ * The steer format for a conversation, resolved through the same chain as the
+ * template itself. An empty steerTemplate (including old inline-template blobs
+ * that predate the key) falls back to the built-in DEFAULT_STEER_TEMPLATE.
+ */
+export function resolveSteerTemplate(conversation: Conversation): string {
+  const { custom, template } = resolveTemplate(getCharacter(conversation.characterId));
+  const raw = custom ? custom.steerTemplate : (template?.steerTemplate ?? '');
+  return raw.trim() || DEFAULT_STEER_TEMPLATE;
 }
 
 export function substituteMacros(text: string, charName: string, userName: string): string {
@@ -92,14 +132,7 @@ export function buildChatMessages(
 ): BuiltPrompt {
   const character = getCharacter(conversation.characterId);
   const settings = getSettings();
-
-  // Character-specific inline template wins, then the character's template
-  // reference, then the global default, then the built-in. An inline template
-  // carries the same settings a template entity has.
-  const custom = character?.customTemplate ?? null;
-  const template = custom
-    ? null
-    : (getTemplate(character?.templateId ?? null) ?? getTemplate(settings.defaultTemplateId));
+  const { custom, template } = resolveTemplate(character);
 
   // A template can opt the chat out of personas entirely: {{user}} becomes
   // "User" and the persona description slot renders empty.
@@ -119,6 +152,7 @@ export function buildChatMessages(
     personality: sub(character?.personality ?? ''),
     persona: sub(persona?.description ?? ''),
     scenario: sub(character?.scenario ?? ''),
+    examples: sub(character?.examples ?? ''),
     char: charName,
     user: userName,
   };

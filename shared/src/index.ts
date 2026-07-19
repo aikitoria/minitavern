@@ -64,6 +64,9 @@ export interface Character {
   avatar: string | null;
   personality: string;
   scenario: string;
+  /** Example conversation partials (SillyTavern mes_example; users manage
+   * their own separators like <START>). Substituted via the {{examples}} slot. */
+  examples: string;
   firstMessage: string;
   presetId: number | null;
   customPrompt: string | null;
@@ -79,6 +82,7 @@ export interface CustomTemplate {
   userPrologue: string;
   prefixNames: boolean;
   usesPersonas: boolean;
+  steerTemplate: string;
 }
 
 export interface Preset {
@@ -99,6 +103,10 @@ export interface Template {
   prefixNames: boolean;
   /** When false, chats using this template ignore personas entirely ({{user}} = "User"). */
   usesPersonas: boolean;
+  /** Steer text for "regenerate with instruction"; {{instruction}} is replaced
+   * and the result is injected into that regeneration's prompt only.
+   * Empty = built-in DEFAULT_STEER_TEMPLATE. */
+  steerTemplate: string;
   createdAt: number;
 }
 
@@ -140,17 +148,15 @@ export interface Settings {
   autoExpandThinking: boolean;
   /** Keep one unread assistant sibling prepared ahead of the active reply. */
   backgroundSwipeGeneration: boolean;
-  /** Steer text for "regenerate with instruction"; {{instruction}} is replaced
-   * and the result is injected into that generation's prompt only. */
-  steerTemplate: string;
   /** Per-plugin settings blobs, keyed by plugin id (shapes are plugin-defined). */
   pluginSettings: Record<string, Record<string, unknown>>;
 }
 
 /**
  * Controls how the system message is assembled. Slots: {{system}} (preset or
- * custom prompt), {{personality}}, {{persona}}, {{scenario}}, plus {{char}} /
- * {{user}} names. {{#if x}}...{{/if}} blocks are dropped when x is empty.
+ * custom prompt), {{personality}}, {{persona}}, {{scenario}}, {{examples}},
+ * plus {{char}} / {{user}} names. {{#if x}}...{{/if}} blocks are dropped when
+ * x is empty.
  */
 export const DEFAULT_PROMPT_TEMPLATE = `{{system}}
 
@@ -161,7 +167,17 @@ export const DEFAULT_PROMPT_TEMPLATE = `{{system}}
 {{persona}}{{/if}}
 
 {{#if scenario}}Scenario:
-{{scenario}}{{/if}}`;
+{{scenario}}{{/if}}
+
+{{#if examples}}Example conversations:
+{{examples}}{{/if}}`;
+
+/**
+ * Built-in fallback for a template's steerTemplate (used when the resolved
+ * template leaves it empty). {{instruction}} is replaced with the steer
+ * instruction and the result injected into that regeneration's prompt only.
+ */
+export const DEFAULT_STEER_TEMPLATE = '[System note: adapt this reply as follows: {{instruction}}]';
 
 export const DEFAULT_SETTINGS: Settings = {
   revision: 0,
@@ -171,7 +187,6 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultTemplateId: null,
   autoExpandThinking: false,
   backgroundSwipeGeneration: false,
-  steerTemplate: '[System note: adapt this reply as follows: {{instruction}}]',
   pluginSettings: {},
 };
 

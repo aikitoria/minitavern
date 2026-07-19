@@ -19,7 +19,6 @@ const SETTING_KEYS: SettingKey[] = [
   'defaultTemplateId',
   'autoExpandThinking',
   'backgroundSwipeGeneration',
-  'steerTemplate',
 ];
 
 export default function GeneralTab() {
@@ -151,17 +150,6 @@ export default function GeneralTab() {
         />
         Background Swipe Generation (keep one unread assistant swipe prepared ahead)
       </label>
-
-      <label>Steer template (regenerate with instruction)</label>
-      <textarea
-        rows={2}
-        value={draft.steerTemplate}
-        onInput={(e) => change('steerTemplate', e.currentTarget.value)}
-      />
-      <p class="hint">
-        {'{{instruction}}'} is replaced with your instruction and injected into that regeneration's
-        prompt only.
-      </p>
 
       <div class="form-actions">
         <button class="primary-btn" onClick={() => void save()}>

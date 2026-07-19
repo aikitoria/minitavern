@@ -1,4 +1,4 @@
-import { DEFAULT_PROMPT_TEMPLATE } from '@minitavern/shared';
+import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_STEER_TEMPLATE } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
 import { createEntityEditor } from '../../util.ts';
@@ -12,6 +12,7 @@ export default function TemplatesTab() {
   let prologueEl!: HTMLTextAreaElement;
   let prefixEl!: HTMLInputElement;
   let usesPersonasEl!: HTMLInputElement;
+  let steerEl!: HTMLTextAreaElement;
 
   const editor = createEntityEditor({
     items: () => state.templates,
@@ -21,6 +22,7 @@ export default function TemplatesTab() {
       prologueEl.value = template?.userPrologue ?? '';
       prefixEl.checked = template?.prefixNames ?? false;
       usesPersonasEl.checked = template?.usesPersonas ?? true;
+      steerEl.value = template?.steerTemplate ?? DEFAULT_STEER_TEMPLATE;
     },
     data: () => ({
       name: nameEl.value,
@@ -28,6 +30,7 @@ export default function TemplatesTab() {
       userPrologue: prologueEl.value,
       prefixNames: prefixEl.checked,
       usesPersonas: usesPersonasEl.checked,
+      steerTemplate: steerEl.value,
     }),
     create: api.createTemplate,
     patch: api.patchTemplate,
@@ -68,6 +71,12 @@ export default function TemplatesTab() {
         Uses personas — when off, chats with this template ignore the persona entirely ("
         {'{{user}}'}" becomes "User", the persona description is not sent)
       </label>
+      <label>Steer template (regenerate with instruction)</label>
+      <MacroTextarea ref={steerEl} keys={['instruction']} rows={2} />
+      <p class="hint">
+        {'{{instruction}}'} is replaced with your instruction and injected into that regeneration's
+        prompt only. Leave empty to use the built-in default.
+      </p>
     </EntityEditorPane>
   );
 }
