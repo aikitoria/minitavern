@@ -236,6 +236,15 @@ async function main() {
   const models = await req<string[]>('GET', `/api/endpoints/${endpoint.id}/models`);
   assert(models.includes('mock-large'), 'model list fetched from upstream');
   await req('PATCH', `/api/endpoints/${endpoint.id}`, { model: 'mock-large' });
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, {
+    genParams: { reasoningEffort: 'high' },
+  });
+  await expectStatus(
+    'PATCH',
+    `/api/endpoints/${endpoint.id}`,
+    { genParams: { reasoningEffort: 'extreme' } },
+    400,
+  );
   await putSettings({ activeEndpointId: endpoint.id });
 
   console.log('== shared settings reject stale device writes ==');
@@ -387,6 +396,16 @@ async function main() {
   console.log('== advancing past the last swipe creates a sibling ==');
   await req('POST', `/api/messages/${assistant1.id}/advance`, await branchBody(conv.id));
   await ws.waitFor((e) => e.t === 'final' && e.message.id !== assistant1.id, 'new swipe finished');
+
+  // Asserted here (not after the first reply) because the auto-title one-shot
+  // fires after that reply and overwrites the mock's last-completion record.
+  const effortSeen = (await (await fetch(`${MOCK_CONTROL}/control/last-completion`)).json()) as {
+    completion: { reasoningEffort: string | null } | null;
+  };
+  assert(
+    effortSeen.completion?.reasoningEffort === 'high',
+    'endpoint reasoningEffort reaches upstream as reasoning_effort',
+  );
   snap = await tree(conv.id);
   const assistantSiblings = snap.messages.filter((m) => m.parentId === userMsg1.id);
   assert(assistantSiblings.length === 2, 'two assistant siblings after advancing');

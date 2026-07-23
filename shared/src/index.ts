@@ -3,6 +3,9 @@ export type Role = 'user' | 'assistant' | 'system' | 'tool';
 export type MessageStatus = 'done' | 'streaming' | 'error' | 'stopped';
 export type GenerationKind = 'normal' | 'speculative';
 
+/** Union of OpenAI-style efforts and extended backends (e.g. mina's 'max'). */
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'max';
+
 export interface GenParams {
   temperature?: number;
   topP?: number;
@@ -10,6 +13,8 @@ export interface GenParams {
   maxTokens?: number;
   frequencyPenalty?: number;
   presencePenalty?: number;
+  /** Sent verbatim as reasoning_effort; unset = field omitted (backend default). */
+  reasoningEffort?: ReasoningEffort;
 }
 
 export interface GenMeta {

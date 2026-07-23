@@ -20,6 +20,7 @@ export default function EndpointsTab() {
   let maxTokEl!: HTMLInputElement;
   let freqEl!: HTMLInputElement;
   let presEl!: HTMLInputElement;
+  let effortEl!: SelectHandle;
   let prefillEl!: SelectHandle;
 
   const editor = createEntityEditor({
@@ -37,6 +38,7 @@ export default function EndpointsTab() {
       maxTokEl.value = String(endpoint?.genParams.maxTokens ?? '');
       freqEl.value = String(endpoint?.genParams.frequencyPenalty ?? '');
       presEl.value = String(endpoint?.genParams.presencePenalty ?? '');
+      effortEl.value = endpoint?.genParams.reasoningEffort ?? '';
       prefillEl.value = endpoint?.prefillMode ?? 'none';
     },
     data: () => {
@@ -47,6 +49,9 @@ export default function EndpointsTab() {
       if (maxTokEl.value !== '') genParams.maxTokens = Number(maxTokEl.value);
       if (freqEl.value !== '') genParams.frequencyPenalty = Number(freqEl.value);
       if (presEl.value !== '') genParams.presencePenalty = Number(presEl.value);
+      if (effortEl.value !== '') {
+        genParams.reasoningEffort = effortEl.value as GenParams['reasoningEffort'];
+      }
       return {
         name: nameEl.value,
         baseUrl: urlEl.value,
@@ -176,6 +181,21 @@ export default function EndpointsTab() {
         <div>
           <label>Pres. penalty</label>
           <input ref={presEl} type="number" step="0.05" min="-2" max="2" />
+        </div>
+        <div>
+          <label>Reasoning effort</label>
+          <Select
+            ref={effortEl}
+            options={[
+              { value: '', label: '— omit —' },
+              { value: 'none', label: 'none' },
+              { value: 'minimal', label: 'minimal' },
+              { value: 'low', label: 'low' },
+              { value: 'medium', label: 'medium' },
+              { value: 'high', label: 'high' },
+              { value: 'max', label: 'max' },
+            ]}
+          />
         </div>
       </div>
       <p class="hint">Empty fields are omitted from requests (backend defaults apply).</p>

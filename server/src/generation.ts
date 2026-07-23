@@ -453,6 +453,7 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
         ...(p.maxTokens != null ? { max_tokens: p.maxTokens } : {}),
         ...(p.frequencyPenalty != null ? { frequency_penalty: p.frequencyPenalty } : {}),
         ...(p.presencePenalty != null ? { presence_penalty: p.presencePenalty } : {}),
+        ...(p.reasoningEffort != null ? { reasoning_effort: p.reasoningEffort } : {}),
         ...(prefilled && endpoint.prefillMode === 'vllm'
           ? { continue_final_message: true, add_generation_prompt: false }
           : {}),

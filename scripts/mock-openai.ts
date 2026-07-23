@@ -28,7 +28,11 @@ let terminalWithoutNewline = false;
 let dieAfterContent: string | null = null;
 let lastComfyWorkflow: unknown = null;
 /** Last chat completion request, streaming or not (auto-title, avatar prompt). */
-let lastCompletion: { system: string | null; user: string | null } | null = null;
+let lastCompletion: {
+  system: string | null;
+  user: string | null;
+  reasoningEffort: string | null;
+} | null = null;
 /** Next N /prompt submissions are rejected with a 500. */
 let comfyFailPrompts = 0;
 /** Next N accepted jobs fail during execution (error status in /history). */
@@ -190,12 +194,13 @@ const server = http.createServer((req, res) => {
       console.log('[mock] body received:', body.length, 'bytes');
       // A malformed body must fail the one request, not throw in the 'end'
       // handler and kill the whole mock (cascading e2e timeouts).
-      let parsed: { messages: { role: string; content: string }[]; stream?: boolean };
+      let parsed: {
+        messages: { role: string; content: string }[];
+        stream?: boolean;
+        reasoning_effort?: string;
+      };
       try {
-        parsed = JSON.parse(body) as {
-          messages: { role: string; content: string }[];
-          stream?: boolean;
-        };
+        parsed = JSON.parse(body) as typeof parsed;
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid JSON' }));
@@ -205,6 +210,7 @@ const server = http.createServer((req, res) => {
       lastCompletion = {
         system: parsed.messages.find((m) => m.role === 'system')?.content ?? null,
         user: lastUser?.content ?? null,
+        reasoningEffort: parsed.reasoning_effort ?? null,
       };
       // Non-streaming callers (the server's auto-title side task) get a plain
       // JSON completion and must never consume the one-shot controls below —

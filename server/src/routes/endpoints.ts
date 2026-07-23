@@ -1,4 +1,4 @@
-import type { Endpoint, GenParams } from '@minitavern/shared';
+import type { Endpoint, GenParams, ReasoningEffort } from '@minitavern/shared';
 import { stmt, toEndpoint } from '../db.ts';
 import { invalidate } from '../events.ts';
 import { route, HttpError } from '../router.ts';
@@ -7,6 +7,15 @@ import { defineEntityRoutes, nameField, nullableTextField } from './entityRoutes
 import { rowById } from './entityUtils.ts';
 
 const PREFILL_MODES = new Set<Endpoint['prefillMode']>(['none', 'vllm', 'deepseek']);
+
+const REASONING_EFFORTS = new Set<ReasoningEffort>([
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'max',
+]);
 
 function publicEndpoint(endpoint: Endpoint): Endpoint {
   return { ...endpoint, apiKey: '', hasApiKey: endpoint.apiKey.length > 0 };
@@ -52,6 +61,16 @@ function genParams(value: unknown, current: GenParams = {}): GenParams {
     if (number != null && (number < -2 || number > 2)) {
       throw new HttpError(400, `${key} must be between -2 and 2`);
     }
+  }
+  const reasoningEffort = b.reasoningEffort;
+  if (reasoningEffort !== undefined) {
+    if (
+      typeof reasoningEffort !== 'string' ||
+      !REASONING_EFFORTS.has(reasoningEffort as ReasoningEffort)
+    ) {
+      throw new HttpError(400, 'reasoningEffort must be none, minimal, low, medium, high or max');
+    }
+    next.reasoningEffort = reasoningEffort as ReasoningEffort;
   }
   if (temperature != null) next.temperature = temperature;
   if (topP != null) next.topP = topP;
