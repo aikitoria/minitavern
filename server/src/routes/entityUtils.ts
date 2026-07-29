@@ -1,7 +1,8 @@
 import { stmt } from '../db.ts';
 import { HttpError } from '../router.ts';
 
-export type EntityTable = 'presets' | 'templates' | 'personas' | 'characters' | 'endpoints';
+export type EntityTable =
+  'presets' | 'templates' | 'personas' | 'characters' | 'character_folders' | 'endpoints';
 
 export function rows(table: EntityTable): Record<string, unknown>[] {
   return stmt(`SELECT * FROM ${table} ORDER BY name COLLATE NOCASE, id`).all() as Record<

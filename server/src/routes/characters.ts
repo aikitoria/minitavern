@@ -26,6 +26,7 @@ defineEntityRoutes<Character>({
   toDto: toCharacter,
   fields: [
     nameField((cur) => cur.name),
+    refIdField('folderId', 'folder_id', 'character_folders', (cur) => cur.folderId),
     textField('personality', 'personality', (cur) => cur.personality),
     textField('scenario', 'scenario', (cur) => cur.scenario),
     textField('examples', 'examples', (cur) => cur.examples),

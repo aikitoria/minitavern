@@ -28,6 +28,8 @@ export default function EntityEditorPane<T extends { id: number }>(props: {
   listActions?: JSX.Element;
   /** Extra action buttons for existing entities, before Delete (e.g. Export). */
   extraActions?: JSX.Element;
+  /** Custom hierarchy for lists that are not flat (e.g. character folders). */
+  listContent?: JSX.Element;
   children: JSX.Element;
 }) {
   const editor = props.editor;
@@ -49,16 +51,23 @@ export default function EntityEditorPane<T extends { id: number }>(props: {
             {props.listActions}
           </div>
         </Show>
-        <For each={props.items}>
-          {(item) => (
-            <button
-              classList={{ active: editor.selectedId() === item.id }}
-              onClick={() => editor.select(item.id)}
-            >
-              {props.itemLabel(item)}
-            </button>
-          )}
-        </For>
+        <Show
+          when={props.listContent}
+          fallback={
+            <For each={props.items}>
+              {(item) => (
+                <button
+                  classList={{ active: editor.selectedId() === item.id }}
+                  onClick={() => editor.select(item.id)}
+                >
+                  {props.itemLabel(item)}
+                </button>
+              )}
+            </For>
+          }
+        >
+          {props.listContent}
+        </Show>
       </div>
       <div class="form">
         <button class="detail-back" onClick={editor.nav.closeDetail}>

@@ -28,6 +28,9 @@ interface ConvGroup {
 
 export default function Sidebar() {
   const [newMenuOpen, setNewMenuOpen] = createSignal(false);
+  const [collapsedCharacterFolders, setCollapsedCharacterFolders] = createSignal<
+    ReadonlySet<number>
+  >(new Set());
   const [query, setQuery] = createSignal('');
   const [results, setResults] = createSignal<SearchResult[] | null>(null);
   let searchTimer: number | undefined;
@@ -78,6 +81,23 @@ export default function Sidebar() {
     setNewMenuOpen(false);
     void newConversation(characterId);
   };
+
+  const toggleCharacterFolder = (id: number) => {
+    setCollapsedCharacterFolders((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const characterFolderExists = (id: number) => state.characterFolders.some((f) => f.id === id);
+  const rootCharacters = () =>
+    state.characters.filter(
+      (character) => character.folderId == null || !characterFolderExists(character.folderId),
+    );
+  const charactersInFolder = (id: number) =>
+    state.characters.filter((character) => character.folderId === id);
 
   const remove = async (id: number, event: MouseEvent) => {
     event.stopPropagation();
@@ -197,7 +217,37 @@ export default function Sidebar() {
                 <span class="avatar avatar-fallback">A</span> Assistant
               </button>
             </Show>
-            <For each={state.characters}>
+            <For each={state.characterFolders}>
+              {(folder) => (
+                <Show when={charactersInFolder(folder.id).length > 0}>
+                  <div class="new-chat-folder">
+                    <button
+                      class="new-chat-folder-toggle"
+                      aria-expanded={!collapsedCharacterFolders().has(folder.id)}
+                      onClick={() => toggleCharacterFolder(folder.id)}
+                    >
+                      <span class="tree-disclosure">
+                        {collapsedCharacterFolders().has(folder.id) ? '▸' : '▾'}
+                      </span>
+                      <span>{folder.name}</span>
+                    </button>
+                    <Show when={!collapsedCharacterFolders().has(folder.id)}>
+                      <For each={charactersInFolder(folder.id)}>
+                        {(character) => (
+                          <button
+                            class="new-chat-folder-child"
+                            onClick={() => create(character.id)}
+                          >
+                            <Avatar src={character.avatar} name={character.name} /> {character.name}
+                          </button>
+                        )}
+                      </For>
+                    </Show>
+                  </div>
+                </Show>
+              )}
+            </For>
+            <For each={rootCharacters()}>
               {(character) => (
                 <button onClick={() => create(character.id)}>
                   <Avatar src={character.avatar} name={character.name} /> {character.name}

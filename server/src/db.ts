@@ -4,6 +4,7 @@ import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
   Character,
+  CharacterFolder,
   Conversation,
   CustomTemplate,
   Endpoint,
@@ -353,6 +354,23 @@ if (version < 18) {
   `);
 }
 
+// One-level character folders. A character can belong to one folder; deleting
+// the folder returns its characters to the root of the picker tree.
+if (version < 19) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE character_folders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL COLLATE NOCASE UNIQUE,
+      created_at INTEGER NOT NULL
+    );
+    ALTER TABLE characters ADD COLUMN folder_id INTEGER
+      REFERENCES character_folders(id) ON DELETE SET NULL;
+    PRAGMA user_version = 19;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(
@@ -464,6 +482,7 @@ export function toCharacter(r: Row): Character {
   return {
     id: r.id as number,
     name: r.name as string,
+    folderId: (r.folder_id as number | null) ?? null,
     avatar: r.avatar as string | null,
     personality: r.personality as string,
     scenario: r.scenario as string,
@@ -473,6 +492,14 @@ export function toCharacter(r: Row): Character {
     customPrompt: r.custom_prompt as string | null,
     templateId: r.template_id as number | null,
     customTemplate: parseCustomTemplate(r.custom_template as string | null),
+    createdAt: r.created_at as number,
+  };
+}
+
+export function toCharacterFolder(r: Row): CharacterFolder {
+  return {
+    id: r.id as number,
+    name: r.name as string,
     createdAt: r.created_at as number,
   };
 }

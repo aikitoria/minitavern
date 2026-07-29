@@ -14,7 +14,14 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { WebSocket as HeaderWebSocket } from 'ws';
 import { expandWorkflowTemplate, workflowValidationError } from '@minitavern/shared';
-import type { Message, ServerEvent, Settings, TreeSnapshot } from '@minitavern/shared';
+import type {
+  Character,
+  CharacterFolder,
+  Message,
+  ServerEvent,
+  Settings,
+  TreeSnapshot,
+} from '@minitavern/shared';
 import { chunk } from './pngChunk.ts';
 import { createIpAllowlist } from '../server/src/ipAccess.ts';
 
@@ -1236,6 +1243,37 @@ async function main() {
   });
   assert((await tree(tailConv.id)).messages.length === 0, 'large tail count clears the whole tree');
 
+  console.log('== one-level character folders ==');
+  const characterFolder = await req<CharacterFolder>('POST', '/api/character-folders', {
+    name: '  Adventurers  ',
+  });
+  assert(characterFolder.name === 'Adventurers', 'character folder names are trimmed');
+  await expectStatus('POST', '/api/character-folders', { name: 'adventurers' }, 409);
+  await expectStatus('POST', '/api/characters', { name: 'Lost', folderId: 999999999 }, 400);
+  const folderCharacter = await req<Character>('POST', '/api/characters', {
+    name: 'Folder Hero',
+    folderId: characterFolder.id,
+  });
+  assert(
+    folderCharacter.folderId === characterFolder.id,
+    'a character can be assigned to a folder',
+  );
+  const renamedFolder = await req<CharacterFolder>(
+    'PATCH',
+    `/api/character-folders/${characterFolder.id}`,
+    { name: 'Heroes' },
+  );
+  assert(renamedFolder.name === 'Heroes', 'a character folder can be renamed');
+  await req('DELETE', `/api/character-folders/${characterFolder.id}`);
+  const ungroupedCharacter = (await req<Character[]>('GET', '/api/characters')).find(
+    (candidate) => candidate.id === folderCharacter.id,
+  );
+  assert(
+    ungroupedCharacter?.folderId === null,
+    'deleting a folder moves its characters back to the root',
+  );
+  await req('DELETE', `/api/characters/${folderCharacter.id}`);
+
   console.log('== character card import + greeting seeding ==');
   const bombRes = await fetch(`${BASE}/api/characters/import-card`, {
     method: 'POST',
@@ -1362,11 +1400,26 @@ async function main() {
   console.log('== avatar generation (prompt stream + comfy render) ==');
   const AVATAR_WORKFLOW =
     '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}';
+  const AVATAR_SYSTEM_TEMPLATE =
+    'Write a portrait image-generation prompt for {{name}}. Reply with only the prompt.';
+  const AVATAR_CONTEXT_TEMPLATE =
+    'Name: {{name}}\nAvatar details: {{description}}\nScenario: {{scenario}}\nFirst message: {{firstMessage}}';
   // The client builds the request from the plugin settings — do the same.
   await putSettings({
     pluginSettings: {
       imageGeneration: {
-        avatarPrompt: 'Portrait of {{char}}. Details: {{description}}. Setting: {{scenario}}.',
+        promptPresets: {
+          avatar: {
+            presets: [
+              {
+                name: 'Detailed',
+                prompt: AVATAR_SYSTEM_TEMPLATE,
+                context: AVATAR_CONTEXT_TEMPLATE,
+              },
+            ],
+            active: 'Detailed',
+          },
+        },
         comfyUrl: MOCK_CONTROL,
         workflows: [{ name: 'Avatar', json: AVATAR_WORKFLOW }],
         activeWorkflow: 'Avatar',
@@ -1375,11 +1428,19 @@ async function main() {
   });
   const imageGenCfg = ((await req<Settings>('GET', '/api/settings')).pluginSettings
     .imageGeneration as {
-    avatarPrompt: string;
+    promptPresets: {
+      avatar: {
+        presets: { name: string; prompt: string; context: string }[];
+        active: string;
+      };
+    };
     comfyUrl: string;
     workflows: { name: string; json: string }[];
     activeWorkflow: string;
   })!;
+  const avatarPreset = imageGenCfg.promptPresets.avatar.presets.find(
+    (preset) => preset.name === imageGenCfg.promptPresets.avatar.active,
+  )!;
   const avatarImage = {
     workflow: imageGenCfg.workflows.find((w) => w.name === imageGenCfg.activeWorkflow)!.json,
     comfyUrl: imageGenCfg.comfyUrl,
@@ -1388,14 +1449,19 @@ async function main() {
     name: 'Avatar Hero',
     personality: 'a brave knight with silver hair',
     scenario: 'a mountain keep',
+    firstMessage: 'Welcome to the keep. The winter wolves are close.',
   });
 
   /** Reads an avatar prompt SSE stream, returning the assembled text. */
-  const streamAvatarPrompt = async (path: string, prompt: string): Promise<string> => {
+  const streamAvatarPrompt = async (
+    path: string,
+    prompt: string,
+    context: string,
+  ): Promise<string> => {
     const res = await fetch(`${BASE}${path}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, context }),
     });
     assert(
       res.ok && res.headers.get('content-type')?.includes('text/event-stream') === true,
@@ -1420,14 +1486,15 @@ async function main() {
   // A second stream for the same entity 409s while the first is in flight.
   const firstStream = streamAvatarPrompt(
     `/api/characters/${avatarChar.id}/avatar/prompt`,
-    imageGenCfg.avatarPrompt,
+    avatarPreset.prompt,
+    avatarPreset.context,
   );
   // Let the first request reach the server and claim the per-entity slot.
   await new Promise((resolve) => setTimeout(resolve, 100));
   await expectStatus(
     'POST',
     `/api/characters/${avatarChar.id}/avatar/prompt`,
-    { prompt: imageGenCfg.avatarPrompt },
+    { prompt: avatarPreset.prompt, context: avatarPreset.context },
     409,
   );
   const avatarPrompt = await firstStream;
@@ -1440,7 +1507,7 @@ async function main() {
   const failedPromptRes = await fetch(`${BASE}/api/characters/${avatarChar.id}/avatar/prompt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: imageGenCfg.avatarPrompt }),
+    body: JSON.stringify({ prompt: avatarPreset.prompt, context: avatarPreset.context }),
   });
   const failedPromptBody = await failedPromptRes.text();
   assert(
@@ -1455,7 +1522,7 @@ async function main() {
   const cancelledPromptRes = await fetch(`${BASE}/api/characters/${avatarChar.id}/avatar/prompt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: imageGenCfg.avatarPrompt }),
+    body: JSON.stringify({ prompt: avatarPreset.prompt, context: avatarPreset.context }),
     signal: cancelledPrompt.signal,
   });
   assert(cancelledPromptRes.ok, 'cancellable avatar prompt stream opens');
@@ -1463,7 +1530,8 @@ async function main() {
   await new Promise((resolve) => setTimeout(resolve, 50));
   const reopenedPrompt = await streamAvatarPrompt(
     `/api/characters/${avatarChar.id}/avatar/prompt`,
-    imageGenCfg.avatarPrompt,
+    avatarPreset.prompt,
+    avatarPreset.context,
   );
   assert(reopenedPrompt.length > 0, 'aborting an avatar prompt releases its entity lock');
 
@@ -1473,13 +1541,16 @@ async function main() {
   ).json()) as { completion: { system: string | null; user: string | null } };
   assert(
     avatarCompletion.system ===
-      'Portrait of Avatar Hero. Details: a brave knight with silver hair. Setting: a mountain keep.',
-    'avatar prompt macros expand from the character fields',
+      'Write a portrait image-generation prompt for Avatar Hero. Reply with only the prompt.',
+    'avatar system prompt expands independently without duplicating character details',
   );
   assert(
-    avatarCompletion.user?.includes('Avatar Hero') === true &&
-      avatarCompletion.user.includes('a brave knight with silver hair'),
-    'the model is given the serialized character fields',
+    avatarCompletion.user ===
+      'Name: Avatar Hero\n' +
+        'Avatar details: a brave knight with silver hair\n' +
+        'Scenario: a mountain keep\n' +
+        'First message: Welcome to the keep. The winter wolves are close.',
+    'the model is given avatar details, scenario, and first message as context',
   );
 
   // Render: the (possibly edited) prompt goes in, image bytes come out.
@@ -1592,6 +1663,7 @@ async function main() {
   await streamAvatarPrompt(
     `/api/personas/${persona.id}/avatar/prompt`,
     'Portrait of {{user}}: {{description}}',
+    'Name: {{name}}\nAvatar details: {{description}}',
   );
   const { completion: personaCompletion } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-completion`)

@@ -1,5 +1,6 @@
 import type {
   Character,
+  CharacterFolder,
   Conversation,
   Endpoint,
   Persona,
@@ -77,6 +78,7 @@ async function streamAvatarPrompt(
   kind: 'character' | 'persona',
   id: number,
   prompt: string,
+  context: string,
   onDelta: (text: string) => void,
   signal?: AbortSignal,
 ): Promise<string> {
@@ -85,7 +87,7 @@ async function streamAvatarPrompt(
     {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, context }),
       signal: signal ?? null,
     },
   );
@@ -410,6 +412,13 @@ export const api = {
       rawBody: file,
       contentType: 'application/octet-stream',
     }),
+
+  characterFolders: () => request<CharacterFolder[]>('GET', '/api/character-folders'),
+  createCharacterFolder: (name: string) =>
+    request<CharacterFolder>('POST', '/api/character-folders', { name }),
+  patchCharacterFolder: (id: number, name: string) =>
+    request<CharacterFolder>('PATCH', `/api/character-folders/${id}`, { name }),
+  deleteCharacterFolder: (id: number) => request<void>('DELETE', `/api/character-folders/${id}`),
 
   templates: () => request<Template[]>('GET', '/api/templates'),
   createTemplate: (data: Partial<Template>) => request<Template>('POST', '/api/templates', data),

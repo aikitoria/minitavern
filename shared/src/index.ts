@@ -71,6 +71,8 @@ export interface Conversation {
 export interface Character {
   id: number;
   name: string;
+  /** Optional one-level grouping in character pickers. */
+  folderId: number | null;
   avatar: string | null;
   personality: string;
   scenario: string;
@@ -83,6 +85,12 @@ export interface Character {
   templateId: number | null;
   /** Inline template override; replaces templateId with the same three settings. */
   customTemplate: CustomTemplate | null;
+  createdAt: number;
+}
+
+export interface CharacterFolder {
+  id: number;
+  name: string;
   createdAt: number;
 }
 
@@ -281,7 +289,14 @@ export interface TreeSnapshot {
 }
 
 export type InvalidateEntity =
-  'conversations' | 'characters' | 'presets' | 'templates' | 'personas' | 'endpoints' | 'settings';
+  | 'conversations'
+  | 'characters'
+  | 'characterFolders'
+  | 'presets'
+  | 'templates'
+  | 'personas'
+  | 'endpoints'
+  | 'settings';
 
 /** Structural view of a message; body fields travel separately in tree patches. */
 export interface TreeNode {

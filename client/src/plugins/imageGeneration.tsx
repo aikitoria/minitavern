@@ -50,6 +50,8 @@ interface ImageWorkflow {
 interface ImagePromptPreset {
   name: string;
   prompt: string;
+  /** Optional second message paired with this preset (avatar presets only). */
+  context?: string;
 }
 
 interface ImagePromptPresetSet {
@@ -82,8 +84,11 @@ const DEFAULT_PROMPTS: Record<ImagePromptKind, string> = {
     "Describe {{char}}'s face and current appearance as a single detailed close-up portrait image-generation prompt. Focus on facial features, hair, expression, and lighting, and apply this instruction: {{instruction}}. Reply with only the prompt.",
   instruction: '{{instruction}}',
   avatar:
-    'Write an image-generation prompt for a portrait avatar of {{char}}, based on their description: {{description}}. Head and shoulders, facing forward. Reply with only the prompt.',
+    'Write an image-generation prompt for a portrait avatar. Head and shoulders, facing forward. Reply with only the prompt.',
 };
+
+const DEFAULT_AVATAR_CONTEXT =
+  'Name: {{name}}\nAvatar details: {{description}}\nScenario: {{scenario}}\nFirst message: {{firstMessage}}';
 
 const DEFAULTS: ImageGenSettings = {
   promptPresets: {
@@ -106,11 +111,13 @@ const WORKFLOW_MACROS: [string, string][] = [
 ];
 
 const AVATAR_MACROS: [string, string][] = [
+  ['{{name}}', 'Character or persona name'],
   ['{{char}}', 'Character name (characters only)'],
   ['{{user}}', 'Persona name (the default persona for characters)'],
   ['{{description}}', 'Character personality / persona description'],
   ['{{personality}}', 'Character personality (characters only)'],
   ['{{scenario}}', 'Character scenario (characters only)'],
+  ['{{firstMessage}}', 'Character first message (characters only)'],
 ];
 
 function normalizePromptPresets(
@@ -126,7 +133,9 @@ function normalizePromptPresets(
   if (raw && Array.isArray(raw.presets)) {
     const presets = raw.presets.filter(
       (preset): preset is ImagePromptPreset =>
-        typeof preset?.name === 'string' && typeof preset.prompt === 'string',
+        typeof preset?.name === 'string' &&
+        typeof preset.prompt === 'string' &&
+        (preset.context === undefined || typeof preset.context === 'string'),
     );
     const active =
       typeof raw.active === 'string' && presets.some((preset) => preset.name === raw.active)
@@ -214,9 +223,15 @@ export function avatarGenerationAvailable(): boolean {
   return avatarRenderConfig() != null;
 }
 
-/** The avatarPrompt template, expanded server-side by the prompt stream route. */
-export function avatarPromptTemplate(): string {
-  return selectedPrompt(settings(), 'avatar');
+/** The active avatar preset's paired system/context templates. Both expand
+ * server-side, where the entity fields are authoritative. */
+export function avatarPromptTemplates(): { prompt: string; context: string } {
+  const selection = settings().promptPresets.avatar;
+  const preset = selection.presets.find((candidate) => candidate.name === selection.active);
+  return {
+    prompt: preset?.prompt ?? DEFAULT_PROMPTS.avatar,
+    context: preset?.context ?? DEFAULT_AVATAR_CONTEXT,
+  };
 }
 
 /** Streams the image description into a tool message as a foreground
@@ -270,10 +285,14 @@ function PromptPresetEditor(props: {
   label: JSX.Element;
   defaultPrompt: string;
   extraKeys?: string[];
+  defaultContext?: string;
+  contextLabel?: JSX.Element;
+  contextExtraKeys?: string[];
   ref?: PromptPresetEditorHandle | ((handle: PromptPresetEditorHandle) => void);
 }) {
   let nameEl!: HTMLInputElement;
   let promptEl!: HTMLTextAreaElement;
+  let contextEl!: HTMLTextAreaElement;
   let pickerEl!: SelectHandle;
   const [presets, setPresets] = createSignal<ImagePromptPreset[]>([]);
   /** Index into presets(); -1 = built-in Default. */
@@ -282,9 +301,14 @@ function PromptPresetEditor(props: {
 
   const currentPresets = () => {
     const idx = selected();
-    return presets().map((preset, i) =>
-      i === idx ? { name: nameEl.value.trim() || preset.name, prompt: promptEl.value } : preset,
-    );
+    return presets().map((preset, i) => {
+      if (i !== idx) return preset;
+      return {
+        name: nameEl.value.trim() || preset.name,
+        prompt: promptEl.value,
+        ...(props.defaultContext === undefined ? {} : { context: contextEl.value }),
+      };
+    });
   };
 
   const stash = () => setPresets(currentPresets());
@@ -297,6 +321,10 @@ function PromptPresetEditor(props: {
     nameEl.value = preset?.name ?? '';
     promptEl.value = preset?.prompt ?? props.defaultPrompt;
     promptEl.readOnly = idx === -1;
+    if (props.defaultContext !== undefined) {
+      contextEl.value = preset?.context ?? props.defaultContext;
+      contextEl.readOnly = idx === -1;
+    }
   };
 
   const pick = (idx: number) => {
@@ -306,11 +334,19 @@ function PromptPresetEditor(props: {
 
   const add = () => {
     const startingPrompt = promptEl.value;
+    const startingContext = props.defaultContext === undefined ? undefined : contextEl.value;
     stash();
     setPresets((list) => {
       let n = list.length + 1;
       while (list.some((preset) => preset.name === `Preset ${n}`)) n++;
-      return [...list, { name: `Preset ${n}`, prompt: startingPrompt }];
+      return [
+        ...list,
+        {
+          name: `Preset ${n}`,
+          prompt: startingPrompt,
+          ...(startingContext === undefined ? {} : { context: startingContext }),
+        },
+      ];
     });
     showPreset(presets().length - 1);
     setRenaming(true);
@@ -383,12 +419,24 @@ function PromptPresetEditor(props: {
           <button onClick={finishRename}>Done</button>
         </div>
       </div>
+      <Show when={props.defaultContext !== undefined}>
+        <label>System instruction</label>
+      </Show>
       <MacroTextarea
         ref={promptEl}
         rows={4}
         extraKeys={props.extraKeys}
         classList={{ 'prompt-default': selected() === -1 }}
       />
+      <Show when={props.defaultContext !== undefined}>
+        <label>{props.contextLabel ?? 'Context'}</label>
+        <MacroTextarea
+          ref={contextEl}
+          rows={4}
+          extraKeys={props.contextExtraKeys}
+          classList={{ 'prompt-default': selected() === -1 }}
+        />
+      </Show>
       <Show when={selected() === -1}>
         <span class="prompt-preset-status">Built-in default · create a preset to customize</span>
       </Show>
@@ -631,10 +679,13 @@ function SettingsPage() {
       <PromptPresetEditor
         ref={avatarEditor}
         defaultPrompt={DEFAULT_PROMPTS.avatar}
-        extraKeys={['description', 'personality', 'scenario']}
+        extraKeys={['name', 'description', 'personality', 'scenario', 'firstMessage']}
+        defaultContext={DEFAULT_AVATAR_CONTEXT}
+        contextExtraKeys={['name', 'description', 'personality', 'scenario', 'firstMessage']}
+        contextLabel="Character context"
         label={
           <>
-            Avatar prompt — the model writes the portrait prompt for the Generate avatar button{' '}
+            Avatar prompt — system instruction and context for the Generate avatar button{' '}
             <MacroHelp extra={AVATAR_MACROS} />
           </>
         }

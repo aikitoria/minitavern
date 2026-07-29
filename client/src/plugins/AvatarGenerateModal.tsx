@@ -2,7 +2,7 @@ import { Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { api } from '../state/api.ts';
 import { errorMessage } from '../util.ts';
 import Modal from '../components/Modal.tsx';
-import { avatarPromptTemplate, avatarRenderConfig } from './imageGeneration.tsx';
+import { avatarPromptTemplates, avatarRenderConfig } from './imageGeneration.tsx';
 
 /**
  * Interactive avatar generation popup: streams the LLM portrait prompt into
@@ -107,10 +107,12 @@ export default function AvatarGenerateModal(props: {
     void (async () => {
       let completed = false;
       try {
+        const templates = avatarPromptTemplates();
         await api.streamAvatarPrompt(
           props.kind,
           props.id,
-          avatarPromptTemplate(),
+          templates.prompt,
+          templates.context,
           (d) => setText((t) => t + d),
           promptAbort.signal,
         );

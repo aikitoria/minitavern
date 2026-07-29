@@ -2,6 +2,7 @@ import { createMemo, createRoot, createSignal, batch } from 'solid-js';
 import { createStore, produce, reconcile } from 'solid-js/store';
 import type {
   Character,
+  CharacterFolder,
   Conversation,
   Endpoint,
   InvalidateEntity,
@@ -46,6 +47,7 @@ interface TreeState {
 interface AppState {
   conversations: Conversation[];
   characters: Character[];
+  characterFolders: CharacterFolder[];
   presets: Preset[];
   templates: Template[];
   personas: Persona[];
@@ -69,6 +71,7 @@ interface AppState {
 export const [state, setState] = createStore<AppState>({
   conversations: [],
   characters: [],
+  characterFolders: [],
   presets: [],
   templates: [],
   personas: [],
@@ -232,6 +235,9 @@ const loaders: Record<InvalidateEntity, () => Promise<void>> = {
   }),
   characters: loader('characters', api.characters, (data) =>
     setState('characters', reconcile(data, { key: 'id' })),
+  ),
+  characterFolders: loader('characterFolders', api.characterFolders, (data) =>
+    setState('characterFolders', reconcile(data, { key: 'id' })),
   ),
   presets: loader('presets', api.presets, (data) =>
     setState('presets', reconcile(data, { key: 'id' })),

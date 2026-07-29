@@ -654,6 +654,24 @@ textarea.mono,
   background: var(--bg-hover);
 }
 
+.new-chat-menu .new-chat-folder-toggle {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.new-chat-menu .new-chat-folder-child {
+  padding-left: calc(var(--space-3) + 22px);
+}
+
+.tree-disclosure {
+  width: 10px;
+  flex: 0 0 10px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
 .conv-list {
   flex: 1;
   overflow-y: auto;
@@ -2009,6 +2027,67 @@ textarea.mono,
   font-size: 12px;
 }
 
+.entity-list .character-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.entity-list .character-folder-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  align-items: center;
+}
+
+.entity-list .character-folder-row > button {
+  min-height: 34px;
+  padding: var(--space-1) var(--space-2);
+}
+
+.entity-list .character-folder-toggle {
+  min-width: 0;
+}
+
+.character-folder-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.entity-list .character-folder-action {
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.entity-list .character-folder-row:hover .character-folder-action,
+.entity-list .character-folder-row:focus-within .character-folder-action {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+}
+
+.entity-list .character-tree-child {
+  margin-left: 20px;
+  padding-left: 24px;
+  position: relative;
+}
+
+.entity-list .character-tree-child::before {
+  position: absolute;
+  left: 6px;
+  color: var(--border);
+  content: '└';
+}
+
+.entity-list .character-folder-empty {
+  padding: var(--space-1) var(--space-3) var(--space-2) 38px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
 /* ---- Mobile ---- */
 
 /* Mobile layout: narrow viewports, or any touch device up to tablet width
@@ -2040,6 +2119,12 @@ textarea.mono,
   .conv-duplicate,
   .conv-delete {
     display: inline-flex;
+  }
+
+  .entity-list .character-folder-action {
+    opacity: 1;
+    visibility: visible;
+    pointer-events: auto;
   }
 
   /* Tighter messages: no avatars, tools inline with the author name. */

@@ -1,4 +1,5 @@
-import { Show, createSignal } from 'solid-js';
+import { For, Show, createSignal } from 'solid-js';
+import type { Character } from '@minitavern/shared';
 import { DEFAULT_PROMPT_TEMPLATE, DEFAULT_STEER_TEMPLATE } from '@minitavern/shared';
 import { api } from '../../state/api.ts';
 import { state } from '../../state/store.ts';
@@ -18,6 +19,7 @@ export default function CharactersTab() {
   const [customTemplate, setCustomTemplate] = createSignal(false);
   const [avatarGen, setAvatarGen] = createSignal(false);
   let nameEl!: HTMLInputElement;
+  let folderEl!: SelectHandle;
   let personalityEl!: HTMLTextAreaElement;
   let scenarioEl!: HTMLTextAreaElement;
   let examplesEl!: HTMLTextAreaElement;
@@ -36,6 +38,7 @@ export default function CharactersTab() {
     items: () => state.characters,
     load: (character) => {
       nameEl.value = character?.name ?? '';
+      folderEl.value = String(character?.folderId ?? '');
       personalityEl.value = character?.personality ?? '';
       scenarioEl.value = character?.scenario ?? '';
       examplesEl.value = character?.examples ?? '';
@@ -58,6 +61,7 @@ export default function CharactersTab() {
       const templateChoice = templateEl.value;
       return {
         name: nameEl.value,
+        folderId: folderEl.value ? Number(folderEl.value) : null,
         personality: personalityEl.value,
         scenario: scenarioEl.value,
         examples: examplesEl.value,
@@ -83,6 +87,64 @@ export default function CharactersTab() {
     deletePrompt: 'Delete this character?',
   });
 
+  const [collapsedFolders, setCollapsedFolders] = createSignal<ReadonlySet<number>>(new Set());
+  const toggleFolder = (id: number) => {
+    setCollapsedFolders((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const characterFolderExists = (id: number) => state.characterFolders.some((f) => f.id === id);
+  const rootCharacters = () =>
+    state.characters.filter(
+      (character) => character.folderId == null || !characterFolderExists(character.folderId),
+    );
+  const charactersInFolder = (id: number) =>
+    state.characters.filter((character) => character.folderId === id);
+
+  const createFolder = async () => {
+    const name = prompt('Folder name?')?.trim();
+    if (!name) return;
+    try {
+      await api.createCharacterFolder(name);
+    } catch (err) {
+      editor.setStatus(errorMessage(err));
+    }
+  };
+
+  const renameFolder = async (id: number, currentName: string) => {
+    const name = prompt('Rename folder:', currentName)?.trim();
+    if (!name || name === currentName) return;
+    try {
+      await api.patchCharacterFolder(id, name);
+    } catch (err) {
+      editor.setStatus(errorMessage(err));
+    }
+  };
+
+  const deleteFolder = async (id: number, name: string) => {
+    if (!confirm(`Delete the “${name}” folder? Its characters will move to the root.`)) return;
+    try {
+      await api.deleteCharacterFolder(id);
+    } catch (err) {
+      editor.setStatus(errorMessage(err));
+    }
+  };
+
+  const CharacterButton = (props: { character: Character; child?: boolean }) => (
+    <button
+      classList={{
+        active: editor.selectedId() === props.character.id,
+        'character-tree-child': props.child,
+      }}
+      onClick={() => editor.select(props.character.id)}
+    >
+      <Avatar src={props.character.avatar} name={props.character.name} /> {props.character.name}
+    </button>
+  );
+
   const importCard = async (file: File | undefined) => {
     if (!file) return;
     editor.setStatus('Importing…');
@@ -106,10 +168,13 @@ export default function CharactersTab() {
           <Avatar src={character.avatar} name={character.name} /> {character.name}
         </>
       )}
-      newLabel="+ New"
+      newLabel="New"
       listActions={
         <>
-          <button onClick={() => cardInput.click()}>⇪ Import PNG</button>
+          <button onClick={() => void createFolder()}>Folder</button>
+          <button title="Import character PNG" onClick={() => cardInput.click()}>
+            Import
+          </button>
           <input
             ref={cardInput}
             type="file"
@@ -117,6 +182,54 @@ export default function CharactersTab() {
             hidden
             onChange={(e) => void importCard(e.currentTarget.files?.[0])}
           />
+        </>
+      }
+      listContent={
+        <>
+          <For each={state.characterFolders}>
+            {(folder) => (
+              <section class="character-folder">
+                <div class="character-folder-row">
+                  <button
+                    class="character-folder-toggle"
+                    aria-expanded={!collapsedFolders().has(folder.id)}
+                    title={collapsedFolders().has(folder.id) ? 'Expand folder' : 'Collapse folder'}
+                    onClick={() => toggleFolder(folder.id)}
+                  >
+                    <span class="tree-disclosure">
+                      {collapsedFolders().has(folder.id) ? '▸' : '▾'}
+                    </span>
+                    <span class="character-folder-name">{folder.name}</span>
+                  </button>
+                  <button
+                    class="character-folder-action"
+                    title="Rename folder"
+                    onClick={() => void renameFolder(folder.id, folder.name)}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    class="character-folder-action"
+                    title="Delete folder"
+                    onClick={() => void deleteFolder(folder.id, folder.name)}
+                  >
+                    ×
+                  </button>
+                </div>
+                <Show when={!collapsedFolders().has(folder.id)}>
+                  <For each={charactersInFolder(folder.id)}>
+                    {(character) => <CharacterButton character={character} child />}
+                  </For>
+                  <Show when={charactersInFolder(folder.id).length === 0}>
+                    <span class="character-folder-empty">Empty folder</span>
+                  </Show>
+                </Show>
+              </section>
+            )}
+          </For>
+          <For each={rootCharacters()}>
+            {(character) => <CharacterButton character={character} />}
+          </For>
         </>
       }
       extraActions={
@@ -152,6 +265,17 @@ export default function CharactersTab() {
 
       <label>Name</label>
       <input ref={nameEl} placeholder="Character name" />
+      <label>Folder</label>
+      <Select
+        ref={folderEl}
+        options={[
+          { value: '', label: 'No folder' },
+          ...state.characterFolders.map((folder) => ({
+            value: String(folder.id),
+            label: folder.name,
+          })),
+        ]}
+      />
       <label>
         Personality <MacroHelp />
       </label>

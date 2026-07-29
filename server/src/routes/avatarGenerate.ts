@@ -85,7 +85,7 @@ async function streamRenderProgress(ctx: Ctx): Promise<void> {
  * unsupported or unknown macros are left untouched. */
 function expandAvatarMacros(template: string, vars: Record<string, string>): string {
   return template.replaceAll(
-    /\{\{(char|user|description|personality|scenario)\}\}/gi,
+    /\{\{(name|char|user|description|personality|scenario|firstMessage)\}\}/gi,
     (match, key: string) =>
       Object.hasOwn(vars, key.toLowerCase()) ? vars[key.toLowerCase()]! : match,
   );
@@ -103,6 +103,8 @@ async function streamAvatarPrompt(kind: AvatarKind, ctx: Ctx) {
   const b = objectBody(ctx.body);
   const prompt = typeof b.prompt === 'string' ? b.prompt.trim() : '';
   if (!prompt) throw new HttpError(400, 'prompt is required');
+  const context = typeof b.context === 'string' ? b.context.trim() : null;
+  if (b.context !== undefined && !context) throw new HttpError(400, 'context is required');
   const table = kind === 'character' ? 'characters' : 'personas';
   const row = rowById(table, id);
   const key = `${kind}:${id}`;
@@ -122,29 +124,38 @@ async function streamAvatarPrompt(kind: AvatarKind, ctx: Ctx) {
     const vars: Record<string, string> =
       kind === 'character'
         ? {
+            name: row.name as string,
             char: row.name as string,
             user: getPersona(getSettings().defaultPersonaId)?.name ?? 'User',
             description: row.personality as string,
             personality: row.personality as string,
             scenario: row.scenario as string,
+            firstmessage: row.first_message as string,
           }
         : {
+            name: row.name as string,
             user: row.name as string,
             description: row.description as string,
+            scenario: '',
+            firstmessage: '',
           };
     const system = expandAvatarMacros(prompt, vars);
-    const user = serializeFields(
-      kind === 'character'
-        ? [
-            ['Name', row.name as string],
-            ['Description', row.personality as string],
-            ['Scenario', row.scenario as string],
-          ]
-        : [
-            ['Name', row.name as string],
-            ['Description', row.description as string],
-          ],
-    );
+    const user = context
+      ? expandAvatarMacros(context, vars)
+      : serializeFields(
+          kind === 'character'
+            ? [
+                ['Name', row.name as string],
+                ['Avatar details', row.personality as string],
+                ['Scenario', row.scenario as string],
+                ['First message', row.first_message as string],
+              ]
+            : [
+                ['Name', row.name as string],
+                ['Description', row.description as string],
+              ],
+        );
+    if (!user.trim()) throw new HttpError(400, 'context must produce non-empty text');
     // SSE from here on — failures mid-stream go out as error events, not HTTP.
     ctx.res.writeHead(200, {
       'content-type': 'text/event-stream',
