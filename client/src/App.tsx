@@ -7,6 +7,8 @@ import Composer from './components/Composer.tsx';
 import { TreeSearch } from './components/TreeView.tsx';
 import SettingsModal from './components/SettingsModal.tsx';
 import ConversationSettings from './components/ConversationSettings.tsx';
+import PasswordGate from './components/PasswordGate.tsx';
+import { authPhase } from './state/auth.ts';
 
 export default function App() {
   // Boot is one-way: once booting() clears, fade the cover out and unmount it
@@ -16,38 +18,40 @@ export default function App() {
     if (!booting()) setTimeout(() => setBootGone(true), 350);
   });
   return (
-    <div class="app" classList={{ 'sidebar-open': state.sidebarOpen }}>
-      <Show when={!bootGone()}>
-        <div class="boot-screen" classList={{ 'boot-done': !booting() }}>
-          <img src="/icon.svg" alt="" width="72" height="72" />
-          <span class="boot-name">MiniTavern</span>
-          <span class="boot-dots">
-            <i />
-            <i />
-            <i />
-          </span>
-        </div>
-      </Show>
-      <Sidebar />
-      <Show when={state.sidebarOpen}>
-        <div class="backdrop" onClick={() => setState('sidebarOpen', false)} />
-      </Show>
-      <main class="main">
-        <Header />
-        <ChatView />
-        <Show when={state.viewMode === 'tree'} fallback={<Composer />}>
-          <TreeSearch />
+    <Show when={authPhase() !== 'locked'} fallback={<PasswordGate />}>
+      <div class="app" classList={{ 'sidebar-open': state.sidebarOpen }}>
+        <Show when={!bootGone()}>
+          <div class="boot-screen" classList={{ 'boot-done': !booting() }}>
+            <img src="/icon.svg" alt="" width="72" height="72" />
+            <span class="boot-name">MiniTavern</span>
+            <span class="boot-dots">
+              <i />
+              <i />
+              <i />
+            </span>
+          </div>
         </Show>
-      </main>
-      <Show when={state.modal === 'settings'}>
-        <SettingsModal />
-      </Show>
-      <Show when={state.modal === 'conversation'}>
-        <ConversationSettings />
-      </Show>
-      <div class="toasts">
-        <For each={state.toasts}>{(t) => <div class="toast">{t.text}</div>}</For>
+        <Sidebar />
+        <Show when={state.sidebarOpen}>
+          <div class="backdrop" onClick={() => setState('sidebarOpen', false)} />
+        </Show>
+        <main class="main">
+          <Header />
+          <ChatView />
+          <Show when={state.viewMode === 'tree'} fallback={<Composer />}>
+            <TreeSearch />
+          </Show>
+        </main>
+        <Show when={state.modal === 'settings'}>
+          <SettingsModal />
+        </Show>
+        <Show when={state.modal === 'conversation'}>
+          <ConversationSettings />
+        </Show>
+        <div class="toasts">
+          <For each={state.toasts}>{(t) => <div class="toast">{t.text}</div>}</For>
+        </div>
       </div>
-    </div>
+    </Show>
   );
 }

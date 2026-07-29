@@ -2,16 +2,19 @@ import type { Settings } from '@minitavern/shared';
 import { DEFAULT_SETTINGS } from '@minitavern/shared';
 import { route, HttpError } from '../router.ts';
 import { getSettings, putSettings } from '../settingsStore.ts';
-import { invalidate } from '../events.ts';
+import { disconnectAllForAuthChange, invalidate } from '../events.ts';
 import { requireReference, type EntityTable } from './entityUtils.ts';
 import { objectBody, optionalBoolean, optionalNullableId, optionalNumber } from '../validation.ts';
 import { discardSpeculativeSwipes } from '../speculation.ts';
 import { subscribedConversationIds } from '../events.ts';
 import { prepareActiveSwipe } from './conversations.ts';
+import { bumpAllConversationRevisions } from '../conversationRevision.ts';
+import { broadcastTree } from '../sync.ts';
+import { clearSession, setAccessPassword, startSession, validateNewPassword } from '../auth.ts';
 
 route.get('/api/settings', () => getSettings());
 
-route.put('/api/settings', ({ body }) => {
+route.put('/api/settings', ({ req, res, body }) => {
   const b = objectBody(body);
   const current = getSettings();
   const expectedRevision = optionalNumber(b, 'expectedRevision');
@@ -36,6 +39,14 @@ route.put('/api/settings', ({ body }) => {
   }
   const autoExpandThinking = optionalBoolean(b, 'autoExpandThinking');
   const backgroundSwipeGeneration = optionalBoolean(b, 'backgroundSwipeGeneration');
+  const accessPassword = b.accessPassword;
+  if (accessPassword !== undefined) {
+    try {
+      validateNewPassword(accessPassword);
+    } catch (err) {
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
+    }
+  }
   const pluginSettings = b.pluginSettings as Settings['pluginSettings'] | undefined;
   if (pluginSettings !== undefined) {
     const isPlainObject = (v: unknown) => typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -49,10 +60,16 @@ route.put('/api/settings', ({ body }) => {
     ...Object.fromEntries(Object.entries(ids).filter(([, value]) => value !== undefined)),
     ...(autoExpandThinking === undefined ? {} : { autoExpandThinking }),
     ...(backgroundSwipeGeneration === undefined ? {} : { backgroundSwipeGeneration }),
+    ...(accessPassword === undefined ? {} : { hasPassword: accessPassword !== null }),
     ...(pluginSettings === undefined ? {} : { pluginSettings }),
     revision: current.revision + 1,
   };
   putSettings(next);
+  if (accessPassword !== undefined) {
+    setAccessPassword(accessPassword as string | null);
+    if (accessPassword === null) clearSession(req, res);
+    else startSession(req, res);
+  }
   const generationContextChanged =
     current.activeEndpointId !== next.activeEndpointId ||
     current.defaultPresetId !== next.defaultPresetId ||
@@ -63,9 +80,21 @@ route.put('/api/settings', ({ body }) => {
   ) {
     discardSpeculativeSwipes();
   }
+  if (generationContextChanged) {
+    bumpAllConversationRevisions();
+    for (const conversationId of subscribedConversationIds()) broadcastTree(conversationId);
+  }
   if (!current.backgroundSwipeGeneration && next.backgroundSwipeGeneration) {
     for (const conversationId of subscribedConversationIds()) prepareActiveSwipe(conversationId);
   }
-  invalidate('settings');
+  if (accessPassword === undefined) invalidate('settings');
+  else {
+    // Let the PUT response (and its replacement cookie) reach the initiating
+    // browser before peers are told to reauthenticate.
+    setImmediate(() => {
+      invalidate('settings');
+      disconnectAllForAuthChange();
+    });
+  }
   return next;
 });

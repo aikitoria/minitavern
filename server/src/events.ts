@@ -1,7 +1,8 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import type { ClientCommand, InvalidateEntity, ServerEvent } from '@minitavern/shared';
-import { isRequestIpAllowed } from './ipAccess.ts';
+import { isRequestIpAllowed, isRequestOriginAllowed } from './ipAccess.ts';
+import { isRequestAuthenticated } from './auth.ts';
 
 const clients = new Map<WebSocket, { sub: number | null; alive: boolean }>();
 let onSubscribe: ((ws: WebSocket, conversationId: number) => void) | null = null;
@@ -16,8 +17,11 @@ export function initWebSocket(server: Server): void {
     server,
     path: '/ws',
     verifyClient: ({ req }, done) => {
-      if (isRequestIpAllowed(req)) done(true);
-      else done(false, 403, 'IP address is not allowed');
+      if (!isRequestIpAllowed(req)) done(false, 403, 'IP address is not allowed');
+      else if (!isRequestOriginAllowed(req))
+        done(false, 403, 'cross-site requests are not allowed');
+      else if (!isRequestAuthenticated(req)) done(false, 401, 'authentication required');
+      else done(true);
     },
   });
   wss.on('connection', (ws) => {
@@ -57,6 +61,11 @@ export function initWebSocket(server: Server): void {
   }, 30_000);
   heartbeat.unref();
   wss.on('close', () => clearInterval(heartbeat));
+}
+
+/** Password changes invalidate sessions, including already-upgraded sockets. */
+export function disconnectAllForAuthChange(): void {
+  for (const ws of clients.keys()) ws.close(4001, 'authentication changed');
 }
 
 export function sendTo(ws: WebSocket, ev: ServerEvent): void {

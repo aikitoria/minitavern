@@ -24,6 +24,7 @@ interface Route {
   paramNames: string[];
   handler: Handler;
   rawBody: boolean;
+  maxBodyBytes: number;
 }
 
 const routes: Route[] = [];
@@ -32,7 +33,7 @@ function add(
   method: string,
   pattern: string,
   handler: Handler,
-  opts?: { rawBody?: boolean },
+  opts?: { rawBody?: boolean; maxBodyBytes?: number },
 ): void {
   const paramNames: string[] = [];
   const regexSrc = pattern.replace(/:([a-zA-Z]+)/g, (_, name: string) => {
@@ -45,26 +46,29 @@ function add(
     paramNames,
     handler,
     rawBody: opts?.rawBody ?? false,
+    maxBodyBytes: opts?.maxBodyBytes ?? MAX_BODY,
   });
 }
 
 export const route = {
   get: (p: string, h: Handler) => add('GET', p, h),
-  post: (p: string, h: Handler, opts?: { rawBody?: boolean }) => add('POST', p, h, opts),
-  put: (p: string, h: Handler, opts?: { rawBody?: boolean }) => add('PUT', p, h, opts),
+  post: (p: string, h: Handler, opts?: { rawBody?: boolean; maxBodyBytes?: number }) =>
+    add('POST', p, h, opts),
+  put: (p: string, h: Handler, opts?: { rawBody?: boolean; maxBodyBytes?: number }) =>
+    add('PUT', p, h, opts),
   patch: (p: string, h: Handler) => add('PATCH', p, h),
   del: (p: string, h: Handler) => add('DELETE', p, h),
 };
 
 const MAX_BODY = 32 * 1024 * 1024;
 
-function readBody(req: IncomingMessage): Promise<Buffer> {
+function readBody(req: IncomingMessage, maxBytes: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
     req.on('data', (chunk: Buffer) => {
       size += chunk.length;
-      if (size > MAX_BODY) {
+      if (size > maxBytes) {
         // Don't destroy the socket — that would reset the connection before
         // the 413 response could be delivered. Stop buffering and drain the
         // rest of the body so the response goes out on a healthy connection.
@@ -102,7 +106,7 @@ export async function dispatch(
       let body: unknown = null;
       let raw: Buffer | null = null;
       if (req.method !== 'GET' && req.method !== 'DELETE') {
-        const buf = await readBody(req);
+        const buf = await readBody(req, r.maxBodyBytes);
         if (r.rawBody) raw = buf;
         else if (buf.length > 0) {
           try {

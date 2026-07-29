@@ -10,7 +10,13 @@ import { dispatch } from './router.ts';
 import { initWebSocket, setSubscribeHandler, subscribedConversationIds } from './events.ts';
 import { sendTreeTo } from './sync.ts';
 import { prepareActiveSwipe } from './routes/conversations.ts';
-import { configuredIpAllowlist, isRequestIpAllowed, requestIp } from './ipAccess.ts';
+import {
+  configuredIpAllowlist,
+  isRequestIpAllowed,
+  isRequestOriginAllowed,
+  requestIp,
+} from './ipAccess.ts';
+import { isRequestAuthenticated } from './auth.ts';
 import { setSpeculativeRefillHandler } from './speculation.ts';
 import { sweepOrphanedImages } from './images.ts';
 import './routes/messages.ts';
@@ -21,6 +27,9 @@ import './routes/characters.ts';
 import './routes/avatarGenerate.ts';
 import './routes/endpoints.ts';
 import './routes/settings.ts';
+import './routes/conversationTransfer.ts';
+import './routes/draftCompletion.ts';
+import './routes/auth.ts';
 
 const PORT = Number(process.env.PORT ?? 5487);
 const CLIENT_DIST = process.env.CLIENT_DIST ?? '';
@@ -37,12 +46,18 @@ const MIME: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
 };
 
-async function serveFile(res: ServerResponse, path: string, immutable: boolean): Promise<boolean> {
+async function serveFile(
+  res: ServerResponse,
+  path: string,
+  immutable: boolean,
+  extraHeaders: Record<string, string> = {},
+): Promise<boolean> {
   try {
     const info = await stat(path);
     if (!info.isFile()) return false;
@@ -51,6 +66,7 @@ async function serveFile(res: ServerResponse, path: string, immutable: boolean):
       'content-type': MIME[extname(path)] ?? 'application/octet-stream',
       'content-length': data.length,
       'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+      ...extraHeaders,
     });
     res.end(data);
     return true;
@@ -78,6 +94,27 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   const pathname = url.pathname;
 
   if (pathname.startsWith('/api/')) {
+    // API responses may contain conversations or credentials. Never retain
+    // them in a browser or intermediary cache across logout/password changes.
+    res.setHeader('cache-control', 'private, no-store');
+    if (!isRequestOriginAllowed(req)) {
+      res
+        .writeHead(403, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: 'cross-site requests are not allowed' }));
+      return;
+    }
+    // These are the only API endpoints needed before login. The IP and
+    // same-origin checks above still apply; all application data stays gated.
+    const publicAuthEndpoint =
+      pathname === '/api/auth/status' ||
+      pathname === '/api/auth/login' ||
+      pathname === '/api/auth/logout';
+    if (!publicAuthEndpoint && !isRequestAuthenticated(req)) {
+      res
+        .writeHead(401, { 'content-type': 'application/json' })
+        .end(JSON.stringify({ error: 'authentication required' }));
+      return;
+    }
     if (await dispatch(req, res, pathname)) return;
     res
       .writeHead(404, { 'content-type': 'application/json' })
@@ -86,16 +123,38 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse): Promise
   }
 
   if (pathname.startsWith('/avatars/')) {
+    if (!isRequestAuthenticated(req)) {
+      res.writeHead(401).end();
+      return;
+    }
     const path = safeJoin(AVATAR_DIR, pathname.slice('/avatars/'.length));
-    if (path && (await serveFile(res, path, false))) return;
+    if (path && (await serveFile(res, path, false, { 'cache-control': 'private, no-store' })))
+      return;
     res.writeHead(404).end();
     return;
   }
 
   if (pathname.startsWith('/images/')) {
-    // Generated images never change once written — serve immutable.
+    if (!isRequestAuthenticated(req)) {
+      res.writeHead(401).end();
+      return;
+    }
+    const imageExt = extname(pathname).toLowerCase();
+    if (!['.png', '.jpg', '.jpeg', '.webp'].includes(imageExt)) {
+      res.writeHead(404).end();
+      return;
+    }
+    // Media is user data: force every load through the session check above.
     const path = safeJoin(IMAGES_DIR, pathname.slice('/images/'.length));
-    if (path && (await serveFile(res, path, true))) return;
+    if (
+      path &&
+      (await serveFile(res, path, true, {
+        'x-content-type-options': 'nosniff',
+        'content-security-policy': "default-src 'none'; sandbox",
+        'cache-control': 'no-store',
+      }))
+    )
+      return;
     res.writeHead(404).end();
     return;
   }

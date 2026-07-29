@@ -4,20 +4,24 @@ let sock: WebSocket | null = null;
 let currentSub: number | null = null;
 let retryDelay = 500;
 let started = false;
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 // Set lazily to break the import cycle with store.ts.
 let onEvent: ((ev: ServerEvent) => void) | null = null;
 let onOpen: (() => void) | null = null;
 let onStatus: ((connected: boolean) => void) | null = null;
+let onUnauthorized: (() => void) | null = null;
 
 export function configureWs(handlers: {
   onEvent: (ev: ServerEvent) => void;
   onOpen: () => void;
   onStatus: (connected: boolean) => void;
+  onUnauthorized: () => void;
 }): void {
   onEvent = handlers.onEvent;
   onOpen = handlers.onOpen;
   onStatus = handlers.onStatus;
+  onUnauthorized = handlers.onUnauthorized;
 }
 
 function connect(): void {
@@ -38,10 +42,12 @@ function connect(): void {
       console.error('[ws] bad event:', err);
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (event) => {
     onStatus?.(false);
     sock = null;
-    setTimeout(connect, retryDelay);
+    if (event.code === 4001) onUnauthorized?.();
+    if (!started) return;
+    reconnectTimer = setTimeout(connect, retryDelay);
     retryDelay = Math.min(retryDelay * 2, 5000);
   };
   ws.onerror = () => ws.close();
@@ -51,6 +57,16 @@ export function startWs(): void {
   if (started) return;
   started = true;
   connect();
+}
+
+export function stopWs(): void {
+  started = false;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = null;
+  const current = sock;
+  sock = null;
+  current?.close();
+  onStatus?.(false);
 }
 
 function send(cmd: ClientCommand): void {

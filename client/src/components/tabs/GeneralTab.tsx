@@ -11,7 +11,7 @@ function snapshot(): Settings {
   return { ...state.settings };
 }
 
-type SettingKey = Exclude<keyof Settings, 'revision'>;
+type SettingKey = Exclude<keyof Settings, 'revision' | 'hasPassword' | 'pluginSettings'>;
 const SETTING_KEYS: SettingKey[] = [
   'activeEndpointId',
   'defaultPresetId',
@@ -29,8 +29,11 @@ export default function GeneralTab() {
   const [baseRevision, setBaseRevision] = createSignal(state.settings.revision);
   const [saved, flashSaved] = createSavedFlash();
   const [error, setError] = createSignal('');
+  const [password, setPassword] = createSignal('');
+  const [removePassword, setRemovePassword] = createSignal(false);
 
-  const isDirty = () => SETTING_KEYS.some((key) => dirty[key]);
+  const passwordDirty = () => password() !== '' || removePassword();
+  const isDirty = () => SETTING_KEYS.some((key) => dirty[key]) || passwordDirty();
   const change = <K extends SettingKey>(key: K, value: Settings[K]) => {
     setDraft(key, value);
     setDirty(key, true);
@@ -52,11 +55,14 @@ export default function GeneralTab() {
         SETTING_KEYS.filter((key) => dirty[key]).map((key) => [key, draft[key]]),
       ) as Partial<Settings>;
       if (!isDirty()) return true;
-      const next = await api.putSettings(patch, baseRevision());
+      const accessPassword = removePassword() ? null : password() || undefined;
+      const next = await api.putSettings(patch, baseRevision(), accessPassword);
       applySettings(next);
       setDraft(reconcile(next));
       for (const key of SETTING_KEYS) setDirty(key, false);
       setBaseRevision(next.revision);
+      setPassword('');
+      setRemovePassword(false);
       setError('');
       flashSaved();
       return true;
@@ -83,6 +89,8 @@ export default function GeneralTab() {
     setDraft(reconcile(snapshot()));
     for (const key of SETTING_KEYS) setDirty(key, false);
     setBaseRevision(state.settings.revision);
+    setPassword('');
+    setRemovePassword(false);
     setError('');
   };
 
@@ -102,6 +110,38 @@ export default function GeneralTab() {
       <p class="hint">
         Model and sampling settings are configured per endpoint in the Endpoints tab.
       </p>
+
+      <label for="settings-access-password">Access password</label>
+      <input
+        id="settings-access-password"
+        type="password"
+        autocomplete="new-password"
+        placeholder={draft.hasPassword ? 'Enter a new password to replace it' : 'No password set'}
+        value={password()}
+        disabled={removePassword()}
+        onInput={(event) => {
+          setPassword(event.currentTarget.value);
+          setRemovePassword(false);
+        }}
+      />
+      <p class="hint">
+        {draft.hasPassword
+          ? 'A password is set. Leave this blank to keep it unchanged.'
+          : 'Optional. When set, all API, media, and WebSocket access requires a login session.'}
+      </p>
+      <Show when={draft.hasPassword}>
+        <label class="check-row">
+          <input
+            type="checkbox"
+            checked={removePassword()}
+            onChange={(event) => {
+              setRemovePassword(event.currentTarget.checked);
+              if (event.currentTarget.checked) setPassword('');
+            }}
+          />
+          Remove the access password
+        </label>
+      </Show>
 
       <label>Default system prompt preset</label>
       <Select

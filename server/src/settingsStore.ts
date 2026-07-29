@@ -1,6 +1,7 @@
 import type { Settings } from '@minitavern/shared';
 import { DEFAULT_SETTINGS } from '@minitavern/shared';
 import { stmt } from './db.ts';
+import { isPasswordConfigured } from './auth.ts';
 
 export function getSettings(): Settings {
   const row = stmt('SELECT value FROM settings WHERE key = ?').get('app') as
@@ -14,6 +15,7 @@ export function getSettings(): Settings {
   for (const key of Object.keys(settings)) {
     if (key in stored) settings[key] = stored[key];
   }
+  settings.hasPassword = isPasswordConfigured();
   return settings as unknown as Settings;
 }
 
@@ -25,7 +27,7 @@ export function putSettings(settings: Settings): void {
 
 export type SettingsReferenceKey = Exclude<
   keyof Settings,
-  'revision' | 'autoExpandThinking' | 'backgroundSwipeGeneration' | 'pluginSettings'
+  'revision' | 'autoExpandThinking' | 'backgroundSwipeGeneration' | 'hasPassword' | 'pluginSettings'
 >;
 
 export function clearSettingReference(key: SettingsReferenceKey, id: number): boolean {

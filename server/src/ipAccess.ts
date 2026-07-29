@@ -19,7 +19,12 @@ export interface IpAllowlist {
 
 /** Single source of truth for allowlist parsing — the Vite dev server imports this too. */
 export function createIpAllowlist(env: string | undefined): IpAllowlist {
-  const configured = env?.trim() || DEFAULT_IP_ALLOWLIST;
+  const configured = env === undefined ? DEFAULT_IP_ALLOWLIST : env.trim();
+  // An explicitly empty variable disables the IP layer. This is distinct from
+  // an unset variable, which keeps the private-network default above.
+  if (configured === '') {
+    return { configured, isAllowed: () => true };
+  }
   const list = new BlockList();
   for (const rawEntry of configured.split(',')) {
     const entry = rawEntry.trim();
@@ -61,6 +66,41 @@ export function isRequestIpAllowed(req: IncomingMessage): boolean {
   return allowlist.isAllowed(req.socket.remoteAddress);
 }
 
+function requestHostMatchesOrigin(host: string | undefined, origin: URL): boolean {
+  if (!host) return false;
+  const requestHost = host.trim().toLowerCase();
+  const originHost = origin.host.toLowerCase();
+  if (requestHost === originHost) return true;
+  // URL.host omits a protocol's default port while HTTP Host may include it.
+  const defaultPort =
+    origin.protocol === 'https:' ? '443' : origin.protocol === 'http:' ? '80' : '';
+  return defaultPort !== '' && requestHost === `${originHost}:${defaultPort}`;
+}
+
+/**
+ * Browser requests must be same-origin. Non-browser clients (which send
+ * neither Origin nor Fetch Metadata) remain usable for scripts and native apps.
+ */
+export function isRequestOriginAllowed(req: IncomingMessage): boolean {
+  const rawOrigin = req.headers.origin;
+  if (rawOrigin !== undefined) {
+    if (Array.isArray(rawOrigin)) return false;
+    try {
+      const origin = new URL(rawOrigin);
+      return (
+        (origin.protocol === 'http:' || origin.protocol === 'https:') &&
+        requestHostMatchesOrigin(req.headers.host, origin)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  const fetchSite = req.headers['sec-fetch-site'];
+  if (Array.isArray(fetchSite)) return false;
+  return fetchSite === undefined || fetchSite === 'same-origin' || fetchSite === 'none';
+}
+
 export function configuredIpAllowlist(): string {
-  return allowlist.configured;
+  return allowlist.configured || 'everyone';
 }
