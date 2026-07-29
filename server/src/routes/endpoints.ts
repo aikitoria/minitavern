@@ -36,10 +36,23 @@ function baseUrl(value: string | undefined, current?: string): string {
   return text;
 }
 
-function genParams(value: unknown, current: GenParams = {}): GenParams {
+function endpointApiKey(body: Record<string, unknown>, current?: Endpoint): string {
+  const supplied = optionalString(body, 'apiKey');
+  if (supplied !== undefined) return supplied;
+  if (!current) return '';
+  const nextBaseUrl = baseUrl(optionalString(body, 'baseUrl'), current.baseUrl);
+  // A redacted client may preserve a secret only while it still targets the
+  // same scheme/host/port. Retargeting requires the key to be entered again.
+  return new URL(nextBaseUrl).origin === new URL(current.baseUrl).origin ? current.apiKey : '';
+}
+
+function genParams(value: unknown, current: GenParams = {}, replace = false): GenParams {
   if (value === undefined) return current;
   const b = objectBody(value);
-  const next: GenParams = {};
+  // API PATCHes are field-level: supplying one sampling parameter must not
+  // silently erase all the others. The first-party editor explicitly requests
+  // replacement because its form submits the complete visible parameter set.
+  const next: GenParams = replace ? {} : { ...current };
   const temperature = optionalNumber(b, 'temperature');
   const topP = optionalNumber(b, 'topP');
   const minP = optionalNumber(b, 'minP');
@@ -96,11 +109,12 @@ defineEntityRoutes<Endpoint>({
   fields: [
     nameField((cur) => cur.name),
     { column: 'base_url', value: (b, cur) => baseUrl(optionalString(b, 'baseUrl'), cur?.baseUrl) },
-    { column: 'api_key', value: (b, cur) => optionalString(b, 'apiKey') ?? cur?.apiKey ?? '' },
+    { column: 'api_key', value: endpointApiKey },
     nullableTextField('model', 'model', (cur) => cur.model),
     {
       column: 'gen_params_json',
-      value: (b, cur) => JSON.stringify(genParams(b.genParams, cur?.genParams)),
+      value: (b, cur) =>
+        JSON.stringify(genParams(b.genParams, cur?.genParams, b.replaceGenParams === true)),
     },
     {
       column: 'prefill_mode',

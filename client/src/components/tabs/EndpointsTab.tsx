@@ -62,6 +62,7 @@ export default function EndpointsTab() {
           : {}),
         model: model() || null,
         genParams,
+        replaceGenParams: true,
         prefillMode: prefillEl.value as Endpoint['prefillMode'],
       };
     },
