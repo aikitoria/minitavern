@@ -175,9 +175,16 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
     const row = stmt('SELECT image_render_json FROM messages WHERE id = ?').get(msg.id) as {
       image_render_json: string | null;
     };
-    const image = row.image_render_json
+    let image = row.image_render_json
       ? (JSON.parse(row.image_render_json) as { workflow: string; comfyUrl: string })
       : null;
+    if (b.image !== undefined) {
+      try {
+        image = parseImageConfig(b.image);
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
+    }
     const prompt = buildSteeredToolPrompt(
       conv,
       getPathToMessage(msg.parentId),
@@ -434,9 +441,9 @@ route.post('/api/messages/:id/duplicate', ({ params, body }) => {
   return { messageId: copy.id, activeLeafId: copy.id };
 });
 
-/** Renders another image alternative: the stored workflow with the message's
- * current content as the prompt and a fresh random seed. Messages without a
- * stored config (pre-swipes renders) may supply one, which is then stored. */
+/** Renders another image alternative with the message's current content and a
+ * fresh seed. A caller-supplied current workflow replaces the stored snapshot;
+ * without one, the stored configuration remains the fallback. */
 route.post('/api/messages/:id/render-image', ({ params, body }) => {
   const msg = requireMessage(positiveId(params.id));
   const b = body == null ? {} : objectBody(body);
@@ -453,23 +460,21 @@ route.post('/api/messages/:id/render-image', ({ params, body }) => {
   if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
   if (!msg.content.trim()) throw new HttpError(400, 'message has no description to render');
   let config: { workflow: string; comfyUrl: string };
-  if (row.image_render_json) {
-    config = JSON.parse(row.image_render_json) as { workflow: string; comfyUrl: string };
-  } else {
+  const suppliedConfig = 'workflow' in b || 'comfyUrl' in b;
+  if (suppliedConfig) {
     try {
       config = parseImageConfig(b);
     } catch (err) {
-      // A supplied-but-invalid config gets the specific validation error; the
-      // generic note only applies when nothing was supplied at all.
-      if ('workflow' in b || 'comfyUrl' in b) {
-        throw new HttpError(400, err instanceof Error ? err.message : String(err));
-      }
-      throw new HttpError(400, 'message has no image render configuration');
+      throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
     stmt('UPDATE messages SET image_render_json = ? WHERE id = ?').run(
       JSON.stringify(config),
       msg.id,
     );
+  } else if (row.image_render_json) {
+    config = JSON.parse(row.image_render_json) as { workflow: string; comfyUrl: string };
+  } else {
+    throw new HttpError(400, 'message has no image render configuration');
   }
   stmt('UPDATE messages SET image_pending = 1 WHERE id = ?').run(msg.id);
   bumpConversationRevision(msg.conversationId);

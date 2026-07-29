@@ -1,5 +1,5 @@
 import { createEffect, createSignal, onCleanup } from 'solid-js';
-import { marked } from 'marked';
+import { marked, Renderer } from 'marked';
 import DOMPurify from 'dompurify';
 
 let hljsPromise: Promise<typeof import('highlight.js')> | null = null;
@@ -8,6 +8,42 @@ let hljsPromise: Promise<typeof import('highlight.js')> | null = null;
 // mid-stream), inline code, and raw HTML tags.
 const PROTECTED_SPLIT = /(```[\s\S]*?(?:```|$)|`[^`\n]*`|<[^>\n]*>)/;
 const QUOTE_RE = /"[^"\n]+"|“[^”\n]+”/g;
+
+/** Message Markdown is untrusted model output. Media URLs must never trigger
+ * browser requests; generated images use the app's dedicated image viewer. */
+const FORBIDDEN_MEDIA_TAGS = [
+  'img',
+  'picture',
+  'source',
+  'video',
+  'audio',
+  'track',
+  'iframe',
+  'object',
+  'embed',
+  'svg',
+];
+
+function escapeHtml(text: string): string {
+  return text.replace(/[&<>"']/g, (char) => {
+    switch (char) {
+      case '&':
+        return '&amp;';
+      case '<':
+        return '&lt;';
+      case '>':
+        return '&gt;';
+      case '"':
+        return '&quot;';
+      default:
+        return '&#39;';
+    }
+  });
+}
+
+const markdownRenderer = new Renderer();
+markdownRenderer.image = ({ text }) =>
+  `<span class="markdown-media-omitted">${escapeHtml(text.trim() || 'Media omitted')}</span>`;
 
 /** Angle-bracket instructions are model control text, not visible message
  * content. Strip them only outside code, and never across a line boundary, so
@@ -137,7 +173,8 @@ export default function Markdown(props: { content: string; streaming: boolean })
 
   const render = () => {
     const src = hideAngleInstructions(props.streaming ? autoclose(props.content) : props.content);
-    setHtml(DOMPurify.sanitize(marked.parse(markQuotes(src), { async: false })));
+    const parsed = marked.parse(markQuotes(src), { async: false, renderer: markdownRenderer });
+    setHtml(DOMPurify.sanitize(parsed, { FORBID_TAGS: FORBIDDEN_MEDIA_TAGS }));
     queueMicrotask(decorateCodeBlocks);
   };
 

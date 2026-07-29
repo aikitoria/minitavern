@@ -6,10 +6,37 @@
 .msg-image {
   display: block;
   width: 100%;
-  margin-top: var(--space-2);
   border-radius: var(--radius);
   border: 1px solid var(--border);
   cursor: zoom-in;
+}
+
+/* Preview frames are separate img elements so the prior frame can remain
+   visible beneath the new one during the fade. Grid stacking preserves the
+   image's natural layout without an absolutely positioned size jump. */
+.image-crossfade {
+  display: grid;
+}
+
+.image-crossfade > img {
+  grid-area: 1 / 1;
+}
+
+.image-crossfade-underlay {
+  pointer-events: none;
+}
+
+.msg-image-crossfade {
+  width: 100%;
+  margin-top: var(--space-2);
+}
+
+.msg-image-live {
+  cursor: default;
+}
+
+.avatar-live-preview {
+  opacity: 0.92;
 }
 
 /* Compact render indicator in the message header. */
@@ -164,6 +191,10 @@
   max-height: 256px;
   border: 1px solid var(--border);
   border-radius: var(--radius-panel);
+}
+
+.avatar-image-crossfade {
+  justify-items: center;
 }
 
 .avatar-gen-placeholder {

@@ -1,6 +1,7 @@
 export interface ImageProgressValue {
-  value: number;
-  max: number;
+  value?: number;
+  max?: number;
+  preview?: string;
 }
 
 export type ImageProgressState = Record<number, ImageProgressValue>;
@@ -14,13 +15,18 @@ export function applyImageProgress(
   progress: ImageProgressState,
   messages: Readonly<Record<number, { imagePending: boolean } | undefined>>,
   mid: number,
-  value: number,
-  max: number,
+  update: ImageProgressValue,
 ): ImageProgressState {
   if (!messages[mid]?.imagePending) return progress;
   const current = progress[mid];
-  if (current?.value === value && current.max === max) return progress;
-  return { ...progress, [mid]: { value, max } };
+  if (
+    current?.value === (update.value ?? current?.value) &&
+    current?.max === (update.max ?? current?.max) &&
+    current?.preview === (update.preview ?? current?.preview)
+  ) {
+    return progress;
+  }
+  return { ...progress, [mid]: { ...current, ...update } };
 }
 
 /** Drop progress belonging to completed or deleted messages after a tree frame. */

@@ -19,6 +19,7 @@ import Markdown from '../components/Markdown.tsx';
 import Select from '../components/Select.tsx';
 import { useSettingsGuard } from '../components/SettingsGuard.tsx';
 import type { SelectHandle } from '../components/Select.tsx';
+import CrossfadeImage from './CrossfadeImage.tsx';
 import './imageGeneration.css';
 
 const PromptIcon = () => (
@@ -781,13 +782,24 @@ const messageView: PluginMessageView = {
     message.imagePending ||
     message.hasImageRender ||
     message.name === 'Image prompt',
+  currentImageConfig: activeRenderConfig,
   create: (message, ctx) => {
     const [showPrompt, setShowPrompt] = createSignal(false);
     const [viewerOpen, setViewerOpen] = createSignal(false);
     const images = () => message().images;
     const activeImage = () => Math.min(message().activeImage, images().length - 1);
     const currentImage = () => images()[activeImage()];
-    const promptCollapsed = () => images().length > 0;
+    const renderProgress = () => imageProgress()[message().id];
+    const numericProgress = () => {
+      const progress = renderProgress();
+      return progress?.value !== undefined && progress.max ? progress : null;
+    };
+    const livePreview = () => (message().imagePending ? renderProgress()?.preview : undefined);
+    const displayedImage = () => livePreview() ?? currentImage();
+    // Hide the generated prompt as soon as ComfyUI supplies visual output;
+    // waiting for the final stored image leaves text competing with every
+    // streamed preview frame during the render.
+    const promptCollapsed = () => images().length > 0 || livePreview() != null;
     const onActivePath = () => activePath().some((active) => active.id === message().id);
     const canRender = () =>
       !state.treeNavigationPending &&
@@ -810,7 +822,10 @@ const messageView: PluginMessageView = {
               message().id,
               state.tree.activeLeafId,
               state.tree.mutationRevision,
-              message().hasImageRender ? undefined : activeRenderConfig(),
+              // A manual rerender follows the workflow currently selected in
+              // settings. The server falls back to the stored snapshot only
+              // when no workflow is selected now.
+              activeRenderConfig(),
             ),
           );
         } else {
@@ -845,6 +860,30 @@ const messageView: PluginMessageView = {
             <PromptIcon />
           </button>
         </Show>
+        {/* Keep render status adjacent to, and before, the image alternatives
+            it is currently extending. */}
+        <Show when={message().imagePending && !ctx.streaming()}>
+          <span class="msg-image-pending">
+            <span class="spinner" />
+            <Show when={numericProgress()} fallback={<span>Rendering…</span>}>
+              {(progress) => (
+                <>
+                  <span class="img-progress">
+                    <span
+                      class="img-progress-fill"
+                      style={{
+                        width: `${Math.round((progress().value! / progress().max!) * 100)}%`,
+                      }}
+                    />
+                  </span>
+                  <span>
+                    {progress().value!}/{progress().max!}
+                  </span>
+                </>
+              )}
+            </Show>
+          </span>
+        </Show>
         <Show when={images().length > 0}>
           <span class="branch-nav">
             <button
@@ -873,28 +912,6 @@ const messageView: PluginMessageView = {
             </button>
           </span>
         </Show>
-        {/* The render only starts once the description is complete — no
-            indicator while the text is still streaming in. */}
-        <Show when={message().imagePending && !ctx.streaming()}>
-          <span class="msg-image-pending">
-            <span class="spinner" />
-            <Show when={imageProgress()[message().id]} fallback={<span>Rendering…</span>}>
-              {(progress) => (
-                <>
-                  <span class="img-progress">
-                    <span
-                      class="img-progress-fill"
-                      style={{ width: `${Math.round((progress().value / progress().max) * 100)}%` }}
-                    />
-                  </span>
-                  <span>
-                    {progress().value}/{progress().max}
-                  </span>
-                </>
-              )}
-            </Show>
-          </span>
-        </Show>
       </>
     );
 
@@ -905,14 +922,18 @@ const messageView: PluginMessageView = {
             <Markdown content={message().content} streaming={ctx.streaming()} />
           </div>
         </Show>
-        <Show when={currentImage()}>
-          <img
+        <Show when={displayedImage()}>
+          <CrossfadeImage
             class="msg-image"
-            src={currentImage()}
-            alt="Generated image"
-            onClick={() => setViewerOpen(true)}
+            classList={{ 'msg-image-live': livePreview() != null }}
+            src={displayedImage()}
+            alt={livePreview() ? 'Image rendering preview' : 'Generated image'}
+            wrapperClass="msg-image-crossfade"
+            onClick={() => {
+              if (!livePreview()) setViewerOpen(true);
+            }}
           />
-          <Show when={viewerOpen()}>
+          <Show when={viewerOpen() && !livePreview()}>
             <ImageViewer src={currentImage()!} onClose={() => setViewerOpen(false)} />
           </Show>
         </Show>

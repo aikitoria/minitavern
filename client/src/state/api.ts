@@ -144,6 +144,7 @@ async function renderAvatar(
 async function openAvatarRenderProgress(
   jobId: string,
   onProgress: (value: number, max: number) => void,
+  onPreview: (dataUrl: string) => void,
   signal?: AbortSignal,
 ): Promise<{ done: Promise<void> }> {
   const res = await fetch(`/api/avatar/render-progress/${encodeURIComponent(jobId)}`, {
@@ -166,6 +167,7 @@ async function openAvatarRenderProgress(
         const payload = JSON.parse(line.slice(5)) as {
           value?: unknown;
           max?: unknown;
+          preview?: unknown;
           done?: boolean;
         };
         if (
@@ -174,6 +176,9 @@ async function openAvatarRenderProgress(
           payload.max > 0
         ) {
           onProgress(payload.value, payload.max);
+        }
+        if (typeof payload.preview === 'string' && payload.preview.startsWith('data:image/')) {
+          onPreview(payload.preview);
         }
         if (payload.done) return;
       }
@@ -291,10 +296,10 @@ export const api = {
     messageId: number,
     expectedActiveLeafId: number | null,
     expectedMutationRevision: number,
-    fallbackConfig?: { workflow: string; comfyUrl: string },
+    currentConfig?: { workflow: string; comfyUrl: string },
   ) =>
     request<{ rendering: boolean }>('POST', `/api/messages/${messageId}/render-image`, {
-      ...fallbackConfig,
+      ...currentConfig,
       expectedActiveLeafId,
       expectedMutationRevision,
     }),
@@ -356,11 +361,12 @@ export const api = {
     instruction: string,
     expectedActiveLeafId: number | null,
     expectedMutationRevision: number,
+    image?: { workflow: string; comfyUrl: string },
   ) =>
     request<{ activeLeafId: number; assistantMessageId: number }>(
       'POST',
       `/api/messages/${messageId}/regenerate`,
-      { instruction, expectedActiveLeafId, expectedMutationRevision },
+      { instruction, expectedActiveLeafId, expectedMutationRevision, image },
     ),
   deleteMessage: (
     messageId: number,

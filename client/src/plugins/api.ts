@@ -27,6 +27,8 @@ export interface PluginCommand {
 export interface PluginMessageView {
   /** Whether this plugin owns the given tool message (key off its data). */
   claims: (message: Message) => boolean;
+  /** Current render configuration to use for a manual regeneration. */
+  currentImageConfig?: () => { workflow: string; comfyUrl: string } | undefined;
   create: (
     message: () => Message,
     ctx: { streaming: () => boolean },

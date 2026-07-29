@@ -10,15 +10,31 @@ const messages = {
 };
 const initial = { 1: { value: 2, max: 10 }, 3: { value: 9, max: 10 } };
 
-const updated = applyImageProgress(initial, messages, 1, 3, 10);
+const updated = applyImageProgress(initial, messages, 1, { value: 3, max: 10 });
 assert.deepEqual(updated[1], { value: 3, max: 10 });
 
 // Duplicate events must not trigger another reactive store write.
-assert.equal(applyImageProgress(updated, messages, 1, 3, 10), updated);
+assert.equal(applyImageProgress(updated, messages, 1, { value: 3, max: 10 }), updated);
+
+// Binary preview events merge with numeric progress, and later sampler steps
+// retain the most recent preview until the authoritative message completes.
+const withPreview = applyImageProgress(updated, messages, 1, {
+  preview: 'data:image/jpeg;base64,preview',
+});
+assert.deepEqual(withPreview[1], {
+  value: 3,
+  max: 10,
+  preview: 'data:image/jpeg;base64,preview',
+});
+assert.deepEqual(applyImageProgress(withPreview, messages, 1, { value: 4, max: 10 })[1], {
+  value: 4,
+  max: 10,
+  preview: 'data:image/jpeg;base64,preview',
+});
 
 // Late events cannot recreate progress for completed or deleted messages.
-assert.equal(applyImageProgress(updated, messages, 2, 4, 10), updated);
-assert.equal(applyImageProgress(updated, messages, 99, 4, 10), updated);
+assert.equal(applyImageProgress(updated, messages, 2, { value: 4, max: 10 }), updated);
+assert.equal(applyImageProgress(updated, messages, 99, { value: 4, max: 10 }), updated);
 
 // An authoritative frame purges both completed and deleted message ids.
 assert.deepEqual(retainPendingImageProgress(initial, messages), { 1: { value: 2, max: 10 } });

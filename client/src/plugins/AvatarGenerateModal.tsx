@@ -3,6 +3,7 @@ import { api } from '../state/api.ts';
 import { errorMessage } from '../util.ts';
 import Modal from '../components/Modal.tsx';
 import { avatarPromptTemplates, avatarRenderConfig } from './imageGeneration.tsx';
+import CrossfadeImage from './CrossfadeImage.tsx';
 
 /**
  * Interactive avatar generation popup: streams the LLM portrait prompt into
@@ -22,6 +23,7 @@ export default function AvatarGenerateModal(props: {
   const [rendering, setRendering] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [imageUrl, setImageUrl] = createSignal<string | null>(null);
+  const [previewUrl, setPreviewUrl] = createSignal<string | null>(null);
   const [progress, setProgress] = createSignal<{ value: number; max: number } | null>(null);
   const [error, setError] = createSignal('');
   const promptAbort = new AbortController();
@@ -63,6 +65,7 @@ export default function AvatarGenerateModal(props: {
     renderAbort = abort;
     const jobId = crypto.randomUUID();
     setProgress(null);
+    setPreviewUrl(null);
     setRendering(true);
     setError('');
     try {
@@ -74,6 +77,9 @@ export default function AvatarGenerateModal(props: {
           jobId,
           (value, max) => {
             if (!disposed && renderAbort === abort) setProgress({ value, max });
+          },
+          (preview) => {
+            if (!disposed && renderAbort === abort) setPreviewUrl(preview);
           },
           abort.signal,
         );
@@ -87,6 +93,7 @@ export default function AvatarGenerateModal(props: {
       const url = URL.createObjectURL(blob);
       const old = imageUrl();
       setImageUrl(url);
+      setPreviewUrl(null);
       if (old) URL.revokeObjectURL(old);
     } catch (err) {
       if (!disposed && !abort.signal.aborted) setError(errorMessage(err));
@@ -97,6 +104,7 @@ export default function AvatarGenerateModal(props: {
         renderAbort = undefined;
         if (!disposed) {
           setProgress(null);
+          setPreviewUrl(null);
           setRendering(false);
         }
       }
@@ -174,7 +182,7 @@ export default function AvatarGenerateModal(props: {
         />
         <div class="avatar-gen-preview">
           <Show
-            when={imageUrl()}
+            when={previewUrl() ?? imageUrl()}
             fallback={
               <div class="avatar-gen-placeholder">
                 <Show when={rendering()} fallback={streaming() ? 'Waiting for the prompt…' : null}>
@@ -183,9 +191,16 @@ export default function AvatarGenerateModal(props: {
               </div>
             }
           >
-            {(url) => <img src={url()} alt="Generated avatar" />}
+            {(url) => (
+              <CrossfadeImage
+                src={url()}
+                alt={previewUrl() ? 'Avatar rendering preview' : 'Generated avatar'}
+                classList={{ 'avatar-live-preview': previewUrl() != null }}
+                wrapperClass="avatar-image-crossfade"
+              />
+            )}
           </Show>
-          <Show when={rendering() && imageUrl()}>
+          <Show when={rendering() && (previewUrl() || imageUrl())}>
             <Progress />
           </Show>
         </div>

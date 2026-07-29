@@ -393,7 +393,11 @@ export function handleServerEvent(ev: ServerEvent): void {
     case 'imageProgress':
       if (ev.conversationId !== state.selectedId) break;
       setImageProgress((progress) =>
-        applyImageProgress(progress, state.tree.messages, ev.mid, ev.value, ev.max),
+        applyImageProgress(progress, state.tree.messages, ev.mid, {
+          ...(ev.value === undefined ? {} : { value: ev.value }),
+          ...(ev.max === undefined ? {} : { max: ev.max }),
+          ...(ev.preview === undefined ? {} : { preview: ev.preview }),
+        }),
       );
       break;
   }

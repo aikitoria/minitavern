@@ -145,17 +145,34 @@ export default function CharactersTab() {
     </button>
   );
 
-  const importCard = async (file: File | undefined) => {
-    if (!file) return;
-    editor.setStatus('Importing…');
-    try {
-      const character = await api.importCard(file);
+  const importCards = async (files: readonly File[]) => {
+    if (files.length === 0) return;
+    const imported: Character[] = [];
+    const failed: string[] = [];
+    for (const [index, file] of files.entries()) {
+      editor.setStatus(
+        files.length === 1 ? 'Importing…' : `Importing ${index + 1} of ${files.length}…`,
+      );
+      try {
+        imported.push(await api.importCard(file));
+      } catch (err) {
+        failed.push(`${file.name}: ${errorMessage(err)}`);
+      }
+    }
+    const last = imported.at(-1);
+    if (last) {
       // The list refreshes via WS invalidate; load the form straight from the
-      // response instead of racing that refetch.
-      editor.adopt(character);
-      editor.setStatus(`Imported ${character.name}.`);
-    } catch (err) {
-      editor.setStatus(errorMessage(err));
+      // final response instead of racing those refetches.
+      editor.adopt(last);
+    }
+    if (failed.length > 0) {
+      editor.setStatus(
+        `${imported.length} imported, ${failed.length} failed. ${failed.join(' · ')}`,
+      );
+    } else if (imported.length === 1) {
+      editor.setStatus(`Imported ${imported[0]!.name}.`);
+    } else {
+      editor.setStatus(`Imported ${imported.length} characters.`);
     }
   };
 
@@ -172,15 +189,20 @@ export default function CharactersTab() {
       listActions={
         <>
           <button onClick={() => void createFolder()}>Folder</button>
-          <button title="Import character PNG" onClick={() => cardInput.click()}>
+          <button title="Import character PNGs" onClick={() => cardInput.click()}>
             Import
           </button>
           <input
             ref={cardInput}
             type="file"
             accept=".png,image/png"
+            multiple
             hidden
-            onChange={(e) => void importCard(e.currentTarget.files?.[0])}
+            onChange={(e) => {
+              const files = Array.from(e.currentTarget.files ?? []);
+              e.currentTarget.value = '';
+              void importCards(files);
+            }}
           />
         </>
       }

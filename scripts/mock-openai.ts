@@ -53,6 +53,7 @@ let reasoningOnly = false;
 /** Next request streams this partial output, then dies mid-stream. */
 let dieAfterContent: string | null = null;
 let lastComfyWorkflow: unknown = null;
+let lastComfyPreviewMethod: string | null = null;
 let lastModelAuthorization: string | null = null;
 /** Last chat completion request, streaming or not (auto-title, avatar prompt). */
 interface CompletionRecord {
@@ -113,7 +114,7 @@ const server = http.createServer((req, res) => {
   }
   if (req.method === 'GET' && req.url === '/control/last-workflow') {
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ workflow: lastComfyWorkflow }));
+    res.end(JSON.stringify({ workflow: lastComfyWorkflow, previewMethod: lastComfyPreviewMethod }));
     return;
   }
   if (req.method === 'GET' && req.url === '/control/last-model-authorization') {
@@ -172,15 +173,20 @@ const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (chunk) => (body += chunk));
     req.on('end', () => {
-      let parsed: { prompt: unknown; client_id?: string };
+      let parsed: {
+        prompt: unknown;
+        client_id?: string;
+        extra_data?: { preview_method?: string };
+      };
       try {
-        parsed = JSON.parse(body) as { prompt: unknown; client_id?: string };
+        parsed = JSON.parse(body) as typeof parsed;
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' });
         res.end(JSON.stringify({ error: 'invalid JSON' }));
         return;
       }
       lastComfyWorkflow = parsed.prompt;
+      lastComfyPreviewMethod = parsed.extra_data?.preview_method ?? null;
       if (comfyFailPrompts > 0) {
         comfyFailPrompts--;
         res.writeHead(500, { 'content-type': 'application/json' });
@@ -203,6 +209,12 @@ const server = http.createServer((req, res) => {
           client.send(
             JSON.stringify({ type: 'progress', data: { value: 1, max: 2, prompt_id: promptId } }),
           );
+          if (parsed.extra_data?.preview_method === 'taesd') {
+            const header = Buffer.alloc(8);
+            header.writeUInt32BE(1, 0); // BinaryEventTypes.PREVIEW_IMAGE
+            header.writeUInt32BE(1, 4); // JPEG
+            client.send(Buffer.concat([header, MOCK_JPEG]));
+          }
           client.send(
             JSON.stringify({ type: 'progress', data: { value: 2, max: 2, prompt_id: promptId } }),
           );

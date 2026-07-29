@@ -1565,13 +1565,17 @@ async function main() {
   );
   const renderedPng = Buffer.from(await renderRes.arrayBuffer());
   assert(renderedPng[0] === 0x89 && renderedPng[1] === 0x50, 'avatar render is a real PNG');
-  const { workflow: avatarWorkflow } = (await (
+  const { workflow: avatarWorkflow, previewMethod: avatarPreviewMethod } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-workflow`)
-  ).json()) as { workflow: { 6: { inputs: { text: string } } } };
+  ).json()) as {
+    workflow: { 6: { inputs: { text: string } } };
+    previewMethod: string | null;
+  };
   assert(
     avatarWorkflow[6].inputs.text.includes(avatarPrompt.slice(0, 30)),
     'the prompt lands in the workflow {{prompt}} slot',
   );
+  assert(avatarPreviewMethod === 'taesd', 'avatar renders explicitly request TAESD previews');
 
   // Saving the rendered bytes goes through the normal avatar upload route.
   const genCharRes = await putAvatar(`/api/characters/${avatarChar.id}/avatar`, renderedPng);
@@ -1596,16 +1600,24 @@ async function main() {
     const reader = progressResponse.body!.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let sawProgress = false;
+    let sawPreview = false;
     for (;;) {
       const chunk = await reader.read();
-      if (chunk.done) throw new Error('avatar progress SSE ended before a progress event');
+      if (chunk.done) throw new Error('avatar progress SSE ended before progress and preview');
       buffer += decoder.decode(chunk.value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() ?? '';
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
-        const event = JSON.parse(line.slice(5)) as { value?: number; max?: number };
-        if (event.max && typeof event.value === 'number') return;
+        const event = JSON.parse(line.slice(5)) as {
+          value?: number;
+          max?: number;
+          preview?: string;
+        };
+        if (event.max && typeof event.value === 'number') sawProgress = true;
+        if (event.preview?.startsWith('data:image/jpeg;base64,')) sawPreview = true;
+        if (sawProgress && sawPreview) return;
       }
     }
   })();
@@ -1616,7 +1628,7 @@ async function main() {
   });
   assert(progressRenderRes.ok, 'avatar render with jobId succeeds');
   await progressSeen;
-  assert(true, 'jobId render sends progress only through its private SSE stream');
+  assert(true, 'jobId render sends progress and a live preview through its private SSE stream');
   progressAbort.abort();
   const unrelatedResult = await Promise.race([
     unrelatedReader.read().then(
@@ -2058,6 +2070,14 @@ async function main() {
     'image render progress relayed to subscribers',
     15_000,
   );
+  await ws.waitFor(
+    (e) =>
+      e.t === 'imageProgress' &&
+      e.mid === imgRes.toolMessageId &&
+      e.preview?.startsWith('data:image/jpeg;base64,') === true,
+    'image render preview relayed to subscribers',
+    15_000,
+  );
   let imageUrl: string | null = null;
   for (let i = 0; i < 60 && !imageUrl; i++) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -2103,15 +2123,18 @@ async function main() {
     '{{prompt}} carries the JSON-escaped description with quotes intact',
   );
 
-  // Image swipes: re-render with the same stored prompt/workflow, fresh seed.
+  // Image swipes: the current workflow replaces the stored snapshot, while
+  // the message prompt stays fixed and the seed is refreshed.
   const firstSeed = substituted[3].inputs.seed;
+  const CURRENT_COMFY_WORKFLOW =
+    '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"LATEST {{prompt}}"}}}';
   const originalImagePrompt = (await tree(conv2.id)).messages.find(
     (message) => message.id === imgRes.toolMessageId,
   )!.content;
   await req(
     'POST',
     `/api/messages/${imgRes.toolMessageId}/render-image`,
-    await branchBody(conv2.id),
+    await branchBody(conv2.id, { workflow: CURRENT_COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL }),
   );
   const pendingRerender = await tree(conv2.id);
   assert(
@@ -2147,8 +2170,14 @@ async function main() {
   );
   const { workflow: regenWorkflow } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-workflow`)
-  ).json()) as { workflow: { 3: { inputs: { seed: unknown } } } };
+  ).json()) as {
+    workflow: { 3: { inputs: { seed: unknown } }; 6: { inputs: { text: string } } };
+  };
   assert(regenWorkflow[3].inputs.seed !== firstSeed, 'regeneration uses a fresh seed');
+  assert(
+    regenWorkflow[6].inputs.text.startsWith('LATEST '),
+    'manual regeneration uses and stores the currently selected workflow',
+  );
   const beforeImageSelection = await tree(conv2.id);
   await req('POST', `/api/messages/${imgRes.toolMessageId}/active-image`, {
     index: 0,
@@ -2245,10 +2274,15 @@ async function main() {
 
   console.log('== regenerate image tool with instruction ==');
   const imageRevisionTrace = await fetchTrace(conv2.id);
+  const STEER_CURRENT_WORKFLOW =
+    '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"STEER-LATEST {{prompt}}"}}}';
   const steeredImage = await req<{ assistantMessageId: number }>(
     'POST',
     `/api/messages/${imgRes.toolMessageId}/regenerate`,
-    await branchBody(conv2.id, { instruction: 'Make the scene moonlit.' }),
+    await branchBody(conv2.id, {
+      instruction: 'Make the scene moonlit.',
+      image: { workflow: STEER_CURRENT_WORKFLOW, comfyUrl: MOCK_CONTROL },
+    }),
   );
   const steeredImageFinal = await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === steeredImage.assistantMessageId,
@@ -2318,6 +2352,13 @@ async function main() {
     }
   }
   assert(steeredImageRendered != null, 'steered image prompt automatically renders a fresh image');
+  const { workflow: steeredRenderWorkflow } = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-workflow`)
+  ).json()) as { workflow: { 6: { inputs: { text: string } } } };
+  assert(
+    steeredRenderWorkflow[6].inputs.text.startsWith('STEER-LATEST '),
+    'steered image regeneration uses the currently selected workflow',
+  );
   // Remove this test revision so the following chain/deletion checks continue
   // to exercise their original shape from the source image message.
   await req(

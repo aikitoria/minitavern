@@ -340,8 +340,16 @@ export type ServerEvent =
       mutationRevision: number;
       message: Message;
     }
-  /** Image render progress for a message with imagePending (e.g. sampler steps). */
-  | { t: 'imageProgress'; conversationId: number; mid: number; value: number; max: number };
+  /** Ephemeral image-render progress/preview for a message with imagePending. */
+  | {
+      t: 'imageProgress';
+      conversationId: number;
+      mid: number;
+      value?: number;
+      max?: number;
+      /** Validated raster data URL; never persisted. */
+      preview?: string;
+    };
 
 /** Client -> server WebSocket commands. */
 export type ClientCommand = { sub: number | null };

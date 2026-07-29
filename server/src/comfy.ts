@@ -20,6 +20,32 @@ const RENDER_TIMEOUT_MS = 5 * 60_000;
 /** Render poll interval; e2e runs (E2E_BASE is set) default to a fast cadence. */
 const POLL_INTERVAL_MS = Number(process.env.COMFY_POLL_MS ?? (process.env.E2E_BASE ? 100 : 1500));
 const MAX_IMAGE_BYTES = 64 * 1024 * 1024;
+const MAX_PREVIEW_BYTES = 4 * 1024 * 1024;
+
+/** ComfyUI binary event ids (protocol.py). Legacy preview frames are:
+ * event u32, image type u32, encoded raster bytes. Metadata frames are:
+ * event u32, metadata length u32, metadata JSON, encoded raster bytes. */
+const COMFY_PREVIEW_IMAGE = 1;
+const COMFY_PREVIEW_IMAGE_WITH_METADATA = 4;
+
+function parsePreviewFrame(frame: Buffer): string | null {
+  if (frame.length < 9) return null;
+  const event = frame.readUInt32BE(0);
+  let image: Buffer;
+  if (event === COMFY_PREVIEW_IMAGE) {
+    image = frame.subarray(8);
+  } else if (event === COMFY_PREVIEW_IMAGE_WITH_METADATA) {
+    const metadataLength = frame.readUInt32BE(4);
+    const imageOffset = 8 + metadataLength;
+    if (imageOffset > frame.length) return null;
+    image = frame.subarray(imageOffset);
+  } else {
+    return null;
+  }
+  if (image.length === 0 || image.length > MAX_PREVIEW_BYTES) return null;
+  const format = rasterImageFormat(image);
+  return format ? `data:${format.mime};base64,${image.toString('base64')}` : null;
+}
 
 export interface RenderJob {
   conversationId: number;
@@ -95,6 +121,7 @@ export function openProgressSocket(
   base: string,
   clientId: string,
   onProgress: (value: number, max: number) => void,
+  onPreview: (dataUrl: string) => void,
   signal?: AbortSignal,
 ): Promise<WebSocket | null> {
   return new Promise((resolve) => {
@@ -141,7 +168,17 @@ export function openProgressSocket(
       signal?.removeEventListener('abort', onAbort);
       resolve(ws);
     });
-    ws.on('message', (raw) => {
+    ws.on('message', (raw, isBinary) => {
+      if (isBinary) {
+        const frame = Array.isArray(raw)
+          ? Buffer.concat(raw)
+          : raw instanceof ArrayBuffer
+            ? Buffer.from(raw)
+            : Buffer.from(raw);
+        const preview = parsePreviewFrame(frame);
+        if (preview) onPreview(preview);
+        return;
+      }
       try {
         const ev = JSON.parse(String(raw)) as {
           type?: string;
@@ -151,7 +188,7 @@ export function openProgressSocket(
           onProgress(ev.data.value, ev.data.max);
         }
       } catch {
-        /* Binary preview frames and malformed events are ignored. */
+        /* Malformed JSON events are ignored. */
       }
     });
   });
@@ -212,7 +249,13 @@ export async function renderToBuffer(
   const submit = await fetch(`${base}/prompt`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ prompt: workflowObj, client_id: clientId }),
+    body: JSON.stringify({
+      prompt: workflowObj,
+      client_id: clientId,
+      // The ComfyUI frontend setting is per-client and does not affect API
+      // submissions. Request the user's preferred live latent preview here.
+      extra_data: { preview_method: 'taesd' },
+    }),
     signal: withTimeout(request.signal, 30_000),
   }).catch((err: unknown) => {
     request.signal?.throwIfAborted();
@@ -318,6 +361,13 @@ async function render(job: RenderJob): Promise<void> {
         mid: job.mid,
         value,
         max,
+      }),
+    (preview) =>
+      broadcastConv(job.conversationId, {
+        t: 'imageProgress',
+        conversationId: job.conversationId,
+        mid: job.mid,
+        preview,
       }),
     job.signal,
   );

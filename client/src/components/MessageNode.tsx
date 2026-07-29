@@ -277,6 +277,7 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
         instruction,
         state.tree.activeLeafId,
         state.tree.mutationRevision,
+        claimedView()?.currentImageConfig?.(),
       ),
     );
     if (ok) setSteerOpen(false);

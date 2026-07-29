@@ -41,6 +41,13 @@ function publishRenderProgress(jobId: string, value: number, max: number): void 
   }
 }
 
+function publishRenderPreview(jobId: string, preview: string): void {
+  const payload = `data: ${JSON.stringify({ preview })}\n\n`;
+  for (const res of renderProgressListeners.get(jobId) ?? []) {
+    if (!res.destroyed && !res.writableEnded) res.write(payload);
+  }
+}
+
 function finishRenderProgress(jobId: string): void {
   const listeners = renderProgressListeners.get(jobId);
   if (!listeners) return;
@@ -222,6 +229,7 @@ async function renderAvatar(ctx: Ctx) {
         image.comfyUrl.replace(/\/+$/, ''),
         clientId,
         (value, max) => publishRenderProgress(jobId, value, max),
+        (preview) => publishRenderPreview(jobId, preview),
         abort.signal,
       )
     : null;
