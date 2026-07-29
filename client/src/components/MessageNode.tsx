@@ -3,6 +3,7 @@ import type { Message } from '@minitavern/shared';
 import type { PendingSwipe } from '../state/store.ts';
 import { api } from '../state/api.ts';
 import {
+  branchConversation,
   childrenByParent,
   editRequestId,
   navigateTree,
@@ -251,6 +252,7 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
     void navigateTree(() =>
       api.duplicateMessage(props.message.id, state.tree.activeLeafId, state.tree.mutationRevision),
     );
+  const branchToConversation = () => void navigateTree(() => branchConversation(props.message.id));
   const move = (direction: 'up' | 'down') =>
     void navigateTree(() =>
       api.moveMessage(
@@ -441,6 +443,14 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                         }}
                       >
                         Duplicate
+                      </button>
+                      <button
+                        onClick={() => {
+                          closeMenu();
+                          branchToConversation();
+                        }}
+                      >
+                        Branch to new conversation
                       </button>
                       <button
                         disabled={!canMoveUp()}

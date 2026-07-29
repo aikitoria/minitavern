@@ -52,7 +52,8 @@ export interface Plugin {
   id: string;
   /** Name shown in the Tools settings list. */
   name: string;
-  tools?: PluginTool[];
+  /** Static tools, or a reactive factory when settings determine the menu. */
+  tools?: PluginTool[] | (() => PluginTool[]);
   commands?: PluginCommand[];
   settingsPage?: Component;
   messageView?: PluginMessageView;

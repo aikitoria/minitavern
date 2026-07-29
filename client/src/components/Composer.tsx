@@ -361,7 +361,7 @@ export default function Composer() {
           </button>
           <Show when={toolsOpen()}>
             <div class="tools-menu">
-              <For each={pluginTools}>
+              <For each={pluginTools()}>
                 {(tool) => (
                   <button
                     onClick={() => {

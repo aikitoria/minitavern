@@ -219,6 +219,8 @@ export const api = {
     ),
   duplicateConversation: (id: number) =>
     request<Conversation>('POST', `/api/conversations/${id}/duplicate`),
+  branchConversation: (messageId: number) =>
+    request<Conversation>('POST', `/api/messages/${messageId}/branch-conversation`),
   search: (q: string) =>
     request<{ conversation: Conversation; snippet: string | null }[]>(
       'GET',

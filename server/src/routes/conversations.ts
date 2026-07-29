@@ -529,6 +529,96 @@ route.post('/api/conversations/:id/duplicate', ({ params }) => {
   }
 });
 
+/**
+ * Forks one message's ancestry into a separate linear conversation. Only the
+ * root -> selected-message path is copied: sibling swipes and every descendant
+ * below the selection stay in the source conversation. Generated image files
+ * are copied rather than shared, preserving hard-delete ownership.
+ */
+route.post('/api/messages/:id/branch-conversation', ({ params }) => {
+  const messageId = positiveId(params.id);
+  const target = getMessage(messageId);
+  if (!target) throw new HttpError(404, `message ${messageId} not found`);
+  const conv = getConversation(target.conversationId);
+  const path = getPathToMessage(messageId);
+  const rows = path.map(
+    (message) =>
+      stmt('SELECT * FROM messages WHERE id = ?').get(message.id) as unknown as MessageRow,
+  );
+  const liveMessages = new Map(mergeLiveBuffers(path).map((message) => [message.id, message]));
+  const suffix = ' (branch)';
+  const title =
+    conv.title.length + suffix.length > 60
+      ? `${conv.title.slice(0, 60 - suffix.length - 1)}…${suffix}`
+      : `${conv.title}${suffix}`;
+  const now = Date.now();
+  const writtenImages: string[] = [];
+
+  try {
+    const newId = transaction(() => {
+      const convResult = stmt(
+        `INSERT INTO conversations (title, character_id, persona_id, endpoint_id, speaker_name, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      ).run(title, conv.characterId, conv.personaId, conv.endpointId, conv.speakerName, now, now);
+      const newConvId = Number(convResult.lastInsertRowid);
+      let parentId: number | null = null;
+
+      for (const row of rows) {
+        const live = liveMessages.get(row.id)!;
+        const images: string[] = [];
+        for (const imagePath of JSON.parse(row.images_json) as string[]) {
+          const ext = imagePath.includes('.')
+            ? imagePath.slice(imagePath.lastIndexOf('.'))
+            : '.png';
+          const copied = copyImage(imagePath, `msg-branch-${randomUUID()}${ext}`);
+          if (copied == null) {
+            console.warn(`[conversations] branch: source image ${imagePath} is missing`);
+            continue;
+          }
+          writtenImages.push(copied);
+          images.push(copied);
+        }
+
+        const copiedId: number = Number(
+          stmt(
+            `INSERT INTO messages
+             (conversation_id, parent_id, role, content, reasoning, status, active_child_id,
+              model, gen_meta_json, created_at, name, generation_kind, images_json, active_image,
+              image_pending, image_render_json)
+             VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 'normal', ?, ?, 0, ?)`,
+          ).run(
+            newConvId,
+            parentId,
+            row.role,
+            live.content,
+            live.reasoning,
+            row.status === 'streaming' ? 'stopped' : row.status,
+            live.model,
+            row.gen_meta_json,
+            row.created_at,
+            row.name,
+            JSON.stringify(images),
+            images.length > 0 ? Math.min(row.active_image, images.length - 1) : 0,
+            row.image_render_json,
+          ).lastInsertRowid,
+        );
+        if (parentId != null) {
+          stmt('UPDATE messages SET active_child_id = ? WHERE id = ?').run(copiedId, parentId);
+        }
+        parentId = copiedId;
+      }
+
+      stmt('UPDATE conversations SET active_leaf_id = ? WHERE id = ?').run(parentId, newConvId);
+      return newConvId;
+    });
+    invalidate('conversations');
+    return getConversation(newId);
+  } catch (err) {
+    deleteImageFiles(writtenImages);
+    throw err;
+  }
+});
+
 route.get('/api/conversations/:id/tree', ({ params }) => {
   const id = positiveId(params.id);
   getConversation(id);

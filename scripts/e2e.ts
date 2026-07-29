@@ -17,6 +17,7 @@ import { expandWorkflowTemplate, workflowValidationError } from '@minitavern/sha
 import type {
   Character,
   CharacterFolder,
+  Conversation,
   Message,
   ServerEvent,
   Settings,
@@ -1173,6 +1174,46 @@ async function main() {
       snap.activeLeafId === dup.messageId,
     'duplicate creates an activated sibling copy',
   );
+  const sourceById = new Map(snap.messages.map((message) => [message.id, message]));
+  const sourceBranchPath: Message[] = [];
+  for (let id: number | null = mv.assistantMessageId; id != null;) {
+    const message: Message = sourceById.get(id)!;
+    sourceBranchPath.push(message);
+    id = message.parentId;
+  }
+  sourceBranchPath.reverse();
+  const sourceConversation = (await req<Conversation[]>('GET', '/api/conversations')).find(
+    (conversation) => conversation.id === conv.id,
+  )!;
+  const branchedConversation = await req<Conversation>(
+    'POST',
+    `/api/messages/${mv.assistantMessageId}/branch-conversation`,
+  );
+  const branchedSnap = await tree(branchedConversation.id);
+  const branchedPath = pathOf(branchedSnap);
+  assert(
+    branchedSnap.messages.length === sourceBranchPath.length &&
+      branchedPath.length === sourceBranchPath.length &&
+      branchedPath.every(
+        (message, index) =>
+          message.content === sourceBranchPath[index]!.content &&
+          message.role === sourceBranchPath[index]!.role &&
+          message.reasoning === sourceBranchPath[index]!.reasoning &&
+          message.name === sourceBranchPath[index]!.name &&
+          message.parentId === (index === 0 ? null : branchedPath[index - 1]!.id) &&
+          message.activeChildId ===
+            (index === branchedPath.length - 1 ? null : branchedPath[index + 1]!.id),
+      ),
+    'branch to new conversation copies only the selected message ancestry as one linear path',
+  );
+  assert(
+    branchedConversation.characterId === sourceConversation.characterId &&
+      branchedConversation.personaId === sourceConversation.personaId &&
+      branchedConversation.endpointId === sourceConversation.endpointId &&
+      branchedConversation.speakerName === sourceConversation.speakerName &&
+      branchedConversation.title.endsWith(' (branch)'),
+    'branched conversation preserves source configuration and gets a branch title',
+  );
   await expectStatus(
     'POST',
     `/api/messages/${dup.messageId}/move`,
@@ -2199,6 +2240,30 @@ async function main() {
     'active image selection persists and a stale selection cannot overwrite it',
   );
   const secondImageUrl = regenMsg.images[1]!;
+
+  const imageBranch = await req<Conversation>(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/branch-conversation`,
+  );
+  const imageBranchSnap = await tree(imageBranch.id);
+  const branchedImageMessage = pathOf(imageBranchSnap).at(-1)!;
+  assert(
+    branchedImageMessage.images.length === regenMsg.images.length &&
+      branchedImageMessage.images.every(
+        (image, index) => image !== regenMsg.images[index] && image.startsWith('/images/'),
+      ) &&
+      (await fetch(`${BASE}${branchedImageMessage.images[0]}`)).status === 200,
+    'branch to new conversation copies generated image files instead of sharing paths',
+  );
+  await req(
+    'DELETE',
+    `/api/conversations/${imageBranch.id}?expectedActiveLeafId=${imageBranch.activeLeafId}&expectedMutationRevision=${imageBranch.mutationRevision}`,
+  );
+  assert(
+    (await fetch(`${BASE}${branchedImageMessage.images[0]}`)).status === 404 &&
+      (await fetch(`${BASE}${regenMsg.images[0]}`)).status === 200,
+    'deleting a branched conversation removes only its copied image files',
+  );
 
   // A branch guard rejects an old client snapshot, while a current snapshot
   // still cannot spend render work (or change image selection) on an inactive

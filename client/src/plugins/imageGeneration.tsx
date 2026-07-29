@@ -1,6 +1,6 @@
 import { Show, createSignal, onMount, type JSX } from 'solid-js';
 import { workflowValidationError } from '@minitavern/shared';
-import type { Plugin, PluginMessageView } from './api.ts';
+import type { Plugin, PluginMessageView, PluginTool } from './api.ts';
 import { pluginSettings } from './api.ts';
 import { api, ApiError } from '../state/api.ts';
 import {
@@ -178,12 +178,15 @@ function settings(): ImageGenSettings {
   return { ...cfg, promptPresets };
 }
 
-function selectedPrompt(cfg: ImageGenSettings, kind: ImagePromptKind): string {
+function selectedPrompt(
+  cfg: ImageGenSettings,
+  kind: ImagePromptKind,
+  /** undefined = active setting; null = built-in Default; string = named preset. */
+  presetName?: string | null,
+): string {
   const selection = cfg.promptPresets[kind];
-  return (
-    selection.presets.find((preset) => preset.name === selection.active)?.prompt ??
-    DEFAULT_PROMPTS[kind]
-  );
+  const name = presetName === undefined ? selection.active : presetName;
+  return selection.presets.find((preset) => preset.name === name)?.prompt ?? DEFAULT_PROMPTS[kind];
 }
 
 /** The server's route-time check (shared implementation) so a broken paste
@@ -194,8 +197,12 @@ function workflowError(workflow: string): string | null {
 
 /** Selects one prompt variant and expands its optional command instruction.
  * {{char}}/{{user}} expand server-side, where the conversation context lives. */
-function composePrompt(kind: Exclude<ImagePromptKind, 'avatar'>, instruction = ''): string {
-  const template = selectedPrompt(settings(), kind);
+function composePrompt(
+  kind: Exclude<ImagePromptKind, 'avatar'>,
+  instruction = '',
+  presetName?: string | null,
+): string {
+  const template = selectedPrompt(settings(), kind, presetName);
   // Callback replacement: a string would interpret $-sequences in the
   // user's instruction ("$$99" → "$99", "$&" → the matched macro).
   return template.replaceAll(/\{\{instruction\}\}/gi, () => instruction);
@@ -240,6 +247,7 @@ export function avatarPromptTemplates(): { prompt: string; context: string } {
 async function generate(
   kind: Exclude<ImagePromptKind, 'avatar'>,
   instruction = '',
+  presetName?: string | null,
 ): Promise<boolean> {
   if (state.selectedId == null) {
     toast('No conversation selected.');
@@ -248,13 +256,36 @@ async function generate(
   return navigateTree(() =>
     api.toolGenerate(
       state.selectedId!,
-      composePrompt(kind, instruction),
+      composePrompt(kind, instruction, presetName),
       'Image prompt',
       state.tree.activeLeafId,
       state.tree.mutationRevision,
       activeRenderConfig(),
     ),
   );
+}
+
+/** One direct action per available prompt. With no saved presets, retain the
+ * original compact label; otherwise name Default and every saved variant so a
+ * click selects that prompt for this generation only. */
+function promptTools(kind: 'describe' | 'face', subject: 'Character' | 'Face'): PluginTool[] {
+  const presets = settings().promptPresets[kind].presets;
+  const baseLabel = `Generate ${subject} Image`;
+  if (presets.length === 0) {
+    return [{ label: baseLabel, icon: ImageIcon, run: () => void generate(kind) }];
+  }
+  return [
+    { name: 'Default', presetName: null },
+    ...presets.map((preset) => ({ name: preset.name, presetName: preset.name })),
+  ].map(({ name, presetName }) => ({
+    label: `${baseLabel} — ${name}`,
+    icon: ImageIcon,
+    run: () => void generate(kind, '', presetName),
+  }));
+}
+
+function imageGenerationTools(): PluginTool[] {
+  return [...promptTools('describe', 'Character'), ...promptTools('face', 'Face')];
 }
 
 const ImageIcon = () => (
@@ -956,14 +987,7 @@ export const imageGenerationPlugin: Plugin = {
   id: ID,
   name: 'Image Generation',
   messageView,
-  tools: [
-    {
-      label: 'Generate Character Image',
-      icon: ImageIcon,
-      run: () => void generate('describe'),
-    },
-    { label: 'Generate Face Image', icon: ImageIcon, run: () => void generate('face') },
-  ],
+  tools: imageGenerationTools,
   commands: [
     {
       name: 'image',

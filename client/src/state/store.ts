@@ -619,6 +619,23 @@ export async function duplicateConversation(id: number): Promise<void> {
   }
 }
 
+/** Creates and opens a new linear conversation containing the selected
+ * message and its complete ancestor chain. */
+export async function branchConversation(messageId: number): Promise<void> {
+  const conv = await api.branchConversation(messageId);
+  setState('conversations', (list) => upsertById(list, conv));
+  let verified = false;
+  try {
+    await loaders.conversations();
+    verified = true;
+  } catch (err) {
+    console.error(err);
+  }
+  if (!verified || state.conversations.some((conversation) => conversation.id === conv.id)) {
+    selectConversation(conv.id);
+  }
+}
+
 export function restoreConversationSelection(): void {
   selectionRestored = true;
   const exists = (id: number) => state.conversations.some((conversation) => conversation.id === id);
