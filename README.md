@@ -25,7 +25,7 @@ MiniTavern is a ground-up rewrite of the SillyTavern idea without the bloat. It 
 - Steered regeneration: "Regenerate with instruction" re-rolls an assistant reply with a one-off steering instruction (format customizable per template) that steers only that generation and never enters the chat history.
 - Reasoning display: thinking/reasoning streams live alongside the reply and collapses behind a per-message "Thinking" chip.
 - Prompt trace: inspect the exact prompt the API receives, straight from the chat header.
-- Sidebar conversation management: duplicate/delete chats on hover, optional grouping by character, JSON export; chats titled "New chat" auto-title themselves from the first exchange.
+- Sidebar conversation management: duplicate/delete chats on hover, optional grouping by character, and versioned self-contained JSON export (all branches, image assets, and rerender configuration; validated import API); chats titled "New chat" auto-title themselves from the first exchange.
 - Full-text message search (SQLite FTS5) with snippets, plus title search.
 - Responsive: desktop two-pane layout, mobile PWA with bottom composer and swipe gestures.
 
@@ -40,6 +40,24 @@ docker compose up --build -d
 
 Open `http://<host>:5487`. State lives in `./data`.
 
+### Backups
+
+MiniTavern uses SQLite WAL mode. Do not copy `minitavern.db` while the server is
+running: recent committed changes can still be in `minitavern.db-wal`, so a raw
+copy can lose new rows or resurrect deleted ones.
+
+Create a transactionally consistent database snapshot with SQLite's online
+backup mechanism:
+
+```sh
+docker compose exec minitavern node server/src/backup.ts /data/backups/minitavern-$(date +%F).db
+```
+
+The command refuses to overwrite an existing backup and stores it with mode
+`0600`. Generated images and avatars are separate files; for a complete disaster
+recovery copy, stop MiniTavern and copy the whole `./data` directory, including
+`avatars`, `images`, and the database snapshot.
+
 ### Network allowlist
 
 HTTP and WebSocket access are restricted by source IP. Configure the addresses or CIDR ranges
@@ -51,6 +69,13 @@ MINITAVERN_IP_ALLOWLIST=127.0.0.1/32,::1/128,192.168.1.20/32,192.168.1.0/24
 
 When unset, loopback, RFC 1918 private networks, IPv6 unique-local addresses, and link-local
 addresses are allowed. Keep `172.16.0.0/12` when using Docker-internal tools or the mock service.
+Set `MINITAVERN_IP_ALLOWLIST=` (an explicitly empty value) to allow every source address.
+
+For an additional application-level gate, set an access password under **Settings > General**.
+No password is configured by default. When enabled, API requests, generated media, avatars, and
+WebSocket connections require an authenticated HTTP-only session cookie; the IP allowlist still
+applies independently.
+Use HTTPS when the password will cross an untrusted network.
 
 ### HTTPS
 
