@@ -7,8 +7,16 @@
 //     server sh -c 'PORT=15487 node server/src/index.ts & PORT=19800 node scripts/mock-openai.ts & \
 //       sleep 2; node scripts/e2e.ts'
 import { deflateSync } from 'node:zlib';
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { readdirSync, statSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { WebSocket as HeaderWebSocket } from 'ws';
+import { expandWorkflowTemplate, workflowValidationError } from '@minitavern/shared';
 import type { Message, ServerEvent, Settings, TreeSnapshot } from '@minitavern/shared';
 import { chunk } from './pngChunk.ts';
+import { createIpAllowlist } from '../server/src/ipAccess.ts';
 
 if (!process.env.E2E_BASE || !process.env.E2E_MOCK) {
   console.error(
@@ -51,6 +59,33 @@ async function expectStatus(
     body: JSON.stringify(body),
   });
   assert(res.status === status, `${method} ${path} rejects invalid input with ${status}`);
+}
+
+async function websocketHandshake(origin: string, cookie?: string): Promise<'open' | number> {
+  return new Promise((resolve, reject) => {
+    const ws = new HeaderWebSocket(`${BASE.replace('http', 'ws')}/ws`, {
+      origin,
+      ...(cookie ? { headers: { cookie } } : {}),
+    });
+    const timeout = setTimeout(() => {
+      ws.terminate();
+      reject(new Error(`timeout waiting for WebSocket handshake from ${origin}`));
+    }, 5000);
+    ws.once('open', () => {
+      clearTimeout(timeout);
+      ws.close();
+      resolve('open');
+    });
+    ws.once('unexpected-response', (_request, response) => {
+      clearTimeout(timeout);
+      ws.terminate();
+      resolve(response.statusCode ?? 0);
+    });
+    ws.once('error', (err) => {
+      clearTimeout(timeout);
+      reject(err);
+    });
+  });
 }
 
 class WsClient {
@@ -113,14 +148,8 @@ class WsClient {
   }
 }
 
-function makeCardPng(): Buffer {
-  // 1x1 PNG with a tEXt 'chara' chunk carrying a V2 card.
-  const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(1, 0);
-  ihdr.writeUInt32BE(1, 4);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  const card = {
+function makeCardPng(
+  card: unknown = {
     spec: 'chara_card_v2',
     data: {
       name: 'Card Imported Hero',
@@ -128,9 +157,17 @@ function makeCardPng(): Buffer {
       personality: 'Fearless and pixelated.',
       scenario: 'Inside a unit test.',
       first_mes: 'Greetings, {{user}}! I am {{char}}.',
+      system_prompt: 'Imported system prompt.',
       alternate_greetings: ['Alternate hello, {{user}}!'],
     },
-  };
+  },
+): Buffer {
+  // 1x1 PNG with a tEXt 'chara' chunk carrying a V2 card.
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(1, 0);
+  ihdr.writeUInt32BE(1, 4);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
   const text = Buffer.concat([
     Buffer.from('chara', 'latin1'),
     Buffer.from([0]),
@@ -161,14 +198,58 @@ function makeCompressedMetadataBombPng(): Buffer {
 const tree = (id: number) => req<TreeSnapshot>('GET', `/api/conversations/${id}/tree`);
 
 const fetchTrace = (id: number) =>
-  req<{ messages: { role: string; content: string }[]; namePrefill: string | null }>(
-    'GET',
-    `/api/conversations/${id}/trace`,
-  );
+  req<{
+    messages: { role: string; content: string; reasoning_content?: string }[];
+    namePrefill: string | null;
+  }>('GET', `/api/conversations/${id}/trace`);
 
 async function branchBody(conversationId: number, body: Record<string, unknown> = {}) {
   const snapshot = await tree(conversationId);
-  return { ...body, expectedActiveLeafId: snapshot.activeLeafId };
+  return {
+    ...body,
+    expectedActiveLeafId: snapshot.activeLeafId,
+    expectedMutationRevision: snapshot.mutationRevision,
+  };
+}
+
+async function branchBodyAt(
+  conversationId: number,
+  expectedActiveLeafId: number | null,
+  body: Record<string, unknown> = {},
+) {
+  const snapshot = await tree(conversationId);
+  return { ...body, expectedActiveLeafId, expectedMutationRevision: snapshot.mutationRevision };
+}
+
+function branchQuery(snapshot: TreeSnapshot, activeLeafId = snapshot.activeLeafId): string {
+  return `expectedActiveLeafId=${activeLeafId ?? 'null'}&expectedMutationRevision=${snapshot.mutationRevision}`;
+}
+
+async function branchPath(
+  conversationId: number,
+  path: string,
+  expectedActiveLeafId: number | null,
+): Promise<string> {
+  const snapshot = await tree(conversationId);
+  return `${path}?${branchQuery(snapshot, expectedActiveLeafId)}`;
+}
+
+async function patchConversation(
+  conversationId: number,
+  patch: Record<string, unknown>,
+): Promise<unknown> {
+  return req(
+    'PATCH',
+    `/api/conversations/${conversationId}`,
+    await branchBody(conversationId, patch),
+  );
+}
+
+async function stopGeneration(conversationId: number, messageId: number): Promise<void> {
+  const snapshot = await tree(conversationId);
+  const token = snapshot.messages.find((message) => message.id === messageId)?.generationToken;
+  if (token == null) throw new Error(`message ${messageId} has no generation token`);
+  await req('POST', `/api/generations/${messageId}/stop`, { expectedGenerationToken: token });
 }
 
 const sendMessage = async (conversationId: number, content: string) =>
@@ -219,7 +300,75 @@ function pathOf(snapshot: TreeSnapshot): Message[] {
   return path.reverse();
 }
 
+/** Compares only tree links, translating message ids to each snapshot's stable
+ * id-order positions. Conversation duplication preserves that row ordering
+ * even when moves/insertions make a newer message the parent of an older one. */
+function treeLinkShape(snapshot: TreeSnapshot): unknown {
+  const ordered = [...snapshot.messages].sort((a, b) => a.id - b.id);
+  const index = new Map(ordered.map((message, i) => [message.id, i]));
+  return {
+    activeLeaf: snapshot.activeLeafId == null ? null : index.get(snapshot.activeLeafId),
+    nodes: ordered.map((message) => ({
+      parent: message.parentId == null ? null : index.get(message.parentId),
+      activeChild: message.activeChildId == null ? null : index.get(message.activeChildId),
+    })),
+  };
+}
+
 async function main() {
+  const unrestricted = createIpAllowlist('   ');
+  assert(
+    unrestricted.isAllowed('203.0.113.42') && unrestricted.isAllowed('2001:db8::42'),
+    'an explicitly empty IP allowlist permits every source address',
+  );
+
+  console.log('== cross-site request rejection ==');
+  const hostileGet = await fetch(`${BASE}/api/settings`, {
+    headers: { origin: 'http://attacker.invalid' },
+  });
+  assert(hostileGet.status === 403, 'cross-site HTTP reads are rejected');
+  const hostilePost = await fetch(`${BASE}/api/conversations`, {
+    method: 'POST',
+    headers: { 'content-type': 'text/plain', origin: 'http://attacker.invalid' },
+    body: '{}',
+  });
+  assert(hostilePost.status === 403, 'cross-site text/plain POSTs are rejected before mutation');
+  const sameOriginGet = await fetch(`${BASE}/api/settings`, {
+    headers: { origin: new URL(BASE).origin },
+  });
+  assert(sameOriginGet.ok, 'same-origin browser HTTP requests remain accepted');
+  assert(
+    (await websocketHandshake('http://attacker.invalid')) === 403,
+    'cross-site WebSocket upgrades are rejected',
+  );
+  assert(
+    (await websocketHandshake(new URL(BASE).origin)) === 'open',
+    'same-origin WebSocket upgrades remain accepted',
+  );
+
+  console.log('== workflow macro context validation ==');
+  const unsafeWorkflow = String.raw`{"x":"\{{prompt}}"}`;
+  assert(
+    workflowValidationError(unsafeWorkflow)?.includes('unpaired backslash') === true,
+    'backslash-adjacent prompt macros are rejected at validation time',
+  );
+  assert(
+    workflowValidationError('{"seed":"{{seed}}"}')?.includes('JSON number value') === true,
+    'quoted seed macros are rejected instead of changing type',
+  );
+  const macroPrompt = 'quotes " and slash \\ survive\nnewlines';
+  const expandedWorkflow = expandWorkflowTemplate(
+    '{"text":"prefix {{prompt}} suffix","seed":{{seed}}}',
+    macroPrompt,
+    42,
+  );
+  const expandedWorkflowJson = JSON.parse(expandedWorkflow) as { text: string; seed: number };
+  assert(
+    expandedWorkflowJson.text === `prefix ${macroPrompt} suffix` &&
+      expandedWorkflowJson.seed === 42,
+    'shared workflow expansion preserves prompt text and numeric seeds in real JSON context',
+  );
+
   console.log('== setup: endpoint, models, settings ==');
   const endpoint = await req<{ id: number }>('POST', '/api/endpoints', {
     name: 'mock',
@@ -235,10 +384,54 @@ async function main() {
   );
   const models = await req<string[]>('GET', `/api/endpoints/${endpoint.id}/models`);
   assert(models.includes('mock-large'), 'model list fetched from upstream');
+  const modelAuthorization = async () =>
+    (
+      (await (await fetch(`${MOCK_CONTROL}/control/last-model-authorization`)).json()) as {
+        authorization: string | null;
+      }
+    ).authorization;
+  assert(
+    (await modelAuthorization()) === 'Bearer test-key',
+    'model fetch sends the configured key',
+  );
+  const sameAuthorityUrl = new URL(MOCK_URL);
+  sameAuthorityUrl.pathname = '/alt/v1';
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, { baseUrl: sameAuthorityUrl.toString() });
+  await req<string[]>('GET', `/api/endpoints/${endpoint.id}/models`);
+  assert(
+    (await modelAuthorization()) === 'Bearer test-key',
+    'same-authority endpoint path edits preserve the stored key',
+  );
+  const retargetedUrl = new URL(sameAuthorityUrl);
+  retargetedUrl.hostname = retargetedUrl.hostname === '127.0.0.1' ? 'localhost' : '127.0.0.1';
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, { baseUrl: retargetedUrl.toString() });
+  await req<string[]>('GET', `/api/endpoints/${endpoint.id}/models`);
+  const retargetedEndpoint = (
+    await req<{ id: number; hasApiKey: boolean }[]>('GET', '/api/endpoints')
+  ).find((candidate) => candidate.id === endpoint.id)!;
+  assert(
+    !retargetedEndpoint.hasApiKey && (await modelAuthorization()) === null,
+    'retargeting endpoint authority clears the hidden key before model fetch',
+  );
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, { baseUrl: MOCK_URL, apiKey: 'test-key' });
   await req('PATCH', `/api/endpoints/${endpoint.id}`, { model: 'mock-large' });
   await req('PATCH', `/api/endpoints/${endpoint.id}`, {
     genParams: { reasoningEffort: 'high' },
   });
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, {
+    genParams: { maxTokens: 321 },
+  });
+  const endpointAfterPartialParams = (
+    await req<{ id: number; genParams: { reasoningEffort?: string; maxTokens?: number } }[]>(
+      'GET',
+      '/api/endpoints',
+    )
+  ).find((candidate) => candidate.id === endpoint.id)!;
+  assert(
+    endpointAfterPartialParams.genParams.reasoningEffort === 'high' &&
+      endpointAfterPartialParams.genParams.maxTokens === 321,
+    'partial endpoint generation-parameter PATCH preserves unspecified keys',
+  );
   await expectStatus(
     'PATCH',
     `/api/endpoints/${endpoint.id}`,
@@ -246,6 +439,48 @@ async function main() {
     400,
   );
   await putSettings({ activeEndpointId: endpoint.id });
+
+  console.log('== private persistence + online backup ==');
+  const dataDir = process.env.DATA_DIR!;
+  for (const path of [
+    dataDir,
+    join(dataDir, 'minitavern.db'),
+    join(dataDir, 'minitavern.db-wal'),
+    join(dataDir, 'minitavern.db-shm'),
+  ]) {
+    assert((statSync(path).mode & 0o077) === 0, `${path} is private to the server user`);
+  }
+  const backupPath = join('/tmp', `minitavern-e2e-backup-${randomUUID()}.db`);
+  execFileSync('node', ['server/src/backup.ts', backupPath], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: 'pipe',
+  });
+  try {
+    assert((statSync(backupPath).mode & 0o077) === 0, 'online backup file is mode 0600');
+    const live = new DatabaseSync(join(dataDir, 'minitavern.db'), { readOnly: true });
+    const snapshot = new DatabaseSync(backupPath, { readOnly: true });
+    try {
+      const liveEndpoints = (
+        live.prepare('SELECT count(*) AS n FROM endpoints').get() as { n: number }
+      ).n;
+      const backupEndpoints = (
+        snapshot.prepare('SELECT count(*) AS n FROM endpoints').get() as { n: number }
+      ).n;
+      const integrity = snapshot.prepare('PRAGMA integrity_check').get() as {
+        integrity_check: string;
+      };
+      assert(
+        liveEndpoints === backupEndpoints && integrity.integrity_check === 'ok',
+        'online backup is a complete, valid SQLite snapshot while WAL is active',
+      );
+    } finally {
+      live.close();
+      snapshot.close();
+    }
+  } finally {
+    unlinkSync(backupPath);
+  }
 
   console.log('== shared settings reject stale device writes ==');
   const settingsBase = await req<Settings>('GET', '/api/settings');
@@ -338,6 +573,61 @@ async function main() {
     'second frontend initial tree',
   );
 
+  console.log('== duplicate and export include unflushed live generation buffers ==');
+  const liveWs = new WsClient();
+  await liveWs.open();
+  const exportLiveConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  liveWs.sub(exportLiveConv.id);
+  await liveWs.waitFor(
+    (e) => e.t === 'tree' && e.conversationId === exportLiveConv.id,
+    'live-export conversation tree',
+  );
+  const exportLiveSend = await sendMessage(exportLiveConv.id, 'export during first flush window');
+  const exportDelta = await liveWs.waitFor(
+    (e) => e.t === 'delta' && e.mid === exportLiveSend.assistantMessageId && !!e.d,
+    'first visible live-export content delta',
+  );
+  if (exportDelta.t !== 'delta' || !exportDelta.d) throw new Error('unreachable');
+  const exportResponse = await fetch(`${BASE}/api/conversations/${exportLiveConv.id}/export`);
+  if (!exportResponse.ok) throw new Error(`live export failed: ${await exportResponse.text()}`);
+  const liveExport = (await exportResponse.json()) as { messages: Message[] };
+  assert(
+    liveExport.messages
+      .find((message) => message.id === exportLiveSend.assistantMessageId)
+      ?.content.includes(exportDelta.d) === true,
+    'conversation export includes content visible before the periodic DB flush',
+  );
+  await stopGeneration(exportLiveConv.id, exportLiveSend.assistantMessageId);
+
+  const duplicateLiveConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  liveWs.sub(duplicateLiveConv.id);
+  await liveWs.waitFor(
+    (e) => e.t === 'tree' && e.conversationId === duplicateLiveConv.id,
+    'live-duplicate source tree',
+  );
+  const duplicateLiveSend = await sendMessage(
+    duplicateLiveConv.id,
+    'duplicate during first flush window',
+  );
+  const duplicateDelta = await liveWs.waitFor(
+    (e) => e.t === 'delta' && e.mid === duplicateLiveSend.assistantMessageId && !!e.d,
+    'first visible live-duplicate content delta',
+  );
+  if (duplicateDelta.t !== 'delta' || !duplicateDelta.d) throw new Error('unreachable');
+  const liveCopy = await req<{ id: number }>(
+    'POST',
+    `/api/conversations/${duplicateLiveConv.id}/duplicate`,
+  );
+  const liveCopyAssistant = (await tree(liveCopy.id)).messages.find(
+    (message) => message.role === 'assistant',
+  );
+  assert(
+    liveCopyAssistant?.status === 'stopped' && liveCopyAssistant.content.includes(duplicateDelta.d),
+    'conversation duplicate preserves visible content before the periodic DB flush',
+  );
+  await stopGeneration(duplicateLiveConv.id, duplicateLiveSend.assistantMessageId);
+  liveWs.close();
+
   const firstSend = await sendMessage(conv.id, '  Hello world  ');
   const [firstFinal, peerFinal] = await Promise.all([
     ws.waitFor(
@@ -359,10 +649,12 @@ async function main() {
     'two frontends receive the same streamed response',
   );
   peer.close();
-  const deltas = ws.events.filter((e) => e.t === 'delta');
+  const deltas = ws.events.filter((e) => e.t === 'delta' && e.mid === firstSend.assistantMessageId);
   assert(deltas.length > 10, `stream relayed incrementally (${deltas.length} delta frames)`);
   assert(
-    ws.events.some((e) => e.t === 'delta' && 'r' in e && e.r),
+    ws.events.some(
+      (e) => e.t === 'delta' && e.mid === firstSend.assistantMessageId && 'r' in e && e.r,
+    ),
     'reasoning deltas relayed',
   );
 
@@ -381,13 +673,58 @@ async function main() {
   const userMsg1 = path[0]!;
   const assistant1 = path[1]!;
   assert(userMsg1.content === 'Hello world', 'message boundaries are trimmed on write');
+
+  console.log('== same-leaf stale mutations are revision-guarded ==');
+  const beforeSameLeafEdit = await tree(conv.id);
+  await req('PATCH', `/api/messages/${userMsg1.id}`, {
+    content: userMsg1.content,
+    expectedActiveLeafId: beforeSameLeafEdit.activeLeafId,
+    expectedMutationRevision: beforeSameLeafEdit.mutationRevision,
+  });
+  await expectStatus(
+    'PATCH',
+    `/api/messages/${userMsg1.id}`,
+    {
+      content: 'stale same-leaf overwrite',
+      expectedActiveLeafId: beforeSameLeafEdit.activeLeafId,
+      expectedMutationRevision: beforeSameLeafEdit.mutationRevision,
+    },
+    409,
+  );
+  const afterSameLeafConflict = await tree(conv.id);
+  assert(
+    afterSameLeafConflict.mutationRevision > beforeSameLeafEdit.mutationRevision &&
+      afterSameLeafConflict.messages.find((message) => message.id === userMsg1.id)?.content ===
+        userMsg1.content,
+    'same active leaf cannot conceal a stale content revision',
+  );
+  const staleDeleteConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  const beforeDeleteMetadataChange = await tree(staleDeleteConv.id);
+  await patchConversation(staleDeleteConv.id, { title: 'changed before stale delete' });
+  await expectStatus(
+    'DELETE',
+    `/api/conversations/${staleDeleteConv.id}?${branchQuery(beforeDeleteMetadataChange)}`,
+    undefined,
+    409,
+  );
+  const currentDeleteState = await tree(staleDeleteConv.id);
+  await req(
+    'DELETE',
+    `/api/conversations/${staleDeleteConv.id}?${branchQuery(currentDeleteState)}`,
+  );
+  assert(true, 'conversation delete requires the current mutation revision');
   await expectStatus(
     'POST',
     `/api/conversations/${conv.id}/messages`,
-    { content: 'stale send', expectedActiveLeafId: null },
+    await branchBodyAt(conv.id, null, { content: 'stale send' }),
     409,
   );
-  await expectStatus('PATCH', `/api/conversations/${conv.id}`, { personaId: 999999999 }, 400);
+  await expectStatus(
+    'PATCH',
+    `/api/conversations/${conv.id}`,
+    await branchBody(conv.id, { personaId: 999999999 }),
+    400,
+  );
 
   // Verify streamed content equals persisted content.
   const streamed = deltas.map((e) => (e.t === 'delta' ? (e.d ?? '') : '')).join('');
@@ -462,7 +799,7 @@ async function main() {
   await expectStatus(
     'PATCH',
     `/api/messages/${assistant1.id}`,
-    { content: '   ', expectedActiveLeafId: snap.activeLeafId },
+    await branchBody(conv.id, { content: '   ' }),
     400,
   );
   await req(
@@ -542,23 +879,26 @@ async function main() {
   );
   await expectStatus(
     'DELETE',
-    `/api/messages/${sendResult.userMessageId}?expectedActiveLeafId=${sendResult.assistantMessageId}`,
+    await branchPath(
+      conv.id,
+      `/api/messages/${sendResult.userMessageId}`,
+      sendResult.assistantMessageId,
+    ),
     undefined,
     409,
   );
   await expectStatus(
     'PATCH',
     `/api/messages/${sendResult.userMessageId}`,
-    {
+    await branchBodyAt(conv.id, sendResult.assistantMessageId, {
       content: 'changed while streaming',
-      expectedActiveLeafId: sendResult.assistantMessageId,
-    },
+    }),
     409,
   );
   const nextSwipe = await req<{ assistantMessageId: number | null }>(
     'POST',
     `/api/messages/${sendResult.assistantMessageId}/advance`,
-    { expectedActiveLeafId: sendResult.assistantMessageId },
+    await branchBodyAt(conv.id, sendResult.assistantMessageId),
   );
   if (nextSwipe.assistantMessageId == null) throw new Error('expected a generated swipe');
   const replaced = await ws.waitFor(
@@ -580,12 +920,59 @@ async function main() {
     (e) => e.t === 'delta' && e.mid === stoppedSend.assistantMessageId,
     'stoppable stream started',
   );
-  await req('POST', `/api/generations/${stoppedSend.assistantMessageId}/stop`);
+  await stopGeneration(conv.id, stoppedSend.assistantMessageId);
   const stopped = await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === stoppedSend.assistantMessageId,
     'stopped finalization',
   );
   assert(stopped.t === 'final' && stopped.message.status === 'stopped', 'message marked stopped');
+
+  console.log('== stale generation Stop cannot hit a resumed epoch ==');
+  if (stopped.t !== 'final' || stopped.message.generationToken == null) {
+    throw new Error('stopped generation has no token');
+  }
+  const firstGenerationToken = stopped.message.generationToken;
+  await req(
+    'POST',
+    `/api/messages/${stoppedSend.assistantMessageId}/continue`,
+    await branchBody(conv.id),
+  );
+  const resumedPatch = await ws.waitFor(
+    (event) =>
+      event.t === 'treePatch' &&
+      event.nodes.some(
+        (node) =>
+          node.id === stoppedSend.assistantMessageId &&
+          node.status === 'streaming' &&
+          node.generationToken != null &&
+          node.generationToken !== firstGenerationToken,
+      ),
+    'resumed generation token',
+  );
+  if (resumedPatch.t !== 'treePatch') throw new Error('unreachable');
+  const resumedGenerationToken = resumedPatch.nodes.find(
+    (node) => node.id === stoppedSend.assistantMessageId,
+  )!.generationToken!;
+  await expectStatus(
+    'POST',
+    `/api/generations/${stoppedSend.assistantMessageId}/stop`,
+    { expectedGenerationToken: firstGenerationToken },
+    409,
+  );
+  await req('POST', `/api/generations/${stoppedSend.assistantMessageId}/stop`, {
+    expectedGenerationToken: resumedGenerationToken,
+  });
+  const resumedStopped = await ws.waitFor(
+    (event) =>
+      event.t === 'final' &&
+      event.message.id === stoppedSend.assistantMessageId &&
+      event.message.generationToken === resumedGenerationToken,
+    'current resumed generation stops normally',
+  );
+  assert(
+    resumedStopped.t === 'final' && resumedStopped.message.status === 'stopped',
+    'only the matching generation token can stop a resumed message',
+  );
 
   console.log('== mid-stream subscriber gets snapshot + remaining deltas ==');
   const send2 = await sendMessage(conv.id, 'Another one');
@@ -616,17 +1003,14 @@ async function main() {
   console.log('== delete splices the message out of the chain ==');
   snap = await tree(conv.id);
   const before = snap.messages.length;
-  await req(
-    'DELETE',
-    `/api/messages/${send2.assistantMessageId}?expectedActiveLeafId=${snap.activeLeafId}`,
-  );
+  await req('DELETE', `/api/messages/${send2.assistantMessageId}?${branchQuery(snap)}`);
   snap = await tree(conv.id);
   assert(snap.messages.length === before - 1, 'message deleted');
   assert(snap.activeLeafId !== send2.assistantMessageId, 'active leaf repaired');
   // Mid-path delete: the messages below reparent to the deleted one's parent.
   await req(
     'DELETE',
-    `/api/messages/${stoppedSend.assistantMessageId}?expectedActiveLeafId=${send2.userMessageId}`,
+    `/api/messages/${stoppedSend.assistantMessageId}?${branchQuery(snap, send2.userMessageId)}`,
   );
   snap = await tree(conv.id);
   assert(snap.messages.length === before - 2, 'only the deleted message is removed');
@@ -645,7 +1029,7 @@ async function main() {
   const blockSwipe = await req<{ assistantMessageId: number | null }>(
     'POST',
     `/api/messages/${blockSend.assistantMessageId}/advance`,
-    { expectedActiveLeafId: blockSend.assistantMessageId },
+    await branchBodyAt(conv.id, blockSend.assistantMessageId),
   );
   const swipeId = blockSwipe.assistantMessageId!;
   await ws.waitFor((e) => e.t === 'final' && e.message.id === swipeId, 'block swipe finished');
@@ -654,7 +1038,10 @@ async function main() {
     (e) => e.t === 'final' && e.message.id === below.assistantMessageId,
     'below-block reply finished',
   );
-  await req('DELETE', `/api/messages/${swipeId}?expectedActiveLeafId=${below.assistantMessageId}`);
+  await req(
+    'DELETE',
+    await branchPath(conv.id, `/api/messages/${swipeId}`, below.assistantMessageId),
+  );
   snap = await tree(conv.id);
   assert(
     !snap.messages.some((m) => m.id === swipeId || m.id === blockSend.assistantMessageId),
@@ -705,7 +1092,11 @@ async function main() {
   );
   const swipeDelete = await req<{ activeLeafId: number | null }>(
     'DELETE',
-    `/api/messages/${doomedSwipe.assistantMessageId}/swipe?expectedActiveLeafId=${doomedDescendant.assistantMessageId}`,
+    await branchPath(
+      conv.id,
+      `/api/messages/${doomedSwipe.assistantMessageId}/swipe`,
+      doomedDescendant.assistantMessageId,
+    ),
   );
   snap = await tree(conv.id);
   assert(
@@ -733,10 +1124,11 @@ async function main() {
     'move-me reply finished',
   );
   const mvParent = (await tree(conv.id)).messages.find((m) => m.id === mv.userMessageId)!.parentId;
-  await req('POST', `/api/messages/${mv.assistantMessageId}/move`, {
-    direction: 'up',
-    expectedActiveLeafId: mv.assistantMessageId,
-  });
+  await req(
+    'POST',
+    `/api/messages/${mv.assistantMessageId}/move`,
+    await branchBodyAt(conv.id, mv.assistantMessageId, { direction: 'up' }),
+  );
   snap = await tree(conv.id);
   assert(
     snap.messages.find((m) => m.id === mv.assistantMessageId)?.parentId === mvParent &&
@@ -744,10 +1136,16 @@ async function main() {
       snap.activeLeafId === mv.userMessageId,
     'move up rotates the block above its parent',
   );
-  await req('POST', `/api/messages/${mv.userMessageId}/move`, {
-    direction: 'up',
-    expectedActiveLeafId: mv.userMessageId,
-  });
+  const movedCopy = await req<{ id: number }>('POST', `/api/conversations/${conv.id}/duplicate`);
+  assert(
+    JSON.stringify(treeLinkShape(await tree(movedCopy.id))) === JSON.stringify(treeLinkShape(snap)),
+    'conversation duplicate preserves links when an older row has a newer parent after a move',
+  );
+  await req(
+    'POST',
+    `/api/messages/${mv.userMessageId}/move`,
+    await branchBodyAt(conv.id, mv.userMessageId, { direction: 'up' }),
+  );
   snap = await tree(conv.id);
   assert(
     snap.messages.find((m) => m.id === mv.userMessageId)?.parentId === mvParent &&
@@ -758,7 +1156,7 @@ async function main() {
   const dup = await req<{ messageId: number; activeLeafId: number }>(
     'POST',
     `/api/messages/${mv.assistantMessageId}/duplicate`,
-    { expectedActiveLeafId: mv.assistantMessageId },
+    await branchBodyAt(conv.id, mv.assistantMessageId),
   );
   snap = await tree(conv.id);
   const dupMsg = snap.messages.find((m) => m.id === dup.messageId);
@@ -771,7 +1169,7 @@ async function main() {
   await expectStatus(
     'POST',
     `/api/messages/${dup.messageId}/move`,
-    { direction: 'down', expectedActiveLeafId: dup.messageId },
+    await branchBodyAt(conv.id, dup.messageId, { direction: 'down' }),
     400,
   );
 
@@ -811,13 +1209,17 @@ async function main() {
   await expectStatus(
     'POST',
     `/api/conversations/${tailConv.id}/delete-tail`,
-    { count: 3, expectedActiveLeafId: tailFirst.assistantMessageId },
+    await branchBodyAt(tailConv.id, tailFirst.assistantMessageId, { count: 3 }),
     409,
   );
   const tailDeleted = await req<{ activeLeafId: number | null; deletedSiblingRoots: number }>(
     'POST',
     `/api/conversations/${tailConv.id}/delete-tail`,
-    { count: 3, expectedActiveLeafId: tailBefore.activeLeafId },
+    {
+      count: 3,
+      expectedActiveLeafId: tailBefore.activeLeafId,
+      expectedMutationRevision: tailBefore.mutationRevision,
+    },
   );
   const tailAfter = await tree(tailConv.id);
   assert(
@@ -830,6 +1232,7 @@ async function main() {
   await req('POST', `/api/conversations/${tailConv.id}/delete-tail`, {
     count: 99,
     expectedActiveLeafId: tailAfter.activeLeafId,
+    expectedMutationRevision: tailAfter.mutationRevision,
   });
   assert((await tree(tailConv.id)).messages.length === 0, 'large tail count clears the whole tree');
 
@@ -845,6 +1248,17 @@ async function main() {
     typeof settingsAfterBomb.revision === 'number',
     'server remains responsive after compressed metadata rejection',
   );
+  for (const malformedCard of [
+    { spec: 'chara_card_v2', data: { name: {} } },
+    { spec: 'chara_card_v2', data: { name: 'Bad fields', scenario: 42 } },
+  ]) {
+    const malformedRes = await fetch(`${BASE}/api/characters/import-card`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/octet-stream' },
+      body: new Uint8Array(makeCardPng(malformedCard)),
+    });
+    assert(malformedRes.status === 400, 'malformed character-card field types return 400');
+  }
   const cardRes = await fetch(`${BASE}/api/characters/import-card`, {
     method: 'POST',
     headers: { 'content-type': 'application/octet-stream' },
@@ -900,6 +1314,22 @@ async function main() {
   assert(reimported.name === 'Card Imported Hero', 'exported card reimports with same name');
   assert(reimported.personality.includes('brave'), 'exported card keeps personality text');
 
+  await req('PATCH', `/api/characters/${character.id}`, { customPrompt: null });
+  const clearedExportRes = await fetch(`${BASE}/api/characters/${character.id}/card`);
+  const clearedReimportRes = await fetch(`${BASE}/api/characters/import-card`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/octet-stream' },
+    body: new Uint8Array(await clearedExportRes.arrayBuffer()),
+  });
+  if (!clearedReimportRes.ok) {
+    throw new Error(`cleared card reimport failed: ${await clearedReimportRes.text()}`);
+  }
+  const clearedReimported = (await clearedReimportRes.json()) as { customPrompt: string | null };
+  assert(
+    clearedReimported.customPrompt === null,
+    'card export preserves an explicitly cleared imported system prompt',
+  );
+
   console.log('== avatars accept PNG only ==');
   // Magic bytes decide, not the content-type: a renamed JPEG stored as .png
   // would break PNG card export later.
@@ -922,6 +1352,10 @@ async function main() {
   assert(pngCharRes.ok, 'character avatar upload accepts a valid PNG');
   const pngChar = (await pngCharRes.json()) as { avatar: string | null };
   assert(pngChar.avatar?.includes('.png') === true, 'stored avatar is served as a .png file');
+  assert(
+    !readdirSync(join(process.env.DATA_DIR!, 'avatars')).some((name) => name.endsWith('.tmp')),
+    'atomic avatar replacement leaves no temporary files behind',
+  );
   const jpegPersonaRes = await putAvatar(`/api/personas/${persona.id}/avatar`, jpegBytes);
   assert(jpegPersonaRes.status === 415, 'persona avatar upload rejects JPEG magic bytes');
 
@@ -999,6 +1433,40 @@ async function main() {
   const avatarPrompt = await firstStream;
   assert(avatarPrompt.includes('Avatar Hero'), 'prompt stream relays the LLM completion text');
 
+  // A failed prompt stream has an error and no done marker. The avatar modal
+  // uses that distinction to retain the useful failure instead of rendering a
+  // plausible-looking partial prompt.
+  await fetch(`${MOCK_CONTROL}/control/fail-next?count=1`, { method: 'POST' });
+  const failedPromptRes = await fetch(`${BASE}/api/characters/${avatarChar.id}/avatar/prompt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: imageGenCfg.avatarPrompt }),
+  });
+  const failedPromptBody = await failedPromptRes.text();
+  assert(
+    failedPromptBody.includes('"error"') && !failedPromptBody.includes('"done":true'),
+    'failed avatar prompt stream cannot be mistaken for a completed prompt',
+  );
+
+  // Closing the modal aborts its SSE request. The server must abort the
+  // upstream completion and release the per-entity lock immediately so a new
+  // modal can start rather than receiving 409 until the old model times out.
+  const cancelledPrompt = new AbortController();
+  const cancelledPromptRes = await fetch(`${BASE}/api/characters/${avatarChar.id}/avatar/prompt`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: imageGenCfg.avatarPrompt }),
+    signal: cancelledPrompt.signal,
+  });
+  assert(cancelledPromptRes.ok, 'cancellable avatar prompt stream opens');
+  cancelledPrompt.abort();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  const reopenedPrompt = await streamAvatarPrompt(
+    `/api/characters/${avatarChar.id}/avatar/prompt`,
+    imageGenCfg.avatarPrompt,
+  );
+  assert(reopenedPrompt.length > 0, 'aborting an avatar prompt releases its entity lock');
+
   // The streamed request hit the mock with macros expanded from the character.
   const { completion: avatarCompletion } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-completion`)
@@ -1038,14 +1506,38 @@ async function main() {
   const genCharRes = await putAvatar(`/api/characters/${avatarChar.id}/avatar`, renderedPng);
   assert(genCharRes.ok, 'rendered avatar saves through the avatar upload route');
 
-  // A jobId gets live sampler progress as renderProgress broadcasts.
-  const avatarWs = new WsClient();
-  await avatarWs.open();
+  // A jobId gets a private SSE stream rather than a global progress broadcast.
   const avatarJobId = 'e2e-avatar-job';
-  const progressSeen = avatarWs.waitFor(
-    (ev) => ev.t === 'renderProgress' && ev.jobId === avatarJobId && ev.max > 0,
-    'avatar render progress event',
-  );
+  const unrelatedJobId = 'e2e-avatar-unrelated-job';
+  const unrelatedAbort = new AbortController();
+  const unrelatedResponse = await fetch(`${BASE}/api/avatar/render-progress/${unrelatedJobId}`, {
+    signal: unrelatedAbort.signal,
+  });
+  const unrelatedReader = unrelatedResponse.body!.getReader();
+  // Consume the registration comment before checking for leaked data events.
+  await unrelatedReader.read();
+  const progressAbort = new AbortController();
+  const progressResponse = await fetch(`${BASE}/api/avatar/render-progress/${avatarJobId}`, {
+    signal: progressAbort.signal,
+  });
+  assert(progressResponse.ok && progressResponse.body != null, 'avatar progress SSE opens');
+  const progressSeen = (async () => {
+    const reader = progressResponse.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) throw new Error('avatar progress SSE ended before a progress event');
+      buffer += decoder.decode(chunk.value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const event = JSON.parse(line.slice(5)) as { value?: number; max?: number };
+        if (event.max && typeof event.value === 'number') return;
+      }
+    }
+  })();
   const progressRenderRes = await fetch(`${BASE}/api/avatar/render`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -1053,8 +1545,48 @@ async function main() {
   });
   assert(progressRenderRes.ok, 'avatar render with jobId succeeds');
   await progressSeen;
-  assert(true, 'jobId render broadcasts renderProgress events');
-  avatarWs.close();
+  assert(true, 'jobId render sends progress only through its private SSE stream');
+  progressAbort.abort();
+  const unrelatedResult = await Promise.race([
+    unrelatedReader.read().then(
+      () => 'event',
+      () => 'closed',
+    ),
+    new Promise<'quiet'>((resolve) => setTimeout(() => resolve('quiet'), 150)),
+  ]);
+  assert(unrelatedResult === 'quiet', 'avatar progress never leaks to an unrelated job stream');
+  unrelatedAbort.abort();
+
+  // Aborting the binary render response (modal close) propagates through the
+  // route into Comfy polling rather than leaving background work attached to a
+  // disposed component.
+  const historyCount = async () =>
+    (
+      (await (await fetch(`${MOCK_CONTROL}/control/comfy-history-count`)).json()) as {
+        count: number;
+      }
+    ).count;
+  const cancelledRender = new AbortController();
+  const cancelledRenderRequest = fetch(`${BASE}/api/avatar/render`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      prompt: 'cancel this avatar render',
+      image: avatarImage,
+      jobId: 'e2e-avatar-cancelled-job',
+    }),
+    signal: cancelledRender.signal,
+  }).catch(() => null);
+  await new Promise((resolve) => setTimeout(resolve, 150));
+  cancelledRender.abort();
+  await cancelledRenderRequest;
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const countAfterAbort = await historyCount();
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert(
+    (await historyCount()) === countAfterAbort,
+    'aborting an avatar render stops further Comfy history polling',
+  );
 
   // Persona variant: {{user}}/{{description}} from the persona row.
   await streamAvatarPrompt(
@@ -1101,7 +1633,7 @@ async function main() {
   const prevSettings = await req<{ defaultTemplateId: number | null }>('GET', '/api/settings');
   await putSettings({ defaultTemplateId: tpl.id });
   const conv2 = await req<{ id: number }>('POST', '/api/conversations', {});
-  await req('PATCH', `/api/conversations/${conv2.id}`, { speakerName: 'Ari' });
+  await patchConversation(conv2.id, { speakerName: 'Ari' });
 
   const trace = await fetchTrace(conv2.id);
   assert(
@@ -1125,12 +1657,19 @@ async function main() {
   );
   const prefixedTrace = await fetchTrace(conv2.id);
   assert(
-    prefixedTrace.messages.some((message) => message.content === 'Aiki: prefix check') &&
-      prefixedTrace.namePrefill === 'Ari:',
-    'name prefixes use one space and prefills have no trailing space',
+    prefixedTrace.messages.some(
+      (message) => message.role === 'user' && message.content.endsWith('Aiki: prefix check'),
+    ) && prefixedTrace.namePrefill === 'Ari:',
+    'name prefixes use one space and prefills have no trailing space after role normalization',
+  );
+  assert(
+    prefixedTrace.messages.some(
+      (message) => message.role === 'assistant' && Boolean(message.reasoning_content),
+    ),
+    'assistant history replays persisted reasoning_content',
   );
 
-  await req('PATCH', `/api/conversations/${conv2.id}`, { speakerName: 'Bob' });
+  await patchConversation(conv2.id, { speakerName: 'Bob' });
   const regen = await req<{ assistantMessageId: number | null }>(
     'POST',
     `/api/messages/${sent.assistantMessageId}/advance`,
@@ -1162,19 +1701,38 @@ async function main() {
       e.message.status === 'done',
     'resume appended to the same message',
   );
+  const resumedCompletion = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as {
+    completion: {
+      messages: { role: string; content: string; reasoning_content?: string }[];
+    } | null;
+  };
+  assert(
+    resumedCompletion.completion?.messages.at(-1)?.role === 'assistant' &&
+      Boolean(resumedCompletion.completion.messages.at(-1)?.reasoning_content),
+    'continuation prefill replays reasoning_content with assistant content',
+  );
 
   console.log('== endpoint can disable assistant prefills ==');
   await req('PATCH', `/api/endpoints/${endpoint.id}`, { prefillMode: 'disabled' });
+  const disabledNamedTrace = await fetchTrace(conv2.id);
   assert(
-    (await fetchTrace(conv2.id)).namePrefill === null,
+    disabledNamedTrace.namePrefill === null,
     'prompt trace omits the disabled endpoint prefill',
+  );
+  assert(
+    disabledNamedTrace.messages
+      .findLast((message) => message.role === 'user')
+      ?.content.endsWith('<Note: Reply as Bob>') === true,
+    'disabled prefill adds an explicit note for a non-default speaker',
   );
   const noPrefillSend = await sendMessage(conv2.id, 'no prefill, please');
   await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === noPrefillSend.assistantMessageId,
     'generation with prefills disabled finished',
   );
-  let noPrefillCompletion = (await (
+  const noPrefillCompletion = (await (
     await fetch(`${MOCK_CONTROL}/control/last-completion`)
   ).json()) as {
     completion: { lastMessageRole: string | null; continueFinalMessage: boolean } | null;
@@ -1188,25 +1746,44 @@ async function main() {
   const noPrefillBeforeResume = (await tree(conv2.id)).messages.find(
     (m) => m.id === noPrefillSend.assistantMessageId,
   )!.content.length;
-  await req(
+  await expectStatus(
     'POST',
     `/api/messages/${noPrefillSend.assistantMessageId}/continue`,
     await branchBody(conv2.id),
+    400,
   );
-  await ws.waitFor(
-    (e) =>
-      e.t === 'final' &&
-      e.message.id === noPrefillSend.assistantMessageId &&
-      e.message.content.length > noPrefillBeforeResume,
-    'resume with prefills disabled finished',
-  );
-  noPrefillCompletion = (await (
-    await fetch(`${MOCK_CONTROL}/control/last-completion`)
-  ).json()) as typeof noPrefillCompletion;
   assert(
-    noPrefillCompletion.completion?.lastMessageRole === 'user' &&
-      noPrefillCompletion.completion.continueFinalMessage === false,
-    'disabled endpoint also omits partial-content prefill on resume',
+    (await tree(conv2.id)).messages.find((m) => m.id === noPrefillSend.assistantMessageId)?.content
+      .length === noPrefillBeforeResume,
+    'disabled endpoint rejects resume without modifying the existing reply',
+  );
+
+  await makeNextMockResponseDieAfterContent('Bob: DISABLED_PARTIAL');
+  const disabledPartial = await sendMessage(conv2.id, 'disabled partial retry safety');
+  const disabledPartialFinal = await ws.waitFor(
+    (event) => event.t === 'final' && event.message.id === disabledPartial.assistantMessageId,
+    'disabled-prefill partial failure finalizes',
+  );
+  assert(
+    disabledPartialFinal.t === 'final' &&
+      disabledPartialFinal.message.status === 'error' &&
+      disabledPartialFinal.message.content === 'DISABLED_PARTIAL',
+    'disabled prefills neither concatenate a restarted answer nor leak a matching speaker prefix',
+  );
+
+  await patchConversation(conv2.id, { speakerName: null });
+  const disabledSwitchBackTrace = await fetchTrace(conv2.id);
+  assert(
+    disabledSwitchBackTrace.messages
+      .findLast((message) => message.role === 'user')
+      ?.content.endsWith('<Note: Reply as Assistant>') === true,
+    'disabled prefill explicitly notes a switch back to the default speaker',
+  );
+  const defaultSpeakerConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  const disabledDefaultTrace = await fetchTrace(defaultSpeakerConv.id);
+  assert(
+    !disabledDefaultTrace.messages.some((message) => message.content.includes('<Note: Reply as ')),
+    'ordinary default-to-default speaking adds no disabled-prefill note',
   );
   await req('PATCH', `/api/endpoints/${endpoint.id}`, { prefillMode: 'none' });
 
@@ -1266,7 +1843,7 @@ async function main() {
   const overridden = await req<{ endpointId: number | null }>(
     'PATCH',
     `/api/conversations/${conv2.id}`,
-    { endpointId: smallEndpoint.id },
+    await branchBody(conv2.id, { endpointId: smallEndpoint.id }),
   );
   assert(overridden.endpointId === smallEndpoint.id, 'endpoint override persisted');
   const overrideSend = await sendMessage(conv2.id, 'which model?');
@@ -1278,7 +1855,7 @@ async function main() {
     overrideFinal.t === 'final' && overrideFinal.message.model === 'mock-small',
     'generation uses the conversation endpoint override',
   );
-  await req('PATCH', `/api/conversations/${conv2.id}`, { endpointId: null });
+  await patchConversation(conv2.id, { endpointId: null });
   const revertSend = await sendMessage(conv2.id, 'back to global');
   const revertFinal = await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === revertSend.assistantMessageId,
@@ -1298,13 +1875,14 @@ async function main() {
       prompt: 'Describe {{char}} for {{user}}.',
       label: 'Image prompt',
       expectedActiveLeafId: toolSnap.activeLeafId,
+      expectedMutationRevision: toolSnap.mutationRevision,
     },
   );
   // Foreground semantics: a concurrent send is rejected while the tool streams.
   await expectStatus(
     'POST',
     `/api/conversations/${conv2.id}/messages`,
-    { content: 'busy', expectedActiveLeafId: toolRes.toolMessageId },
+    await branchBodyAt(conv2.id, toolRes.toolMessageId, { content: 'busy' }),
     409,
   );
   const toolFinal = await ws.waitFor(
@@ -1336,9 +1914,52 @@ async function main() {
         deleted: { filename: string; type: string }[];
       }
     ).deleted;
-  const deletesBeforeRender = (await comfyDeleteCount()).length;
   const COMFY_WORKFLOW =
     '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}';
+  const setNextComfyOutput = async (kind: string) => {
+    const res = await fetch(
+      `${MOCK_CONTROL}/control/comfy-output-next?kind=${encodeURIComponent(kind)}`,
+      { method: 'POST' },
+    );
+    if (!res.ok) throw new Error(`could not configure mock Comfy output: ${await res.text()}`);
+  };
+  for (const [kind, mime] of [
+    ['jpeg', 'image/jpeg'],
+    ['webp', 'image/webp'],
+  ] as const) {
+    await setNextComfyOutput(kind);
+    const response = await fetch(`${BASE}/api/avatar/render`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: `Render ${kind}`,
+        image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
+      }),
+    });
+    assert(
+      response.ok && response.headers.get('content-type') === mime,
+      `${kind} render bytes are accepted`,
+    );
+    await response.arrayBuffer();
+  }
+  const filesBeforeActiveContent = readdirSync(join(dataDir, 'images')).sort().join('\n');
+  for (const kind of ['html', 'svg', 'polyglot']) {
+    await setNextComfyOutput(kind);
+    const response = await fetch(`${BASE}/api/avatar/render`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        prompt: `Reject ${kind}`,
+        image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
+      }),
+    });
+    assert(response.status === 502, `${kind} Comfy output is rejected`);
+  }
+  assert(
+    readdirSync(join(dataDir, 'images')).sort().join('\n') === filesBeforeActiveContent,
+    'rejected active-content renders create no generated files',
+  );
+  const deletesBeforeRender = (await comfyDeleteCount()).length;
   const imgSnap = await tree(conv2.id);
   const imgRes = await req<{ toolMessageId: number }>(
     'POST',
@@ -1347,6 +1968,7 @@ async function main() {
       prompt: 'Depict this scene.',
       label: 'Image prompt',
       expectedActiveLeafId: imgSnap.activeLeafId,
+      expectedMutationRevision: imgSnap.mutationRevision,
       image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
     },
   );
@@ -1378,8 +2000,11 @@ async function main() {
   assert(
     served.ok &&
       served.headers.get('content-type') === 'image/png' &&
+      served.headers.get('cache-control') === 'no-store' &&
+      served.headers.get('x-content-type-options') === 'nosniff' &&
+      served.headers.get('content-security-policy')?.includes("default-src 'none'") === true &&
       (await served.arrayBuffer()).byteLength > 0,
-    'generated image is served from /images/',
+    'generated image is served with a raster MIME type and restrictive headers',
   );
   // The download is followed by a best-effort DELETE /view, so ComfyUI doesn't
   // keep a second copy of every image we already own. It is fire-and-forget on
@@ -1409,7 +2034,30 @@ async function main() {
 
   // Image swipes: re-render with the same stored prompt/workflow, fresh seed.
   const firstSeed = substituted[3].inputs.seed;
-  await req('POST', `/api/messages/${imgRes.toolMessageId}/render-image`);
+  const originalImagePrompt = (await tree(conv2.id)).messages.find(
+    (message) => message.id === imgRes.toolMessageId,
+  )!.content;
+  await req(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/render-image`,
+    await branchBody(conv2.id),
+  );
+  const pendingRerender = await tree(conv2.id);
+  assert(
+    pendingRerender.messages.find((message) => message.id === imgRes.toolMessageId)
+      ?.imagePending === true,
+    'image rerender is marked pending before returning to the client',
+  );
+  await expectStatus(
+    'PATCH',
+    `/api/messages/${imgRes.toolMessageId}`,
+    {
+      content: 'A stale prompt that must not replace the render input.',
+      expectedActiveLeafId: pendingRerender.activeLeafId,
+      expectedMutationRevision: pendingRerender.mutationRevision,
+    },
+    409,
+  );
   let regenMsg: Message | undefined;
   for (let i = 0; i < 60 && !regenMsg; i++) {
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -1422,16 +2070,107 @@ async function main() {
     'regenerated image is appended and selected',
   );
   assert(regenMsg.images[0] !== regenMsg.images[1], 'each render produces a distinct image file');
+  assert(
+    regenMsg.content === originalImagePrompt,
+    'a pending image render cannot be attached to an edited prompt',
+  );
   const { workflow: regenWorkflow } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-workflow`)
   ).json()) as { workflow: { 3: { inputs: { seed: unknown } } } };
   assert(regenWorkflow[3].inputs.seed !== firstSeed, 'regeneration uses a fresh seed');
-  await req('POST', `/api/messages/${imgRes.toolMessageId}/active-image`, { index: 0 });
+  const beforeImageSelection = await tree(conv2.id);
+  await req('POST', `/api/messages/${imgRes.toolMessageId}/active-image`, {
+    index: 0,
+    expectedActiveLeafId: beforeImageSelection.activeLeafId,
+    expectedMutationRevision: beforeImageSelection.mutationRevision,
+  });
+  await expectStatus(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/active-image`,
+    {
+      index: 1,
+      expectedActiveLeafId: beforeImageSelection.activeLeafId,
+      expectedMutationRevision: beforeImageSelection.mutationRevision,
+    },
+    409,
+  );
   assert(
     (await tree(conv2.id)).messages.find((m) => m.id === imgRes.toolMessageId)?.activeImage === 0,
-    'active image selection persists',
+    'active image selection persists and a stale selection cannot overwrite it',
   );
   const secondImageUrl = regenMsg.images[1]!;
+
+  // A branch guard rejects an old client snapshot, while a current snapshot
+  // still cannot spend render work (or change image selection) on an inactive
+  // message exposed in the tree map.
+  const beforeImageBranchSwitch = await tree(conv2.id);
+  const inactiveAlternative = await req<{ messageId: number }>(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/duplicate`,
+    {
+      expectedActiveLeafId: beforeImageBranchSwitch.activeLeafId,
+      expectedMutationRevision: beforeImageBranchSwitch.mutationRevision,
+    },
+  );
+  const imageOffPath = await tree(conv2.id);
+  await expectStatus(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/render-image`,
+    {
+      expectedActiveLeafId: beforeImageBranchSwitch.activeLeafId,
+      expectedMutationRevision: beforeImageBranchSwitch.mutationRevision,
+    },
+    409,
+  );
+  await expectStatus(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/render-image`,
+    {
+      expectedActiveLeafId: imageOffPath.activeLeafId,
+      expectedMutationRevision: imageOffPath.mutationRevision,
+    },
+    400,
+  );
+  await expectStatus(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/active-image`,
+    {
+      index: 1,
+      expectedActiveLeafId: imageOffPath.activeLeafId,
+      expectedMutationRevision: imageOffPath.mutationRevision,
+    },
+    400,
+  );
+  await activate(conv2.id, imgRes.toolMessageId);
+  await req(
+    'DELETE',
+    await branchPath(
+      conv2.id,
+      `/api/messages/${inactiveAlternative.messageId}/swipe`,
+      imgRes.toolMessageId,
+    ),
+  );
+
+  await setNextComfyOutput('html');
+  const filesBeforeRejectedMessageRender = readdirSync(join(dataDir, 'images')).sort().join('\n');
+  await req(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/render-image`,
+    await branchBody(conv2.id),
+  );
+  let rejectedMessageRender: Message | undefined;
+  for (let i = 0; i < 60 && !rejectedMessageRender; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const message = (await tree(conv2.id)).messages.find((m) => m.id === imgRes.toolMessageId);
+    if (!message?.imagePending && message?.genMeta?.imageError) rejectedMessageRender = message;
+  }
+  assert(
+    rejectedMessageRender?.images.length === 2 &&
+      rejectedMessageRender.genMeta?.imageError?.includes('unsupported or invalid raster image') ===
+        true &&
+      readdirSync(join(dataDir, 'images')).sort().join('\n') === filesBeforeRejectedMessageRender,
+    'rejected active content creates no image reference or local file',
+  );
 
   console.log('== regenerate image tool with instruction ==');
   const imageRevisionTrace = await fetchTrace(conv2.id);
@@ -1448,16 +2187,18 @@ async function main() {
     await fetch(`${MOCK_CONTROL}/control/last-completion`)
   ).json()) as {
     completion: {
-      messages: { role: string; content: string }[];
+      messages: { role: string; content: string; reasoning_content?: string }[];
       lastMessageRole: string | null;
       lastMessageContent: string | null;
     } | null;
   };
   assert(
-    imageSteerSeen.completion?.messages.some((message) =>
-      message.content.includes(regenMsg.content),
-    ) === true,
-    'image steer sends the original generated prompt upstream',
+    imageSteerSeen.completion?.messages.at(-2)?.role === 'assistant' &&
+      imageSteerSeen.completion.messages.at(-2)?.content.includes('<original_image_prompt>') ===
+        true &&
+      imageSteerSeen.completion.messages.at(-2)?.content.includes(regenMsg.content) === true &&
+      Boolean(imageSteerSeen.completion.messages.at(-2)?.reasoning_content),
+    'image steer sends the original generated prompt and reasoning as the preceding assistant turn',
   );
   assert(
     imageSteerSeen.completion?.lastMessageRole === 'user' &&
@@ -1466,10 +2207,9 @@ async function main() {
       imageSteerSeen.completion.lastMessageContent.includes('reference context only') &&
       imageSteerSeen.completion.lastMessageContent.includes('Do not continue the roleplay') &&
       imageSteerSeen.completion.lastMessageContent.includes('Do not modify anything else.') &&
-      imageSteerSeen.completion.lastMessageContent?.includes('<original_image_prompt>') === true &&
+      imageSteerSeen.completion.lastMessageContent.includes('immediately preceding assistant') &&
       imageSteerSeen.completion.lastMessageContent.includes('<revision_instruction>') &&
-      imageSteerSeen.completion.lastMessageContent?.includes('Make the scene moonlit.') === true &&
-      imageSteerSeen.completion.lastMessageContent.includes(regenMsg.content),
+      imageSteerSeen.completion.lastMessageContent?.includes('Make the scene moonlit.') === true,
     'image steer clearly separates the original prompt from the constrained instruction',
   );
   assert(
@@ -1511,7 +2251,11 @@ async function main() {
   // to exercise their original shape from the source image message.
   await req(
     'DELETE',
-    `/api/messages/${steeredImage.assistantMessageId}?expectedActiveLeafId=${steeredImage.assistantMessageId}`,
+    await branchPath(
+      conv2.id,
+      `/api/messages/${steeredImage.assistantMessageId}`,
+      steeredImage.assistantMessageId,
+    ),
   );
   assert(
     (await tree(conv2.id)).activeLeafId === imgRes.toolMessageId,
@@ -1523,11 +2267,10 @@ async function main() {
   const chained = await req<{ toolMessageId: number }>(
     'POST',
     `/api/conversations/${conv2.id}/tool`,
-    {
+    await branchBodyAt(conv2.id, imgRes.toolMessageId, {
       prompt: 'Another one.',
       label: 'Image prompt',
-      expectedActiveLeafId: imgRes.toolMessageId,
-    },
+    }),
   );
   await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === chained.toolMessageId,
@@ -1575,9 +2318,34 @@ async function main() {
     }
   }
   assert(insertedRendered != null, 'inserted image revision renders normally');
+  const insertedCopy = await req<{ id: number }>(
+    'POST',
+    `/api/conversations/${conv2.id}/duplicate`,
+  );
+  assert(
+    JSON.stringify(treeLinkShape(await tree(insertedCopy.id))) ===
+      JSON.stringify(treeLinkShape(await tree(conv2.id))),
+    'conversation duplicate preserves links through a newer inserted parent',
+  );
+  const beforeSoleSwipeDelete = await tree(conv2.id);
+  await expectStatus(
+    'DELETE',
+    `/api/messages/${insertedRevision.assistantMessageId}/swipe?${branchQuery(beforeSoleSwipeDelete)}`,
+    undefined,
+    400,
+  );
+  assert(
+    JSON.stringify(treeLinkShape(await tree(conv2.id))) ===
+      JSON.stringify(treeLinkShape(beforeSoleSwipeDelete)),
+    'Delete swipe rejects a sole child and preserves its continuation',
+  );
   await req(
     'DELETE',
-    `/api/messages/${insertedRevision.assistantMessageId}?expectedActiveLeafId=${chained.toolMessageId}`,
+    await branchPath(
+      conv2.id,
+      `/api/messages/${insertedRevision.assistantMessageId}`,
+      chained.toolMessageId,
+    ),
   );
   const restoredChain = await tree(conv2.id);
   assert(
@@ -1589,7 +2357,7 @@ async function main() {
   const imgParent = chainSnap.messages.find((m) => m.id === imgRes.toolMessageId)!.parentId;
   await req(
     'DELETE',
-    `/api/messages/${imgRes.toolMessageId}?expectedActiveLeafId=${chained.toolMessageId}`,
+    await branchPath(conv2.id, `/api/messages/${imgRes.toolMessageId}`, chained.toolMessageId),
   );
   const splicedSnap = await tree(conv2.id);
   const survivor = splicedSnap.messages.find((m) => m.id === chained.toolMessageId);
@@ -1627,6 +2395,7 @@ async function main() {
       prompt: 'Depict a failure.',
       label: 'Image prompt',
       expectedActiveLeafId: failSnap.activeLeafId,
+      expectedMutationRevision: failSnap.mutationRevision,
       image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
     },
   );
@@ -1655,7 +2424,11 @@ async function main() {
   );
 
   // Retry (the client's Retry button) re-renders from the stored config.
-  await req('POST', `/api/messages/${failRes.toolMessageId}/render-image`);
+  await req(
+    'POST',
+    `/api/messages/${failRes.toolMessageId}/render-image`,
+    await branchBody(conv2.id),
+  );
   const retried = await waitForImageState(
     failRes.toolMessageId,
     (m) => !m.imagePending && m.images.length === 1,
@@ -1664,7 +2437,11 @@ async function main() {
   assert(retried.genMeta?.imageError == null, 'a successful retry clears the stored imageError');
 
   await fetch(`${MOCK_CONTROL}/control/comfy-fail-next?stage=render&count=1`, { method: 'POST' });
-  await req('POST', `/api/messages/${failRes.toolMessageId}/render-image`);
+  await req(
+    'POST',
+    `/api/messages/${failRes.toolMessageId}/render-image`,
+    await branchBody(conv2.id),
+  );
   const execFailed = await waitForImageState(
     failRes.toolMessageId,
     (m) => !m.imagePending && m.genMeta?.imageError != null,
@@ -1681,13 +2458,13 @@ async function main() {
   await expectStatus(
     'POST',
     `/api/messages/${failRes.toolMessageId}/advance`,
-    { expectedActiveLeafId: failRes.toolMessageId },
+    await branchBodyAt(conv2.id, failRes.toolMessageId),
     400,
   );
   await expectStatus(
     'POST',
     `/api/messages/${failRes.toolMessageId}/continue`,
-    { expectedActiveLeafId: failRes.toolMessageId },
+    await branchBodyAt(conv2.id, failRes.toolMessageId),
     400,
   );
 
@@ -1701,10 +2478,11 @@ async function main() {
       prompt: 'Will be stopped.',
       label: 'Image prompt',
       expectedActiveLeafId: stopSnap.activeLeafId,
+      expectedMutationRevision: stopSnap.mutationRevision,
       image: { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL },
     },
   );
-  await req('POST', `/api/generations/${stopRes.toolMessageId}/stop`);
+  await stopGeneration(conv2.id, stopRes.toolMessageId);
   const stoppedMsg = (await tree(conv2.id)).messages.find((m) => m.id === stopRes.toolMessageId);
   assert(
     stoppedMsg?.status === 'stopped' &&
@@ -1721,14 +2499,15 @@ async function main() {
     (e) => e.t === 'final' && e.message.id === renderSend.assistantMessageId,
     'assistant reply to render finished',
   );
-  await req('POST', `/api/messages/${renderSend.assistantMessageId}/render-image`, {
-    workflow: COMFY_WORKFLOW,
-    comfyUrl: MOCK_CONTROL,
-  });
+  await req(
+    'POST',
+    `/api/messages/${renderSend.assistantMessageId}/render-image`,
+    await branchBody(conv2.id, { workflow: COMFY_WORKFLOW, comfyUrl: MOCK_CONTROL }),
+  );
   await expectStatus(
     'POST',
     `/api/messages/${renderSend.assistantMessageId}/continue`,
-    { expectedActiveLeafId: renderSend.assistantMessageId },
+    await branchBodyAt(conv2.id, renderSend.assistantMessageId),
     409,
   );
   const assistantRendered = await waitForImageState(
@@ -1739,8 +2518,13 @@ async function main() {
   assert(assistantRendered.hasImageRender, 'fallback render config is stored for future swipes');
 
   console.log('== transient upstream failures auto-resume ==');
+  await fetch(`${MOCK_CONTROL}/control/clear-completions`, { method: 'POST' });
   await failNextMockRequests(1);
   const resilientSend = await sendMessage(conv2.id, 'survive a blip');
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, {
+    model: 'mock-small',
+    genParams: { maxTokens: 77, reasoningEffort: 'low' },
+  });
   const resilientFinal = await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === resilientSend.assistantMessageId,
     'generation survives one upstream 503',
@@ -1749,9 +2533,34 @@ async function main() {
   assert(
     resilientFinal.t === 'final' &&
       resilientFinal.message.status === 'done' &&
-      resilientFinal.message.content.length > 0,
-    'foreground generation retries transparently after a transient failure',
+      resilientFinal.message.content.length > 0 &&
+      resilientFinal.message.model === 'mock-large',
+    'foreground generation retries transparently with its snapshotted model',
   );
+  const retryRequests = (await (await fetch(`${MOCK_CONTROL}/control/completions`)).json()) as {
+    completions: {
+      model: string | null;
+      maxTokens: number | null;
+      reasoningEffort: string | null;
+      messages: unknown[];
+    }[];
+  };
+  assert(
+    retryRequests.completions.length === 2 &&
+      retryRequests.completions.every(
+        (request) =>
+          request.model === 'mock-large' &&
+          request.maxTokens === 321 &&
+          request.reasoningEffort === 'high',
+      ) &&
+      JSON.stringify(retryRequests.completions[0]!.messages) ===
+        JSON.stringify(retryRequests.completions[1]!.messages),
+    'retry reuses snapshotted endpoint, model, parameters and prompt messages',
+  );
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, {
+    model: 'mock-large',
+    genParams: { maxTokens: 321, reasoningEffort: 'high' },
+  });
   await failNextMockRequests(3);
   const doomedSend = await sendMessage(conv2.id, 'exhaust the retries');
   const doomedFinal = await ws.waitFor(
@@ -1770,7 +2579,7 @@ async function main() {
   console.log('== held-back name prefix survives a transient retry ==');
   await putSettings({ defaultTemplateId: tpl.id });
   const holdbackConv = await req<{ id: number }>('POST', '/api/conversations', {});
-  await req('PATCH', `/api/conversations/${holdbackConv.id}`, { speakerName: 'Hal' });
+  await patchConversation(holdbackConv.id, { speakerName: 'Hal' });
   ws.sub(holdbackConv.id);
   await ws.waitFor(
     (e) => e.t === 'tree' && e.conversationId === holdbackConv.id,
@@ -1779,6 +2588,7 @@ async function main() {
   // The mock dies after "Ha" — a case-insensitive prefix of the "Hal:" prefill,
   // so the server is still holding it back when the stream cuts out. The retry
   // resumes prefill-style from the flushed holdback and streams normally.
+  await fetch(`${MOCK_CONTROL}/control/clear-completions`, { method: 'POST' });
   await makeNextMockResponseDieAfterContent('Ha');
   const holdbackSend = await sendMessage(holdbackConv.id, 'holdback check');
   const holdbackFinal = await ws.waitFor(
@@ -1791,6 +2601,54 @@ async function main() {
       holdbackFinal.message.status === 'done' &&
       holdbackFinal.message.content.startsWith('HaYou said:'),
     'held-back prefix characters are kept exactly once across the retry',
+  );
+  const holdbackRetryCompletions = (await (
+    await fetch(`${MOCK_CONTROL}/control/completions`)
+  ).json()) as {
+    completions: {
+      messages: { role: string; content: string; reasoning_content?: string }[];
+    }[];
+  };
+  const reasoningPrefill = holdbackRetryCompletions.completions
+    .findLast((completion) => completion.messages.at(-1)?.role === 'assistant')
+    ?.messages.at(-1);
+  assert(
+    reasoningPrefill?.reasoning_content?.includes('PARTIAL_RETRY_REASONING') === true,
+    'partial retry prefill replays accumulated reasoning_content',
+  );
+
+  await fetch(`${MOCK_CONTROL}/control/reasoning-only`, { method: 'POST' });
+  const reasoningOnlySend = await sendMessage(holdbackConv.id, 'reasoning-only history check');
+  const reasoningOnlyFinal = await ws.waitFor(
+    (event) => event.t === 'final' && event.message.id === reasoningOnlySend.assistantMessageId,
+    'reasoning-only generation finished',
+  );
+  assert(
+    reasoningOnlyFinal.t === 'final' &&
+      reasoningOnlyFinal.message.content === '' &&
+      reasoningOnlyFinal.message.reasoning?.includes('REASONING_ONLY_OUTPUT') === true,
+    'reasoning-only assistant output is persisted',
+  );
+  await fetch(`${MOCK_CONTROL}/control/clear-completions`, { method: 'POST' });
+  const afterReasoningOnly = await sendMessage(holdbackConv.id, 'continue after reasoning only');
+  await ws.waitFor(
+    (event) => event.t === 'final' && event.message.id === afterReasoningOnly.assistantMessageId,
+    'generation after reasoning-only history finished',
+  );
+  const afterReasoningOnlyCompletion = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as {
+    completion: {
+      messages: { role: string; content: string; reasoning_content?: string }[];
+    } | null;
+  };
+  assert(
+    afterReasoningOnlyCompletion.completion?.messages.some(
+      (message) =>
+        message.role === 'assistant' &&
+        message.reasoning_content?.includes('REASONING_ONLY_OUTPUT') === true,
+    ),
+    'reasoning-only assistant history is replayed upstream',
   );
   await putSettings({ defaultTemplateId: prevSettings.defaultTemplateId });
 
@@ -1831,14 +2689,20 @@ async function main() {
     preparedTree.activeLeafId === backgroundSend.assistantMessageId,
     'API-only setting enable starts preparation without changing the visible reply',
   );
-  await expectStatus('POST', `/api/generations/${prepared.id}/stop`, undefined, 409);
+  await expectStatus(
+    'POST',
+    `/api/generations/${prepared.id}/stop`,
+    { expectedGenerationToken: prepared.generationToken },
+    409,
+  );
   await req('POST', `/api/messages/${prepared.id}/activate`, {
     expectedActiveLeafId: backgroundSend.assistantMessageId,
+    expectedMutationRevision: preparedTree.mutationRevision,
   });
   await expectStatus(
     'POST',
     `/api/messages/${prepared.id}/activate`,
-    { expectedActiveLeafId: backgroundSend.assistantMessageId },
+    await branchBodyAt(backgroundConv.id, backgroundSend.assistantMessageId),
     409,
   );
   await ws.waitFor(
@@ -1877,11 +2741,12 @@ async function main() {
   )!.content.length;
   await req('POST', `/api/messages/${prepared.id}/continue`, {
     expectedActiveLeafId: prepared.id,
+    expectedMutationRevision: backgroundSnap.mutationRevision,
   });
   await expectStatus(
     'PATCH',
     `/api/conversations/${backgroundConv.id}`,
-    { speakerName: 'Rejected while foreground streams' },
+    await branchBody(backgroundConv.id, { speakerName: 'Rejected while foreground streams' }),
     409,
   );
   assert(
@@ -1897,10 +2762,11 @@ async function main() {
   );
 
   console.log('== in-place history edits invalidate completed background swipes ==');
-  await req('PATCH', `/api/messages/${backgroundSend.userMessageId}`, {
-    content: 'edited swipe context',
-    expectedActiveLeafId: prepared.id,
-  });
+  await req(
+    'PATCH',
+    `/api/messages/${backgroundSend.userMessageId}`,
+    await branchBodyAt(backgroundConv.id, prepared.id, { content: 'edited swipe context' }),
+  );
   const editedTree = await ws.waitFor(
     (e) =>
       e.t === 'treePatch' &&
@@ -1933,7 +2799,7 @@ async function main() {
     editedFinal.t === 'final' && editedFinal.message.content.includes('edited swipe context'),
     'replacement swipe is generated from the edited history',
   );
-  await req('PATCH', `/api/conversations/${backgroundConv.id}`, { speakerName: 'Changed' });
+  await patchConversation(backgroundConv.id, { speakerName: 'Changed' });
   const invalidatedTree = await ws.waitFor(
     (e) =>
       e.t === 'treePatch' &&
@@ -2036,6 +2902,79 @@ async function main() {
   );
   await putSettings({ backgroundSwipeGeneration: false });
 
+  console.log('== Delete swipe safely promotes a completed speculative alternative ==');
+  const promotedConv = await req<{ id: number }>('POST', '/api/conversations', {});
+  ws.sub(promotedConv.id);
+  await ws.waitFor(
+    (e) => e.t === 'tree' && e.conversationId === promotedConv.id,
+    'speculative-promotion conversation tree',
+  );
+  const promotedBase = await sendMessage(promotedConv.id, 'promote the prepared alternative');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === promotedBase.assistantMessageId,
+    'speculative-promotion foreground reply',
+  );
+  await putSettings({ backgroundSwipeGeneration: true });
+  const promotedPreparedPatch = await ws.waitFor(
+    (e) =>
+      e.t === 'treePatch' &&
+      e.conversationId === promotedConv.id &&
+      e.nodes.some(
+        (node) =>
+          node.parentId === promotedBase.userMessageId &&
+          node.id !== promotedBase.assistantMessageId &&
+          node.generationKind === 'speculative',
+      ),
+    'prepared replacement for Delete swipe',
+  );
+  if (promotedPreparedPatch.t !== 'treePatch') throw new Error('unreachable');
+  const promotedPrepared = promotedPreparedPatch.nodes.find(
+    (node) =>
+      node.parentId === promotedBase.userMessageId &&
+      node.id !== promotedBase.assistantMessageId &&
+      node.generationKind === 'speculative',
+  )!;
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === promotedPrepared.id,
+    'prepared replacement finishes before deletion',
+  );
+  await req(
+    'DELETE',
+    await branchPath(
+      promotedConv.id,
+      `/api/messages/${promotedBase.assistantMessageId}/swipe`,
+      promotedBase.assistantMessageId,
+    ),
+  );
+  let promotedSnap = await tree(promotedConv.id);
+  assert(
+    promotedSnap.activeLeafId === promotedPrepared.id &&
+      promotedSnap.messages.find((message) => message.id === promotedPrepared.id)
+        ?.generationKind === 'normal',
+    'Delete swipe normalizes the completed speculative replacement before activation',
+  );
+  const promotedDescendant = await sendMessage(promotedConv.id, 'keep this descendant');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === promotedDescendant.assistantMessageId,
+    'descendant below promoted replacement finishes',
+  );
+  await req(
+    'PATCH',
+    `/api/messages/${promotedDescendant.userMessageId}`,
+    await branchBodyAt(promotedConv.id, promotedDescendant.assistantMessageId, {
+      content: 'keep this edited descendant',
+    }),
+  );
+  promotedSnap = await tree(promotedConv.id);
+  assert(
+    promotedSnap.activeLeafId === promotedDescendant.assistantMessageId &&
+      promotedSnap.messages.some((message) => message.id === promotedPrepared.id) &&
+      promotedSnap.messages.some((message) => message.id === promotedDescendant.userMessageId) &&
+      promotedSnap.messages.some((message) => message.id === promotedDescendant.assistantMessageId),
+    'later speculation invalidation preserves the promoted branch and descendants',
+  );
+  await putSettings({ backgroundSwipeGeneration: false });
+
   console.log('== conversation search ==');
   const found = await req<{ conversation: { id: number }; snippet: string | null }[]>(
     'GET',
@@ -2055,8 +2994,8 @@ async function main() {
   );
   const pctConv = await req<{ id: number }>('POST', '/api/conversations', {});
   const pctConv2 = await req<{ id: number }>('POST', '/api/conversations', {});
-  await req('PATCH', `/api/conversations/${pctConv.id}`, { title: 'pct 100% marker' });
-  await req('PATCH', `/api/conversations/${pctConv2.id}`, { title: 'pct 100x marker' });
+  await patchConversation(pctConv.id, { title: 'pct 100% marker' });
+  await patchConversation(pctConv2.id, { title: 'pct 100x marker' });
   const pctFound = await req<{ conversation: { id: number } }[]>(
     'GET',
     `/api/search?q=${encodeURIComponent('100%')}`,
@@ -2067,7 +3006,146 @@ async function main() {
     'title search treats LIKE wildcards as literals',
   );
 
+  const searchSeed = new DatabaseSync(join(dataDir, 'minitavern.db'));
+  searchSeed.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; BEGIN');
+  let crowdedSearchId: number;
+  let otherSearchId: number;
+  try {
+    const insertConversation = searchSeed.prepare(
+      `INSERT INTO conversations (title, created_at, updated_at) VALUES (?, ?, ?)`,
+    );
+    const now = Date.now();
+    crowdedSearchId = Number(
+      insertConversation.run('crowded search fixture', now, now).lastInsertRowid,
+    );
+    otherSearchId = Number(
+      insertConversation.run('other search fixture', now, now + 1).lastInsertRowid,
+    );
+    const insertMessage = searchSeed.prepare(
+      `INSERT INTO messages (conversation_id, role, content, created_at) VALUES (?, 'user', ?, ?)`,
+    );
+    for (let i = 0; i < 501; i++) {
+      insertMessage.run(crowdedSearchId, 'starvationneedle starvationneedle', now + i);
+    }
+    insertMessage.run(otherSearchId, 'starvationneedle', now + 502);
+    searchSeed.exec('COMMIT');
+  } catch (err) {
+    searchSeed.exec('ROLLBACK');
+    searchSeed.close();
+    throw err;
+  }
+  try {
+    const completeSearch = await req<{ conversation: { id: number } }[]>(
+      'GET',
+      `/api/search?q=starvationneedle`,
+    );
+    assert(
+      completeSearch.some((result) => result.conversation.id === crowdedSearchId) &&
+        completeSearch.some((result) => result.conversation.id === otherSearchId),
+      'content search dedupes before limiting so one conversation cannot starve another',
+    );
+    const controlSearch = await fetch(`${BASE}/api/search?q=%00`);
+    assert(controlSearch.status === 400, 'content search rejects unsupported control characters');
+  } finally {
+    searchSeed
+      .prepare('DELETE FROM conversations WHERE id IN (?, ?)')
+      .run(crowdedSearchId, otherSearchId);
+    searchSeed.close();
+  }
+
   ws.close();
+
+  console.log('== optional password authentication ==');
+  const authBase = await req<Settings>('GET', '/api/settings');
+  const enableAuth = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      expectedRevision: authBase.revision,
+      accessPassword: 'correct horse battery staple',
+    }),
+  });
+  assert(enableAuth.status === 200, 'an access password can be enabled in settings');
+  const enablingCookie = enableAuth.headers.get('set-cookie')?.split(';', 1)[0] ?? '';
+  const enabledSettings = (await enableAuth.json()) as Settings;
+  assert(
+    enabledSettings.hasPassword &&
+      !JSON.stringify(enabledSettings).includes('correct horse battery staple') &&
+      enablingCookie.startsWith('minitavern_session='),
+    'enabling a password returns only password status and an HTTP-only session',
+  );
+
+  const passwordRow = new DatabaseSync(join(dataDir, 'minitavern.db'));
+  try {
+    const stored = passwordRow
+      .prepare("SELECT value FROM settings WHERE key = 'access_password_hash'")
+      .get() as { value: string } | undefined;
+    assert(
+      stored?.value.startsWith('scrypt-v1$') &&
+        !stored.value.includes('correct horse battery staple'),
+      'the access password is stored as a salted scrypt hash',
+    );
+  } finally {
+    passwordRow.close();
+  }
+
+  const unauthenticatedApi = await fetch(`${BASE}/api/conversations`);
+  assert(unauthenticatedApi.status === 401, 'conversation API access requires a login session');
+  const unauthenticatedImage = await fetch(`${BASE}${imageUrl}`);
+  assert(unauthenticatedImage.status === 401, 'image downloads require a login session');
+  const unauthenticatedAvatar = await fetch(`${BASE}${pngChar.avatar}`);
+  assert(unauthenticatedAvatar.status === 401, 'avatar downloads require a login session');
+  assert((await websocketHandshake(BASE)) === 401, 'WebSocket upgrades require a login session');
+
+  const wrongLogin = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: 'wrong password' }),
+  });
+  assert(wrongLogin.status === 401, 'an incorrect access password is rejected');
+  const login = await fetch(`${BASE}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ password: 'correct horse battery staple' }),
+  });
+  const cookie = login.headers.get('set-cookie')?.split(';', 1)[0] ?? '';
+  assert(
+    login.status === 200 && cookie.startsWith('minitavern_session='),
+    'the correct access password creates a session',
+  );
+  const authenticatedApi = await fetch(`${BASE}/api/conversations`, {
+    headers: { cookie },
+  });
+  assert(
+    authenticatedApi.status === 200 &&
+      authenticatedApi.headers.get('cache-control')?.includes('no-store') === true,
+    'the login session authorizes API access without cacheable private data',
+  );
+  const authenticatedImage = await fetch(`${BASE}${pngChar.avatar}`, { headers: { cookie } });
+  assert(
+    authenticatedImage.status === 200 &&
+      authenticatedImage.headers.get('cache-control')?.includes('no-store') === true,
+    'authenticated media is never cached across session changes',
+  );
+  assert(
+    (await websocketHandshake(BASE, cookie)) === 'open',
+    'the login session authorizes WebSocket access',
+  );
+
+  const currentProtected = await fetch(`${BASE}/api/settings`, { headers: { cookie } });
+  const currentProtectedSettings = (await currentProtected.json()) as Settings;
+  const disableAuth = await fetch(`${BASE}/api/settings`, {
+    method: 'PUT',
+    headers: { 'content-type': 'application/json', cookie },
+    body: JSON.stringify({
+      expectedRevision: currentProtectedSettings.revision,
+      accessPassword: null,
+    }),
+  });
+  assert(disableAuth.status === 200, 'the access password can be removed in settings');
+  const passwordFreeAgain = await fetch(`${BASE}/api/conversations`);
+  assert(passwordFreeAgain.status === 200, 'removing the password restores password-free access');
+
   console.log(`\nALL ${passed} ASSERTIONS PASSED`);
 }
 
