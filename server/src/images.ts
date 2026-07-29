@@ -10,6 +10,148 @@ import { IMAGES_DIR, stmt } from './db.ts';
  * runs at startup as the backstop for crash windows.
  */
 
+export interface RasterImageFormat {
+  ext: '.png' | '.jpg' | '.webp';
+  mime: 'image/png' | 'image/jpeg' | 'image/webp';
+}
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const CRC_TABLE = new Uint32Array(256).map((_, n) => {
+  let c = n;
+  for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+  return c >>> 0;
+});
+
+function pngChunkCrc(data: Buffer, start: number, end: number): number {
+  let c = 0xffffffff;
+  for (let i = start; i < end; i++) c = CRC_TABLE[(c ^ data[i]!) & 0xff]! ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+function isValidPng(data: Buffer): boolean {
+  if (data.length < 45 || !data.subarray(0, 8).equals(PNG_SIGNATURE)) return false;
+  let off = 8;
+  let chunks = 0;
+  let hasIdat = false;
+  while (off + 12 <= data.length) {
+    const length = data.readUInt32BE(off);
+    const end = off + 12 + length;
+    if (!Number.isSafeInteger(end) || end > data.length) return false;
+    const type = data.toString('latin1', off + 4, off + 8);
+    if (data.readUInt32BE(off + 8 + length) !== pngChunkCrc(data, off + 4, off + 8 + length)) {
+      return false;
+    }
+    if (chunks === 0) {
+      if (
+        type !== 'IHDR' ||
+        length !== 13 ||
+        data.readUInt32BE(off + 8) === 0 ||
+        data.readUInt32BE(off + 12) === 0
+      ) {
+        return false;
+      }
+    } else if (type === 'IHDR') {
+      return false;
+    }
+    if (type === 'IDAT') hasIdat = true;
+    off = end;
+    chunks++;
+    if (type === 'IEND') return length === 0 && hasIdat && off === data.length;
+  }
+  return false;
+}
+
+function isStartOfFrame(marker: number): boolean {
+  return (
+    (marker >= 0xc0 && marker <= 0xc3) ||
+    (marker >= 0xc5 && marker <= 0xc7) ||
+    (marker >= 0xc9 && marker <= 0xcb) ||
+    (marker >= 0xcd && marker <= 0xcf)
+  );
+}
+
+function isValidJpeg(data: Buffer): boolean {
+  if (
+    data.length < 14 ||
+    data[0] !== 0xff ||
+    data[1] !== 0xd8 ||
+    data[data.length - 2] !== 0xff ||
+    data[data.length - 1] !== 0xd9
+  ) {
+    return false;
+  }
+  let off = 2;
+  let hasFrame = false;
+  while (off < data.length - 2) {
+    if (data[off++] !== 0xff) return false;
+    while (data[off] === 0xff) off++;
+    const marker = data[off++]!;
+    if (marker === 0xda) {
+      if (!hasFrame || off + 2 > data.length - 2) return false;
+      const length = data.readUInt16BE(off);
+      return length >= 2 && off + length <= data.length - 2;
+    }
+    if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) continue;
+    if (marker === 0xd9 || off + 2 > data.length) return false;
+    const length = data.readUInt16BE(off);
+    if (length < 2 || off + length > data.length - 2) return false;
+    if (isStartOfFrame(marker)) {
+      if (length < 8 || data.readUInt16BE(off + 3) === 0 || data.readUInt16BE(off + 5) === 0) {
+        return false;
+      }
+      hasFrame = true;
+    }
+    off += length;
+  }
+  return false;
+}
+
+function isValidWebp(data: Buffer): boolean {
+  if (
+    data.length < 20 ||
+    data.toString('latin1', 0, 4) !== 'RIFF' ||
+    data.toString('latin1', 8, 12) !== 'WEBP' ||
+    data.readUInt32LE(4) + 8 !== data.length
+  ) {
+    return false;
+  }
+  let off = 12;
+  let hasImageData = false;
+  while (off + 8 <= data.length) {
+    const type = data.toString('latin1', off, off + 4);
+    const length = data.readUInt32LE(off + 4);
+    const end = off + 8 + length;
+    if (!Number.isSafeInteger(end) || end > data.length) return false;
+    if (type === 'VP8 ') {
+      if (
+        length < 10 ||
+        data[off + 11] !== 0x9d ||
+        data[off + 12] !== 0x01 ||
+        data[off + 13] !== 0x2a
+      ) {
+        return false;
+      }
+      hasImageData = true;
+    } else if (type === 'VP8L') {
+      if (length < 5 || data[off + 8] !== 0x2f) return false;
+      hasImageData = true;
+    } else if (type === 'ANMF') {
+      if (length < 16) return false;
+      hasImageData = true;
+    }
+    off = end + (length % 2);
+  }
+  return off === data.length && hasImageData;
+}
+
+/** Returns a canonical safe extension from the bytes, never from an upstream filename. */
+export function rasterImageFormat(data: Buffer): RasterImageFormat | null {
+  if (isValidPng(data)) return { ext: '.png', mime: 'image/png' };
+  if (isValidJpeg(data)) return { ext: '.jpg', mime: 'image/jpeg' };
+  if (isValidWebp(data)) return { ext: '.webp', mime: 'image/webp' };
+  return null;
+}
+
 function imageFile(imagePath: string): string | null {
   if (!imagePath.startsWith('/images/')) return null;
   const name = basename(imagePath.slice('/images/'.length));

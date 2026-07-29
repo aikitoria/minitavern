@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto';
 import { openProgressSocket, parseImageConfig, renderToBuffer } from '../comfy.ts';
-import { broadcast } from '../events.ts';
 import { streamChatCompletion } from '../generation.ts';
 import { getPersona } from '../prompt.ts';
 import { getSettings } from '../settingsStore.ts';
@@ -24,6 +23,63 @@ const AVATAR_PROMPT_MAX_TOKENS = 2048;
 
 /** One in-flight prompt stream per entity — a double open 409s. */
 const streaming = new Set<string>();
+
+/** Job-scoped SSE listeners. The random job id is capability-like: unlike a
+ * global WS broadcast, sampler progress reaches only the modal that opened the
+ * corresponding stream, and the entry disappears as soon as it closes. */
+const renderProgressListeners = new Map<string, Set<Ctx['res']>>();
+
+function avatarJobId(raw: string): string {
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(raw)) throw new HttpError(400, 'invalid avatar render job id');
+  return raw;
+}
+
+function publishRenderProgress(jobId: string, value: number, max: number): void {
+  const payload = `data: ${JSON.stringify({ value, max })}\n\n`;
+  for (const res of renderProgressListeners.get(jobId) ?? []) {
+    if (!res.destroyed && !res.writableEnded) res.write(payload);
+  }
+}
+
+function finishRenderProgress(jobId: string): void {
+  const listeners = renderProgressListeners.get(jobId);
+  if (!listeners) return;
+  renderProgressListeners.delete(jobId);
+  for (const res of listeners) {
+    if (!res.destroyed && !res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      res.end();
+    }
+  }
+}
+
+async function streamRenderProgress(ctx: Ctx): Promise<void> {
+  const jobId = avatarJobId(ctx.params.id ?? '');
+  let listeners = renderProgressListeners.get(jobId);
+  if (!listeners) {
+    listeners = new Set();
+    renderProgressListeners.set(jobId, listeners);
+  }
+  listeners.add(ctx.res);
+  ctx.res.writeHead(200, {
+    'content-type': 'text/event-stream',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive',
+  });
+  // Force response headers through so the client knows registration completed
+  // before it starts the render request.
+  ctx.res.write(': ready\n\n');
+  await new Promise<void>((resolve) => {
+    ctx.res.once('close', resolve);
+  });
+  listeners.delete(ctx.res);
+  if (listeners.size === 0 && renderProgressListeners.get(jobId) === listeners) {
+    renderProgressListeners.delete(jobId);
+  }
+  // On an aborted connection Node may not mark writableEnded by itself; make
+  // the router's post-handler response path a no-op.
+  if (!ctx.res.writableEnded) ctx.res.end();
+}
 
 /** Case-insensitive replaceAll of the macros this entity kind supports;
  * unsupported or unknown macros are left untouched. */
@@ -54,6 +110,12 @@ async function streamAvatarPrompt(kind: AvatarKind, ctx: Ctx) {
     throw new HttpError(409, 'an avatar prompt is already streaming for this entity');
   }
   streaming.add(key);
+  const abort = new AbortController();
+  const onClose = () => {
+    if (!ctx.res.writableEnded) abort.abort();
+  };
+  ctx.res.on('close', onClose);
+  if (ctx.res.destroyed) abort.abort();
   try {
     // Characters have no separate description column — card imports merge the
     // card's description into personality, so {{description}} reads from it.
@@ -98,15 +160,19 @@ async function streamAvatarPrompt(kind: AvatarKind, ctx: Ctx) {
         ],
         AVATAR_PROMPT_MAX_TOKENS,
         (d) => ctx.res.write(`data: ${JSON.stringify({ d })}\n\n`),
+        abort.signal,
       );
-      ctx.res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
+      if (!abort.signal.aborted) ctx.res.write(`data: ${JSON.stringify({ done: true })}\n\n`);
     } catch (err) {
-      ctx.res.write(
-        `data: ${JSON.stringify({ error: err instanceof Error ? err.message : String(err) })}\n\n`,
-      );
+      if (!abort.signal.aborted) {
+        ctx.res.write(
+          `data: ${JSON.stringify({ error: err instanceof Error ? err.message : String(err) })}\n\n`,
+        );
+      }
     }
     ctx.res.end();
   } finally {
+    ctx.res.off('close', onClose);
     streaming.delete(key);
   }
 }
@@ -120,23 +186,32 @@ const IMAGE_CONTENT_TYPES: Record<string, string> = {
 };
 
 /** Stateless render: the (possibly user-edited) prompt in, image bytes out.
- * A caller-provided jobId gets live sampler progress as renderProgress
- * broadcasts (the client correlates them; the modal shows a progress bar). */
+ * A caller-provided jobId gets live sampler progress through its private SSE
+ * subscription (the modal correlates it and shows a progress bar). */
 async function renderAvatar(ctx: Ctx) {
   const b = objectBody(ctx.body);
   const prompt = typeof b.prompt === 'string' ? b.prompt.trim() : '';
   if (!prompt) throw new HttpError(400, 'prompt is required');
-  const jobId = typeof b.jobId === 'string' ? b.jobId.trim().slice(0, 100) : '';
+  const jobId = typeof b.jobId === 'string' && b.jobId.trim() ? avatarJobId(b.jobId.trim()) : '';
   let image: { workflow: string; comfyUrl: string };
   try {
     image = parseImageConfig(b.image);
   } catch (err) {
     throw new HttpError(400, err instanceof Error ? err.message : 'invalid image config');
   }
+  const abort = new AbortController();
+  const onClose = () => {
+    if (!ctx.res.writableEnded) abort.abort();
+  };
+  ctx.res.on('close', onClose);
+  if (ctx.res.destroyed) abort.abort();
   const clientId = jobId ? randomUUID() : undefined;
   const ws = clientId
-    ? await openProgressSocket(image.comfyUrl.replace(/\/+$/, ''), clientId, (value, max) =>
-        broadcast({ t: 'renderProgress', jobId, value, max }),
+    ? await openProgressSocket(
+        image.comfyUrl.replace(/\/+$/, ''),
+        clientId,
+        (value, max) => publishRenderProgress(jobId, value, max),
+        abort.signal,
       )
     : null;
   let result: { ext: string; data: Buffer };
@@ -146,11 +221,18 @@ async function renderAvatar(ctx: Ctx) {
       workflow: image.workflow,
       prompt,
       clientId,
+      signal: abort.signal,
     });
   } catch (err) {
+    if (abort.signal.aborted) {
+      if (!ctx.res.writableEnded) ctx.res.end();
+      return;
+    }
     throw new HttpError(502, err instanceof Error ? err.message : String(err));
   } finally {
     ws?.close();
+    ctx.res.off('close', onClose);
+    if (jobId) finishRenderProgress(jobId);
   }
   ctx.res.writeHead(200, {
     'content-type': IMAGE_CONTENT_TYPES[result.ext] ?? 'application/octet-stream',
@@ -160,4 +242,5 @@ async function renderAvatar(ctx: Ctx) {
 
 route.post('/api/characters/:id/avatar/prompt', (ctx) => streamAvatarPrompt('character', ctx));
 route.post('/api/personas/:id/avatar/prompt', (ctx) => streamAvatarPrompt('persona', ctx));
+route.get('/api/avatar/render-progress/:id', (ctx) => streamRenderProgress(ctx));
 route.post('/api/avatar/render', (ctx) => renderAvatar(ctx));

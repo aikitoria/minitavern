@@ -6,7 +6,12 @@ import { route, HttpError } from '../router.ts';
 import type { Ctx } from '../router.ts';
 import { optionalBoolean, optionalString, positiveId } from '../validation.ts';
 import type { JsonObject } from '../validation.ts';
-import { deleteAvatarFiles, readAvatarFile, saveAvatar } from './avatarStore.ts';
+import {
+  deleteAvatarFiles,
+  deleteObsoleteAvatarFiles,
+  readAvatarFile,
+  saveAvatar,
+} from './avatarStore.ts';
 import {
   defineEntityRoutes,
   nameField,
@@ -62,6 +67,7 @@ route.put(
     if (!raw?.length) throw new HttpError(400, 'image body is required');
     const avatar = saveAvatar('character', id, raw);
     stmt('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
+    deleteObsoleteAvatarFiles('character', id);
     invalidate('characters');
     return toCharacter(rowById('characters', id));
   },
@@ -109,6 +115,7 @@ route.post(
       throw err;
     }
     stmt('UPDATE characters SET avatar = ? WHERE id = ?').run(avatar, id);
+    deleteObsoleteAvatarFiles('character', id);
     invalidate('characters');
     return toCharacter(rowById('characters', id));
   },
@@ -134,7 +141,9 @@ route.get('/api/characters/:id/card', ({ params, res }) => {
       scenario: character.scenario,
       mes_example: character.examples,
       first_mes: character.firstMessage,
-      system_prompt: character.customPrompt ?? original?.data?.system_prompt ?? '',
+      // The normalized current state is authoritative. Falling back to the
+      // imported blob would resurrect a system prompt the user explicitly cleared.
+      system_prompt: character.customPrompt ?? '',
     },
   };
   let base = readAvatarFile('character', id);

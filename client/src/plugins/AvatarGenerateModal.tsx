@@ -1,6 +1,5 @@
 import { Show, createSignal, onCleanup, onMount } from 'solid-js';
 import { api } from '../state/api.ts';
-import { renderProgress } from '../state/store.ts';
 import { errorMessage } from '../util.ts';
 import Modal from '../components/Modal.tsx';
 import { avatarPromptTemplate, avatarRenderConfig } from './imageGeneration.tsx';
@@ -23,15 +22,16 @@ export default function AvatarGenerateModal(props: {
   const [rendering, setRendering] = createSignal(false);
   const [saving, setSaving] = createSignal(false);
   const [imageUrl, setImageUrl] = createSignal<string | null>(null);
+  const [progress, setProgress] = createSignal<{ value: number; max: number } | null>(null);
   const [error, setError] = createSignal('');
-  const abort = new AbortController();
-  /** Correlates this modal's renders with renderProgress WS events. */
-  const jobId = crypto.randomUUID();
+  const promptAbort = new AbortController();
+  let renderAbort: AbortController | undefined;
+  let disposed = false;
 
   /** Sampler step progress while rendering (falls back to a bare spinner
    * until the first progress event arrives). */
   const Progress = () => (
-    <Show when={renderProgress()[jobId]} fallback={<span class="spinner spinner-wait" />}>
+    <Show when={progress()} fallback={<span class="spinner spinner-wait" />}>
       {(p) => (
         <>
           <span class="img-progress">
@@ -59,43 +59,77 @@ export default function AvatarGenerateModal(props: {
       setError('Write a prompt first.');
       return;
     }
+    const abort = new AbortController();
+    renderAbort = abort;
+    const jobId = crypto.randomUUID();
+    setProgress(null);
     setRendering(true);
     setError('');
     try {
-      const blob = await api.renderAvatar({ prompt, image, jobId });
+      // Establish the private progress stream before submitting the render so
+      // even the first sampler step is observed. Progress is optional: a
+      // broken stream must not prevent image generation itself.
+      try {
+        const stream = await api.openAvatarRenderProgress(
+          jobId,
+          (value, max) => {
+            if (!disposed && renderAbort === abort) setProgress({ value, max });
+          },
+          abort.signal,
+        );
+        void stream.done.catch(() => undefined);
+      } catch (err) {
+        if (abort.signal.aborted) return;
+        console.warn('[avatar] progress stream unavailable:', err);
+      }
+      const blob = await api.renderAvatar({ prompt, image, jobId }, abort.signal);
+      if (disposed || abort.signal.aborted || renderAbort !== abort) return;
       const url = URL.createObjectURL(blob);
       const old = imageUrl();
       setImageUrl(url);
       if (old) URL.revokeObjectURL(old);
     } catch (err) {
-      setError(errorMessage(err));
+      if (!disposed && !abort.signal.aborted) setError(errorMessage(err));
     } finally {
-      setRendering(false);
+      // Also closes the progress subscription after success/failure.
+      abort.abort();
+      if (renderAbort === abort) {
+        renderAbort = undefined;
+        if (!disposed) {
+          setProgress(null);
+          setRendering(false);
+        }
+      }
     }
   };
 
   onMount(() => {
     void (async () => {
+      let completed = false;
       try {
         await api.streamAvatarPrompt(
           props.kind,
           props.id,
           avatarPromptTemplate(),
           (d) => setText((t) => t + d),
-          abort.signal,
+          promptAbort.signal,
         );
+        completed = true;
       } catch (err) {
-        if (!abort.signal.aborted) setError(errorMessage(err));
+        if (!promptAbort.signal.aborted && !disposed) setError(errorMessage(err));
       } finally {
-        setStreaming(false);
+        if (!disposed) setStreaming(false);
       }
-      // The portrait prompt is ready — render it right away.
-      if (!abort.signal.aborted) await render();
+      // Only a complete prompt is safe to render. A failed stream may have
+      // emitted a plausible-looking but truncated prefix.
+      if (completed && !promptAbort.signal.aborted && !disposed) await render();
     })();
   });
 
   onCleanup(() => {
-    abort.abort();
+    disposed = true;
+    promptAbort.abort();
+    renderAbort?.abort();
     const url = imageUrl();
     if (url) URL.revokeObjectURL(url);
   });

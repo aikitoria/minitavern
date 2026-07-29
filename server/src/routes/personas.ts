@@ -4,7 +4,7 @@ import { invalidate } from '../events.ts';
 import { route, HttpError } from '../router.ts';
 import type { Ctx } from '../router.ts';
 import { positiveId } from '../validation.ts';
-import { deleteAvatarFiles, saveAvatar } from './avatarStore.ts';
+import { deleteAvatarFiles, deleteObsoleteAvatarFiles, saveAvatar } from './avatarStore.ts';
 import { defineEntityRoutes, nameField, textField } from './entityRoutes.ts';
 import { rowById } from './entityUtils.ts';
 
@@ -28,6 +28,7 @@ route.put(
     if (!raw?.length) throw new HttpError(400, 'image body is required');
     const avatar = saveAvatar('persona', id, raw);
     stmt('UPDATE personas SET avatar = ? WHERE id = ?').run(avatar, id);
+    deleteObsoleteAvatarFiles('persona', id);
     invalidate('personas');
     return toPersona(rowById('personas', id));
   },

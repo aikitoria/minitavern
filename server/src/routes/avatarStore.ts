@@ -1,4 +1,13 @@
-import { readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { AVATAR_DIR } from '../db.ts';
 import { HttpError } from '../router.ts';
@@ -36,6 +45,21 @@ export function deleteAvatarFiles(kind: AvatarKind, id: number): void {
   }
 }
 
+/** Remove legacy alternate extensions after the DB points at `keepExt`.
+ * Cleanup is best-effort: the selected file is already authoritative. */
+export function deleteObsoleteAvatarFiles(kind: AvatarKind, id: number, keepExt = 'png'): void {
+  for (const ext of IMAGE_EXTS) {
+    if (ext === keepExt) continue;
+    try {
+      unlinkSync(join(AVATAR_DIR, `${kind}-${id}.${ext}`));
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error(`[avatars] failed to remove obsolete ${ext} avatar:`, err);
+      }
+    }
+  }
+}
+
 /** Reads the stored avatar file regardless of extension (legacy avatars may
  * be jpg/webp from before uploads were restricted to PNG). */
 export function readAvatarFile(kind: AvatarKind, id: number): Buffer | null {
@@ -54,8 +78,35 @@ export function saveAvatar(kind: AvatarKind, id: number, data: Buffer): string {
   // PNG only: character card export embeds the card JSON into the avatar PNG,
   // and dependency-free transcoding isn't available — accept nothing else.
   if (ext !== 'png') throw new HttpError(415, 'avatar must be a PNG image');
-  deleteAvatarFiles(kind, id);
   const filename = `${kind}-${id}.${ext}`;
-  writeFileSync(join(AVATAR_DIR, filename), data);
+  const destination = join(AVATAR_DIR, filename);
+  const temporary = join(AVATAR_DIR, `.${filename}.${randomUUID()}.tmp`);
+  let fd: number | null = null;
+  try {
+    fd = openSync(temporary, 'wx', 0o600);
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    // Same-filesystem rename atomically replaces an existing PNG: until this
+    // succeeds, every reader continues to see the complete old avatar.
+    renameSync(temporary, destination);
+  } catch (err) {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* retain the original write/rename error */
+      }
+    }
+    try {
+      unlinkSync(temporary);
+    } catch (cleanupErr) {
+      if ((cleanupErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error(`[avatars] failed to remove temporary file ${temporary}:`, cleanupErr);
+      }
+    }
+    throw err;
+  }
   return `/avatars/${filename}?v=${Date.now()}`;
 }

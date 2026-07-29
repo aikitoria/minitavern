@@ -98,32 +98,57 @@ interface CardData {
   system_prompt?: string;
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function optionalCardString(
+  data: Record<string, unknown>,
+  key: keyof CardData,
+): string | undefined {
+  const value = data[key];
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') throw new Error(`Character card ${key} must be a string`);
+  return value;
+}
+
 /** Parses a SillyTavern character card PNG (V1 flat, V2 'chara', or V3 'ccv3'). */
 export function parseCharacterCard(png: Buffer): ParsedCard {
   const chunks = extractTextChunks(png);
   const encoded = chunks.get('ccv3') ?? chunks.get('chara');
   if (!encoded) throw new Error('No character card data found in PNG (missing chara/ccv3 chunk)');
-  let json: { spec?: string; data?: CardData } & CardData;
+  let parsed: unknown;
   try {
-    json = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
+    parsed = JSON.parse(Buffer.from(encoded, 'base64').toString('utf8'));
   } catch {
     throw new Error('Character card data is not valid base64 JSON');
   }
-  const data: CardData = json.data ?? json;
-  if (!data.name) throw new Error('Character card has no name');
-  const personality = [data.description?.trim(), data.personality?.trim()]
-    .filter(Boolean)
-    .join('\n\n');
+  const json = record(parsed);
+  if (!json) throw new Error('Character card JSON must be an object');
+  const nested = json.data;
+  const data = nested === undefined ? json : record(nested);
+  if (!data) throw new Error('Character card data must be an object');
+  const name = optionalCardString(data, 'name');
+  if (!name?.trim()) throw new Error('Character card has no name');
+  const description = optionalCardString(data, 'description');
+  const traits = optionalCardString(data, 'personality');
+  const scenario = optionalCardString(data, 'scenario');
+  const examples = optionalCardString(data, 'mes_example');
+  const firstMessage = optionalCardString(data, 'first_mes');
+  const systemPrompt = optionalCardString(data, 'system_prompt');
+  const personality = [description?.trim(), traits?.trim()].filter(Boolean).join('\n\n');
   return {
-    name: data.name,
+    name: name.trim(),
     personality,
-    scenario: data.scenario?.trim() ?? '',
+    scenario: scenario?.trim() ?? '',
     // Stored as-is: SillyTavern separates multiple examples with <START>
     // lines, which is exactly the format this field keeps.
-    examples: data.mes_example?.trim() ?? '',
-    firstMessage: data.first_mes?.trim() ?? '',
-    systemPrompt: data.system_prompt?.trim() || null,
-    raw: json,
+    examples: examples?.trim() ?? '',
+    firstMessage: firstMessage?.trim() ?? '',
+    systemPrompt: systemPrompt?.trim() || null,
+    raw: parsed,
   };
 }
 

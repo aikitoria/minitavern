@@ -1,9 +1,16 @@
 import { Show, createSignal, onMount, type JSX } from 'solid-js';
 import { workflowValidationError } from '@minitavern/shared';
 import type { Plugin, PluginMessageView } from './api.ts';
-import { pluginSettings, savePluginSettings } from './api.ts';
-import { api } from '../state/api.ts';
-import { imageProgress, navigateTree, state, toast } from '../state/store.ts';
+import { pluginSettings } from './api.ts';
+import { api, ApiError } from '../state/api.ts';
+import {
+  activePath,
+  applySettings,
+  imageProgress,
+  navigateTree,
+  state,
+  toast,
+} from '../state/store.ts';
 import { createSavedFlash, errorMessage } from '../util.ts';
 import ImageViewer from '../components/ImageViewer.tsx';
 import MacroHelp from '../components/MacroHelp.tsx';
@@ -13,6 +20,24 @@ import Select from '../components/Select.tsx';
 import { useSettingsGuard } from '../components/SettingsGuard.tsx';
 import type { SelectHandle } from '../components/Select.tsx';
 import './imageGeneration.css';
+
+const PromptIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="15"
+    height="15"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M6 2h9l4 4v16H6z" />
+    <path d="M14 2v5h5" />
+    <path d="M9 12h6M9 16h6" />
+  </svg>
+);
 
 const ID = 'imageGeneration';
 
@@ -210,6 +235,7 @@ async function generate(
       composePrompt(kind, instruction),
       'Image prompt',
       state.tree.activeLeafId,
+      state.tree.mutationRevision,
       activeRenderConfig(),
     ),
   );
@@ -391,6 +417,11 @@ function SettingsPage() {
   /** Workflow name for avatar generation; '' = same as the /image selection. */
   const [avatarSel, setAvatarSel] = createSignal('');
   let baseline = '';
+  /** Revision whose image settings were loaded into this imperative form. A
+   * settings invalidation may update the global store without updating these
+   * fields; saving must still use this base or a stale form could pass with the
+   * newly received revision and silently overwrite another client's work. */
+  let baseRevision = state.settings.revision;
 
   /** Read the editable fields back into the workflows list before switching/saving. */
   const stash = () => {
@@ -478,6 +509,7 @@ function SettingsPage() {
     setAvatarSel(avatarName);
     avatarPickerEl.value = avatarName;
     baseline = JSON.stringify(draft());
+    baseRevision = state.settings.revision;
   };
   onMount(load);
 
@@ -508,13 +540,22 @@ function SettingsPage() {
       }
     }
     try {
-      await savePluginSettings(ID, values);
+      const next = await api.putSettings(
+        { pluginSettings: { ...state.settings.pluginSettings, [ID]: values } },
+        baseRevision,
+      );
+      applySettings(next);
+      baseRevision = next.revision;
       baseline = JSON.stringify(values);
       setError('');
       flashSaved();
       return true;
     } catch (err) {
-      setError(errorMessage(err));
+      setError(
+        err instanceof ApiError && err.status === 409
+          ? 'Image generation settings changed elsewhere. Discard to load the latest version, then review your changes.'
+          : errorMessage(err),
+      );
       return false;
     }
   };
@@ -696,25 +737,41 @@ const messageView: PluginMessageView = {
     const activeImage = () => Math.min(message().activeImage, images().length - 1);
     const currentImage = () => images()[activeImage()];
     const promptCollapsed = () => images().length > 0;
+    const onActivePath = () => activePath().some((active) => active.id === message().id);
     const canRender = () =>
-      !message().imagePending && (message().hasImageRender || activeRenderConfig() != null);
+      !state.treeNavigationPending &&
+      onActivePath() &&
+      !message().imagePending &&
+      (message().hasImageRender || activeRenderConfig() != null);
 
     // In-flight guard: a double-click must not fire a second request that the
     // server would just 409 into an error toast.
     let swipeBusy = false;
     const imageSwipe = async (dir: 1 | -1) => {
       const idx = activeImage() + dir;
-      if (idx < 0 || swipeBusy) return;
+      if (idx < 0 || swipeBusy || state.treeNavigationPending) return;
       swipeBusy = true;
       try {
         if (idx >= images().length) {
           if (!canRender()) return;
-          await api.renderImage(
-            message().id,
-            message().hasImageRender ? undefined : activeRenderConfig(),
+          await navigateTree(() =>
+            api.renderImage(
+              message().id,
+              state.tree.activeLeafId,
+              state.tree.mutationRevision,
+              message().hasImageRender ? undefined : activeRenderConfig(),
+            ),
           );
         } else {
-          await api.setActiveImage(message().id, idx);
+          if (!onActivePath()) return;
+          await navigateTree(() =>
+            api.setActiveImage(
+              message().id,
+              idx,
+              state.tree.activeLeafId,
+              state.tree.mutationRevision,
+            ),
+          );
         }
       } catch (err) {
         toast(errorMessage(err));
@@ -727,18 +784,21 @@ const messageView: PluginMessageView = {
       <>
         <Show when={promptCollapsed()}>
           <button
-            class="chip reasoning-chip"
+            class="chip reasoning-chip icon-chip"
             classList={{ 'chip-active': showPrompt() }}
+            title={showPrompt() ? 'Hide image prompt' : 'Show image prompt'}
+            aria-label={showPrompt() ? 'Hide image prompt' : 'Show image prompt'}
+            aria-expanded={showPrompt()}
             onClick={() => setShowPrompt(!showPrompt())}
           >
-            Prompt {showPrompt() ? '▾' : '▸'}
+            <PromptIcon />
           </button>
         </Show>
         <Show when={images().length > 0}>
           <span class="branch-nav">
             <button
               class="icon-btn"
-              disabled={activeImage() <= 0}
+              disabled={state.treeNavigationPending || !onActivePath() || activeImage() <= 0}
               onClick={() => void imageSwipe(-1)}
             >
               ‹
@@ -746,7 +806,11 @@ const messageView: PluginMessageView = {
             {activeImage() + 1}/{images().length}
             <button
               class="icon-btn"
-              disabled={activeImage() >= images().length - 1 && !canRender()}
+              disabled={
+                state.treeNavigationPending ||
+                !onActivePath() ||
+                (activeImage() >= images().length - 1 && !canRender())
+              }
               title={
                 activeImage() >= images().length - 1
                   ? 'Generate another image (same prompt, new seed)'
