@@ -63,7 +63,9 @@ async function activate(message: Message): Promise<void> {
     setState('viewMode', 'chat');
     return;
   }
-  const ok = await navigateTree(() => api.activate(message.id, state.tree.activeLeafId));
+  const ok = await navigateTree(() =>
+    api.activate(message.id, state.tree.activeLeafId, state.tree.mutationRevision),
+  );
   if (ok) setState('viewMode', 'chat');
 }
 

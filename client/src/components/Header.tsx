@@ -56,7 +56,16 @@ export default function Header() {
     const conv = selectedConversation();
     const title = titleInput?.value.trim();
     if (conv && title && title !== conv.title) {
-      void api.patchConversation(conv.id, { title }).catch((err) => toast(errorMessage(err)));
+      void api
+        .patchConversation(
+          conv.id,
+          { title },
+          state.tree.conversationId === conv.id ? state.tree.activeLeafId : conv.activeLeafId,
+          state.tree.conversationId === conv.id
+            ? state.tree.mutationRevision
+            : conv.mutationRevision,
+        )
+        .catch((err) => toast(errorMessage(err)));
     }
     setEditing(false);
   };

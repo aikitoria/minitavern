@@ -332,7 +332,9 @@ export default function TreeMap() {
   const activate = async (message: Message): Promise<boolean> => {
     if (state.treeNavigationPending) return false;
     if (message.id === state.tree.activeLeafId) return true;
-    return navigateTree(() => api.activate(message.id, state.tree.activeLeafId));
+    return navigateTree(() =>
+      api.activate(message.id, state.tree.activeLeafId, state.tree.mutationRevision),
+    );
   };
 
   const onCardClick = (message: Message, e: MouseEvent) => {
@@ -355,6 +357,7 @@ export default function TreeMap() {
   let panning = false;
   /** Set once a gesture has moved past the click threshold; suppresses card clicks. */
   let panMoved = false;
+  let panClickResetTimer: number | undefined;
   let downX = 0;
   let downY = 0;
   let dragStartX = 0;
@@ -372,6 +375,8 @@ export default function TreeMap() {
     if (e.button !== 0) return;
     // Mouse pans from the background only; cards keep text selection/clicks.
     if ((e.target as Element).closest('.treemap-card, .treemap-toolbar')) return;
+    clearTimeout(panClickResetTimer);
+    panClickResetTimer = undefined;
     panning = true;
     panMoved = false;
     downX = e.clientX;
@@ -389,8 +394,21 @@ export default function TreeMap() {
     apply();
   };
   const onMouseUp = () => {
+    if (!panning) return;
+    const moved = panMoved;
     panning = false;
     root.classList.remove('treemap-panning');
+    if (moved) {
+      // Keep suppression through the synthetic click that immediately follows
+      // this mouseup, then allow the next independent card click. A synchronous
+      // reset could activate a card when a background drag ends over one.
+      panClickResetTimer = window.setTimeout(() => {
+        panMoved = false;
+        panClickResetTimer = undefined;
+      }, 0);
+    } else {
+      panMoved = false;
+    }
   };
 
   const distance = (a: Touch, b: Touch) => Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
@@ -511,6 +529,7 @@ export default function TreeMap() {
     resizeObserver?.disconnect();
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup', onMouseUp);
+    clearTimeout(panClickResetTimer);
     if (rafId) cancelAnimationFrame(rafId);
   });
 

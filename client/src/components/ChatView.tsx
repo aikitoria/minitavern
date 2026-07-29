@@ -60,6 +60,7 @@ export default function ChatView() {
   // unless the user is typing somewhere non-empty.
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    if (event.repeat) return;
     if (
       state.modal !== null ||
       state.viewMode !== 'chat' ||

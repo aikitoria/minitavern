@@ -13,6 +13,7 @@ import {
   setEditRequestId,
   siblingsOf,
   state,
+  streamingMessage,
   swipeToSibling,
 } from '../state/store.ts';
 import { findMessageView } from '../plugins/index.ts';
@@ -20,6 +21,24 @@ import Avatar from './Avatar.tsx';
 import Markdown from './Markdown.tsx';
 import Modal from './Modal.tsx';
 import TrashIcon from './TrashIcon.tsx';
+
+const ThinkingIcon = () => (
+  <svg
+    viewBox="0 0 24 24"
+    width="15"
+    height="15"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M9 18h6" />
+    <path d="M10 22h4" />
+    <path d="M8.3 14.5A7 7 0 1 1 15.7 14.5C14.8 15.2 14.5 16 14.5 17h-5c0-1-.3-1.8-1.2-2.5Z" />
+  </svg>
+);
 
 // Shared across all messages: on touch layouts, actions show only on the last-tapped message.
 const [touchedId, setTouchedId] = createSignal<number | null>(null);
@@ -153,7 +172,22 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
     horizontal = false;
   };
 
+  // A browser/system cancellation is not a completed gesture, even if the
+  // drag had already crossed the navigation threshold.
+  const onTouchCancel = () => {
+    setDragging(false);
+    setDragX(0);
+    horizontal = false;
+  };
+
+  // An active descendant generation makes switching this ancestor incompatible
+  // with the server's foreground-generation guard. Preserve the intentional
+  // forward action on the active streaming leaf ("swipe past generation").
+  const ancestorNavigationBlocked = () =>
+    streamingMessage() != null && state.tree.activeLeafId !== props.message.id;
+
   const startEdit = () => {
+    if (props.message.imagePending) return;
     setEditing(true);
     queueMicrotask(() => {
       if (!editArea) return;
@@ -173,23 +207,37 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
 
   const saveInPlace = async () => {
     const saved = await navigateTree(() =>
-      api.editMessage(props.message.id, editArea!.value, state.tree.activeLeafId),
+      api.editMessage(
+        props.message.id,
+        editArea!.value,
+        state.tree.activeLeafId,
+        state.tree.mutationRevision,
+      ),
     );
     if (saved) setEditing(false);
   };
 
   const saveAsBranch = async () => {
     const saved = await navigateTree(() =>
-      api.editBranch(props.message.id, editArea!.value, state.tree.activeLeafId),
+      api.editBranch(
+        props.message.id,
+        editArea!.value,
+        state.tree.activeLeafId,
+        state.tree.mutationRevision,
+      ),
     );
     if (saved) setEditing(false);
   };
 
   const remove = () => {
-    void navigateTree(() => api.deleteMessage(props.message.id, state.tree.activeLeafId));
+    void navigateTree(() =>
+      api.deleteMessage(props.message.id, state.tree.activeLeafId, state.tree.mutationRevision),
+    );
   };
   const removeSwipe = () => {
-    void navigateTree(() => api.deleteSwipe(props.message.id, state.tree.activeLeafId));
+    void navigateTree(() =>
+      api.deleteSwipe(props.message.id, state.tree.activeLeafId, state.tree.mutationRevision),
+    );
   };
 
   const copy = () => void navigator.clipboard.writeText(props.message.content);
@@ -200,9 +248,18 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
   const canMoveUp = () => props.message.parentId != null;
   const canMoveDown = () => (childrenByParent().get(props.message.id)?.length ?? 0) > 0;
   const duplicate = () =>
-    void navigateTree(() => api.duplicateMessage(props.message.id, state.tree.activeLeafId));
+    void navigateTree(() =>
+      api.duplicateMessage(props.message.id, state.tree.activeLeafId, state.tree.mutationRevision),
+    );
   const move = (direction: 'up' | 'down') =>
-    void navigateTree(() => api.moveMessage(props.message.id, direction, state.tree.activeLeafId));
+    void navigateTree(() =>
+      api.moveMessage(
+        props.message.id,
+        direction,
+        state.tree.activeLeafId,
+        state.tree.mutationRevision,
+      ),
+    );
 
   // Steered regeneration: new assistant/tool sibling with a one-off instruction.
   const [steerOpen, setSteerOpen] = createSignal(false);
@@ -215,7 +272,12 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
     const instruction = steerArea?.value.trim() ?? '';
     if (!instruction) return;
     const ok = await navigateTree(() =>
-      api.regenerate(props.message.id, instruction, state.tree.activeLeafId),
+      api.regenerate(
+        props.message.id,
+        instruction,
+        state.tree.activeLeafId,
+        state.tree.mutationRevision,
+      ),
     );
     if (ok) setSteerOpen(false);
   };
@@ -251,7 +313,7 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
       onTouchStart={props.inMap ? undefined : onTouchStart}
       onTouchMove={props.inMap ? undefined : onTouchMove}
       onTouchEnd={props.inMap ? undefined : onTouchEnd}
-      onTouchCancel={props.inMap ? undefined : onTouchEnd}
+      onTouchCancel={props.inMap ? undefined : onTouchCancel}
     >
       <Show when={!isTool()} fallback={<span class="avatar avatar-fallback">⚙</span>}>
         <Avatar src={avatarSrc()} name={name()} />
@@ -282,11 +344,14 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
           </Show>
           <Show when={props.message.reasoning}>
             <button
-              class="chip reasoning-chip"
+              class="chip reasoning-chip icon-chip"
               classList={{ 'chip-active': reasoningOpen() }}
+              title={reasoningOpen() ? 'Hide thinking' : 'Show thinking'}
+              aria-label={reasoningOpen() ? 'Hide thinking' : 'Show thinking'}
+              aria-expanded={reasoningOpen()}
               onClick={() => setShowReasoning(!showReasoning())}
             >
-              Thinking {reasoningOpen() ? '▾' : '▸'}
+              <ThinkingIcon />
               <Show when={streaming() && !props.message.content}>
                 <span class="spinner" />
               </Show>
@@ -299,7 +364,11 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                 <button
                   class="icon-btn"
                   disabled={
-                    state.treeNavigationPending || streaming() || editing() || siblingIndex() <= 0
+                    state.treeNavigationPending ||
+                    ancestorNavigationBlocked() ||
+                    streaming() ||
+                    editing() ||
+                    siblingIndex() <= 0
                   }
                   onClick={() => void swipeToSibling(props.message, -1)}
                 >
@@ -310,6 +379,7 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                   class="icon-btn"
                   disabled={
                     state.treeNavigationPending ||
+                    ancestorNavigationBlocked() ||
                     editing() ||
                     (!isAssistant() && siblingIndex() >= siblings().length - 1)
                   }
@@ -329,7 +399,14 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                 <button class="icon-btn" title="Copy" onClick={copy}>
                   ⧉
                 </button>
-                <button class="icon-btn" title="Edit" onClick={startEdit}>
+                <button
+                  class="icon-btn"
+                  title={
+                    props.message.imagePending ? 'Wait for the image render to finish' : 'Edit'
+                  }
+                  disabled={props.message.imagePending}
+                  onClick={startEdit}
+                >
                   ✎
                 </button>
                 <span class="msg-more-wrap">
@@ -382,15 +459,17 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                       >
                         Move down
                       </button>
-                      <button
-                        class="danger"
-                        onClick={() => {
-                          closeMenu();
-                          removeSwipe();
-                        }}
-                      >
-                        <TrashIcon /> Delete swipe
-                      </button>
+                      <Show when={siblings().length > 1}>
+                        <button
+                          class="danger"
+                          onClick={() => {
+                            closeMenu();
+                            removeSwipe();
+                          }}
+                        >
+                          <TrashIcon /> Delete swipe
+                        </button>
+                      </Show>
                       <button
                         class="danger"
                         onClick={() => {
