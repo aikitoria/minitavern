@@ -590,8 +590,8 @@ export function toggleSidebar(): void {
   setState('sidebarOpen', (open) => !open);
 }
 
-/** Mirrors the mobile layout breakpoint in app.css — the floating hamburger
- * only exists in that layout, so it has to be a mount decision, not styling. */
+/** Mirrors the mobile layout breakpoint in app.css — mobile-only bottom-bar
+ * controls are mounted only in that layout instead of merely hidden by CSS. */
 const mobileQuery = matchMedia('(max-width: 767px), (pointer: coarse) and (max-width: 1024px)');
 const [isMobileLayout, setIsMobileLayout] = createSignal(mobileQuery.matches);
 mobileQuery.addEventListener('change', (e) => setIsMobileLayout(e.matches));

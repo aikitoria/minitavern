@@ -490,7 +490,7 @@ textarea.mono,
   display: flex;
   flex-direction: column;
   min-width: 0;
-  position: relative; /* anchors the mobile hamburger overlay */
+  position: relative; /* anchors the mobile header overlay */
 }
 
 /* ---- Sidebar ---- */
@@ -757,22 +757,6 @@ textarea.mono,
 .menu-btn {
   display: none;
   font-size: 19px;
-}
-
-/* Mobile-only, mounted while the sidebar (and with it the header bar) is
-   closed: the sole piece of chrome over an otherwise full-height chat. */
-.menu-fab {
-  position: absolute;
-  z-index: 40;
-  top: calc(var(--space-1) + env(safe-area-inset-top));
-  left: var(--space-1);
-  font-size: 19px;
-  color: var(--text);
-  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-control);
-  backdrop-filter: blur(6px);
-  padding: 3px var(--space-2);
 }
 
 .header-info {
@@ -1338,6 +1322,17 @@ textarea.mono,
 .tools-btn-open {
   background: var(--bg-hover);
   color: var(--text);
+}
+
+/* Exists only on mobile (component-level mount guard), beside the tools button. */
+.mobile-sidebar-btn {
+  font-size: 18px;
+}
+
+/* Keeps sidebar access available on the welcome screen without showing a
+   disabled composer. Hidden on desktop because its only child is mobile-only. */
+.mobile-menu-only:empty {
+  display: none;
 }
 
 .tools-menu {
@@ -2102,10 +2097,9 @@ textarea.mono,
     font-size: 15px;
   }
 
-  /* The chat now owns the top of the screen: clear the notch plus the
-     hamburger overlay so the first message starts below it, not under it. */
+  /* No top overlay remains; only clear the device's safe area. */
   .chat-inner {
-    padding: calc(var(--space-2) + 34px + env(safe-area-inset-top)) var(--space-3) var(--space-3);
+    padding: calc(var(--space-2) + env(safe-area-inset-top)) var(--space-3) var(--space-3);
     gap: var(--space-2);
   }
 

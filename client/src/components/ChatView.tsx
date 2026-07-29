@@ -15,9 +15,45 @@ import TreeView from './TreeView.tsx';
 export default function ChatView() {
   let scroller!: HTMLDivElement;
   let stickToBottom = true;
+  let lastScrollTop = 0;
+  let lastTouchX = 0;
+  let lastTouchY = 0;
 
   const onScroll = () => {
-    stickToBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
+    const top = scroller.scrollTop;
+    const movingUp = top < lastScrollTop - 1;
+    const atBottom = scroller.scrollHeight - top - scroller.clientHeight < 2;
+    // Any upward movement is an explicit request to stop following, even if
+    // it only moved a few pixels from the bottom. Scrolling fully back down
+    // opts into following again.
+    if (movingUp) stickToBottom = false;
+    else if (atBottom) stickToBottom = true;
+    lastScrollTop = top;
+  };
+
+  // Wheel intent arrives before the resulting scroll event. Disengage here so
+  // a streaming resize cannot snap back to the bottom between the two.
+  const onWheel = (event: WheelEvent) => {
+    if (event.deltaY < 0) stickToBottom = false;
+  };
+
+  const onTouchStart = (event: TouchEvent) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    lastTouchX = touch.clientX;
+    lastTouchY = touch.clientY;
+  };
+
+  const onTouchMove = (event: TouchEvent) => {
+    const touch = event.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - lastTouchX;
+    const dy = touch.clientY - lastTouchY;
+    // A downward finger drag scrolls toward older content. Ignore horizontal
+    // message-swipe gestures and disengage before the browser moves the page.
+    if (dy > 0 && Math.abs(dy) > Math.abs(dx)) stickToBottom = false;
+    lastTouchX = touch.clientX;
+    lastTouchY = touch.clientY;
   };
 
   // Arrow keys swipe the last assistant message (like the touch gesture),
@@ -64,7 +100,10 @@ export default function ChatView() {
   createEffect(() => {
     if (state.tree.conversationId == null) return;
     stickToBottom = true;
-    requestAnimationFrame(() => (scroller.scrollTop = scroller.scrollHeight));
+    requestAnimationFrame(() => {
+      scroller.scrollTop = scroller.scrollHeight;
+      lastScrollTop = scroller.scrollTop;
+    });
   });
 
   // Content height changes (markdown settling, font swap, typing dots,
@@ -89,6 +128,9 @@ export default function ChatView() {
       classList={{ 'chat-tree': state.viewMode === 'tree', 'chat-map': state.viewMode === 'map' }}
       ref={scroller}
       onScroll={onScroll}
+      onWheel={onWheel}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
     >
       <Show
         when={selectedConversation()}

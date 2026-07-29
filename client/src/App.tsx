@@ -1,5 +1,5 @@
 import { For, Show, createEffect, createSignal } from 'solid-js';
-import { booting, isMobileLayout, state, setState, toggleSidebar } from './state/store.ts';
+import { booting, state, setState } from './state/store.ts';
 import Sidebar from './components/Sidebar.tsx';
 import Header from './components/Header.tsx';
 import ChatView from './components/ChatView.tsx';
@@ -33,13 +33,6 @@ export default function App() {
         <div class="backdrop" onClick={() => setState('sidebarOpen', false)} />
       </Show>
       <main class="main">
-        {/* Mobile: the header bar only exists while the sidebar is open (CSS);
-            with it closed the chat reaches the top under a lone hamburger. */}
-        <Show when={isMobileLayout() && !state.sidebarOpen}>
-          <button class="icon-btn menu-fab" title="Conversations" onClick={toggleSidebar}>
-            ☰
-          </button>
-        </Show>
         <Header />
         <ChatView />
         <Show when={state.viewMode === 'tree'} fallback={<Composer />}>

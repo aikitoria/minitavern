@@ -12,6 +12,7 @@ import {
   toast,
 } from '../state/store.ts';
 import { errorMessage, useDismiss } from '../util.ts';
+import MobileSidebarButton from './MobileSidebarButton.tsx';
 
 const coarsePointer = matchMedia('(pointer: coarse)').matches;
 
@@ -252,7 +253,14 @@ export default function Composer() {
   };
 
   return (
-    <Show when={state.selectedId != null}>
+    <Show
+      when={state.selectedId != null}
+      fallback={
+        <div class="composer mobile-menu-only">
+          <MobileSidebarButton />
+        </div>
+      }
+    >
       <div class="composer">
         <Show when={cmdMatches().length > 0}>
           <div class="cmd-menu">
@@ -280,6 +288,7 @@ export default function Composer() {
             </div>
           )}
         </Show>
+        <MobileSidebarButton />
         <span class="tools-wrap" ref={toolsWrap}>
           <button
             class="send-btn tools-btn"

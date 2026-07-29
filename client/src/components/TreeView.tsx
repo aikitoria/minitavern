@@ -12,6 +12,7 @@ import {
   state,
 } from '../state/store.ts';
 import '../styles/treeview.css';
+import MobileSidebarButton from './MobileSidebarButton.tsx';
 
 /** Branch icon for the header button (kept here so the feature is self-contained). */
 export function TreeIcon() {
@@ -164,6 +165,7 @@ export default function TreeView() {
 export function TreeSearch() {
   return (
     <div class="composer treeview-search">
+      <MobileSidebarButton />
       <input
         type="search"
         placeholder="Search messages…"
