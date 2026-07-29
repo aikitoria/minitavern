@@ -2,12 +2,74 @@ import { createEffect, createSignal, onCleanup } from 'solid-js';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
 
-let hljsPromise: Promise<typeof import('highlight.js/lib/common')> | null = null;
+let hljsPromise: Promise<typeof import('highlight.js')> | null = null;
 
 // Segments that must never get quote-wrapping: fenced code (also unclosed,
 // mid-stream), inline code, and raw HTML tags.
 const PROTECTED_SPLIT = /(```[\s\S]*?(?:```|$)|`[^`\n]*`|<[^>\n]*>)/;
 const QUOTE_RE = /"[^"\n]+"|“[^”\n]+”/g;
+
+/** Angle-bracket instructions are model control text, not visible message
+ * content. Strip them only outside code, and never across a line boundary, so
+ * examples/snippets and ordinary multiline text remain exact. */
+function hideAngleInstructions(src: string): string {
+  let out = '';
+  let i = 0;
+  let fenceTicks = 0;
+
+  while (i < src.length) {
+    if (src[i] === '`') {
+      let run = 1;
+      while (src[i + run] === '`') run++;
+
+      // Three or more ticks open/close a fenced block. Its contents may span
+      // lines and must pass through byte-for-byte.
+      if (run >= 3) {
+        if (fenceTicks === 0) fenceTicks = run;
+        else if (run >= fenceTicks) fenceTicks = 0;
+        out += src.slice(i, i + run);
+        i += run;
+        continue;
+      }
+
+      // Inline Markdown code uses a matching run of one or two backticks.
+      // Protect the entire span, including any angle-bracket examples in it.
+      if (fenceTicks === 0) {
+        let close = src.indexOf('`', i + run);
+        while (close !== -1) {
+          let closeRun = 1;
+          while (src[close + closeRun] === '`') closeRun++;
+          if (closeRun === run) break;
+          close = src.indexOf('`', close + closeRun);
+        }
+        if (close !== -1) {
+          out += src.slice(i, close + run);
+          i = close + run;
+          continue;
+        }
+      }
+    }
+
+    if (fenceTicks === 0 && src[i] === '<') {
+      const close = src.indexOf('>', i + 1);
+      const newline = src.indexOf('\n', i + 1);
+      const nestedOpen = src.indexOf('<', i + 1);
+      if (
+        close !== -1 &&
+        (newline === -1 || close < newline) &&
+        (nestedOpen === -1 || close < nestedOpen)
+      ) {
+        i = close + 1;
+        continue;
+      }
+    }
+
+    out += src[i];
+    i++;
+  }
+
+  return out;
+}
 
 /**
  * While streaming, close any still-open markers (quotes, *, **, `) at the end
@@ -53,18 +115,83 @@ export default function Markdown(props: { content: string; streaming: boolean })
   let container: HTMLDivElement | undefined;
   let raf = 0;
 
+  const decorateCodeBlocks = () => {
+    if (!container) return;
+    container.querySelectorAll('pre').forEach((pre) => {
+      if (pre.parentElement?.classList.contains('code-block-wrap') || !pre.querySelector('code')) {
+        return;
+      }
+      const wrap = document.createElement('div');
+      wrap.className = 'code-block-wrap';
+      pre.before(wrap);
+      wrap.append(pre);
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'code-copy-btn';
+      button.title = 'Copy code';
+      button.setAttribute('aria-label', 'Copy code');
+      button.textContent = '⧉';
+      wrap.append(button);
+    });
+  };
+
   const render = () => {
-    const src = props.streaming ? autoclose(props.content) : props.content;
+    const src = hideAngleInstructions(props.streaming ? autoclose(props.content) : props.content);
     setHtml(DOMPurify.sanitize(marked.parse(markQuotes(src), { async: false })));
+    queueMicrotask(decorateCodeBlocks);
   };
 
   const highlight = async () => {
-    if (!container?.querySelector('pre code')) return;
-    hljsPromise ??= import('highlight.js/lib/common');
+    const blocks = container?.querySelectorAll<HTMLElement>(
+      'pre code[class*="language-"]:not(.hljs, .no-highlight)',
+    );
+    if (!blocks?.length) return;
+    // The full build is lazy-loaded only when the model explicitly labels a
+    // fence. Unlabelled fences remain plain text instead of being guessed.
+    hljsPromise ??= import('highlight.js');
     const hljs = (await hljsPromise).default;
-    container.querySelectorAll('pre code:not(.hljs)').forEach((block) => {
-      hljs.highlightElement(block as HTMLElement);
+    blocks.forEach((block) => {
+      const languageClass = [...block.classList].find((name) => name.startsWith('language-'));
+      const language = languageClass?.slice('language-'.length);
+      if (!language || !hljs.getLanguage(language)) {
+        block.classList.add('no-highlight');
+        return;
+      }
+      hljs.highlightElement(block);
     });
+    decorateCodeBlocks();
+  };
+
+  const copyCode = async (event: MouseEvent) => {
+    if (!(event.target instanceof Element)) return;
+    const button = event.target.closest<HTMLButtonElement>('.code-copy-btn');
+    if (!button || !container?.contains(button)) return;
+    const code = button.closest('.code-block-wrap')?.querySelector('code');
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code.textContent ?? '');
+      button.textContent = '✓';
+      button.title = 'Copied';
+      button.setAttribute('aria-label', 'Code copied');
+      button.classList.add('copied');
+      window.setTimeout(() => {
+        if (!button.isConnected) return;
+        button.textContent = '⧉';
+        button.title = 'Copy code';
+        button.setAttribute('aria-label', 'Copy code');
+        button.classList.remove('copied');
+      }, 1200);
+    } catch {
+      button.textContent = '!';
+      button.title = 'Copy failed';
+      button.setAttribute('aria-label', 'Copy failed');
+      window.setTimeout(() => {
+        if (!button.isConnected) return;
+        button.textContent = '⧉';
+        button.title = 'Copy code';
+        button.setAttribute('aria-label', 'Copy code');
+      }, 1200);
+    }
   };
 
   createEffect(() => {
@@ -89,5 +216,5 @@ export default function Markdown(props: { content: string; streaming: boolean })
 
   onCleanup(() => cancelAnimationFrame(raf));
 
-  return <div class="md" ref={container} innerHTML={html()} />;
+  return <div class="md" ref={container} innerHTML={html()} onClick={(e) => void copyCode(e)} />;
 }

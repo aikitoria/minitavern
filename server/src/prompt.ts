@@ -207,8 +207,9 @@ export function buildToolPrompt(
 /**
  * Upstream request for a steered regeneration: the normal chat context (built
  * for the name the new sibling speaks with) plus the rendered steer text as a
- * trailing system message. The steer lives only in this prompt — it is never
- * stored on a message, so later generations are unaffected.
+ * trailing user message. That keeps strict user/assistant backends happy now
+ * that the original assistant reply is included. The steer lives only in this
+ * prompt — it is never stored, so later generations are unaffected.
  */
 export function buildSteeredPrompt(
   conversation: Conversation,
@@ -217,6 +218,35 @@ export function buildSteeredPrompt(
   speakerName: string | null,
 ): BuiltPrompt {
   const built = buildChatMessages(conversation, history, speakerName);
-  built.messages.push({ role: 'system', content: steer });
+  built.messages.push({ role: 'user', content: steer });
   return built;
+}
+
+/** Revision of an image-tool output. The unchanged roleplay history stays as
+ * the request prefix for cache reuse and contextual references. A strongly
+ * delimited final user task tells the model that history is reference-only and
+ * distinguishes the original image prompt from the requested change. */
+export function buildSteeredToolPrompt(
+  conversation: Conversation,
+  history: Message[],
+  original: string,
+  instruction: string,
+): BuiltPrompt {
+  const built = buildChatMessages(conversation, history);
+  const originalBlock = `<original_image_prompt>\n${original.trim()}\n</original_image_prompt>`;
+  // A tool can be invoked while a user turn is the leaf. Insert its original
+  // output as an assistant turn first so the final user task still alternates.
+  const originalInPreviousTurn = built.messages.at(-1)?.role === 'user';
+  if (originalInPreviousTurn) built.messages.push({ role: 'assistant', content: originalBlock });
+  built.messages.push({
+    role: 'user',
+    content:
+      `[IMAGE PROMPT REVISION TASK]\n` +
+      `The conversation above is reference context only. Do not continue the roleplay or answer its dialogue. ` +
+      `Revise the specified image-generation prompt and return only the complete revised image-generation prompt, with no analysis, commentary, tags, or quotation marks. ` +
+      `Preserve every detail that the revision does not explicitly change. Do not modify anything else.\n\n` +
+      `${originalInPreviousTurn ? 'The immediately preceding assistant message contains the original image prompt.\n\n' : `${originalBlock}\n\n`}` +
+      `<revision_instruction>\n${instruction.trim()}\n</revision_instruction>`,
+  });
+  return { ...built, namePrefill: null };
 }

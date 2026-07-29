@@ -577,7 +577,15 @@ route.get('/api/conversations/:id/trace', ({ params }) => {
   const conv = getConversation(positiveId(params.id));
   const history = getActivePath(conv.id);
   const { messages, namePrefill } = buildChatMessages(conv, history);
-  return { messages, namePrefill };
+  const endpointId = conv.endpointId ?? getSettings().activeEndpointId;
+  const endpointRow = endpointId
+    ? (stmt('SELECT prefill_mode FROM endpoints WHERE id = ?').get(endpointId) as
+        { prefill_mode: string } | undefined)
+    : undefined;
+  return {
+    messages,
+    namePrefill: endpointRow?.prefill_mode === 'disabled' ? null : namePrefill,
+  };
 });
 
 /** Download the full conversation (all branches) as JSON. */

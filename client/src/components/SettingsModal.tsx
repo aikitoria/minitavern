@@ -77,14 +77,17 @@ export default function SettingsModal() {
     <>
       <Modal
         title="Settings"
+        class="settings-modal"
         onClose={() => navigate(() => openModal(null))}
         headerExtra={
-          <div class="tabs">
+          <div class="tabs" role="tablist" aria-label="Settings sections">
             <For each={TABS}>
               {(t) => (
                 <button
                   class="tab"
                   classList={{ active: tab() === t.key }}
+                  role="tab"
+                  aria-selected={tab() === t.key}
                   onClick={() => {
                     if (t.key !== tab()) navigate(() => setTab(t.key));
                   }}

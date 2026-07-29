@@ -1,6 +1,7 @@
 // Minimal OpenAI-compatible mock for end-to-end testing: streams a canned
 // response (with reasoning_content) token by token. Also mocks the ComfyUI
-// API surface the image plugin uses (/prompt, /history, /view, /ws progress).
+// API surface the image plugin uses (/prompt, /history, /view + DELETE /view,
+// /ws progress).
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer } from 'ws';
@@ -31,13 +32,20 @@ let lastComfyWorkflow: unknown = null;
 let lastCompletion: {
   system: string | null;
   user: string | null;
+  assistantMessages: string[];
+  messages: { role: string; content: string }[];
   reasoningEffort: string | null;
+  lastMessageRole: string | null;
+  lastMessageContent: string | null;
+  continueFinalMessage: boolean;
 } | null = null;
 /** Next N /prompt submissions are rejected with a 500. */
 let comfyFailPrompts = 0;
 /** Next N accepted jobs fail during execution (error status in /history). */
 let comfyFailRenders = 0;
 const comfyJobs = new Map<string, { readyAt: number; fail: boolean }>();
+/** Output files the server asked ComfyUI to delete after downloading them. */
+const comfyDeleted: { filename: string; subfolder: string; type: string }[] = [];
 
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/v1/models') {
@@ -72,6 +80,11 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/control/last-completion') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ completion: lastCompletion }));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/control/comfy-deleted') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ deleted: comfyDeleted }));
     return;
   }
   if (req.method === 'POST' && req.url?.startsWith('/control/comfy-fail-next')) {
@@ -169,10 +182,9 @@ const server = http.createServer((req, res) => {
     );
     return;
   }
-  if (req.method === 'GET' && req.url?.startsWith('/view')) {
-    // Real ComfyUI 404s without the exact file params — serving the PNG
-    // unconditionally would leave the server's download-URL construction
-    // untested.
+  if ((req.method === 'GET' || req.method === 'DELETE') && req.url?.startsWith('/view')) {
+    // Real ComfyUI 404s without the exact file params — serving (or deleting)
+    // unconditionally would leave the server's URL construction untested.
     const q = new URL(req.url, 'http://mock').searchParams;
     if (
       q.get('filename') !== 'mock.png' ||
@@ -180,6 +192,14 @@ const server = http.createServer((req, res) => {
       q.get('subfolder') !== ''
     ) {
       res.writeHead(404).end();
+      return;
+    }
+    if (req.method === 'DELETE') {
+      // Recorded, not actually removed: every mock job reports the same
+      // filename, so a real removal would break later renders.
+      comfyDeleted.push({ filename: 'mock.png', subfolder: '', type: 'output' });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ deleted: true }));
       return;
     }
     res.writeHead(200, { 'content-type': 'image/png' });
@@ -198,6 +218,7 @@ const server = http.createServer((req, res) => {
         messages: { role: string; content: string }[];
         stream?: boolean;
         reasoning_effort?: string;
+        continue_final_message?: boolean;
       };
       try {
         parsed = JSON.parse(body) as typeof parsed;
@@ -210,7 +231,14 @@ const server = http.createServer((req, res) => {
       lastCompletion = {
         system: parsed.messages.find((m) => m.role === 'system')?.content ?? null,
         user: lastUser?.content ?? null,
+        assistantMessages: parsed.messages
+          .filter((message) => message.role === 'assistant')
+          .map((message) => message.content),
+        messages: parsed.messages,
         reasoningEffort: parsed.reasoning_effort ?? null,
+        lastMessageRole: parsed.messages.at(-1)?.role ?? null,
+        lastMessageContent: parsed.messages.at(-1)?.content ?? null,
+        continueFinalMessage: parsed.continue_final_message === true,
       };
       // Non-streaming callers (the server's auto-title side task) get a plain
       // JSON completion and must never consume the one-shot controls below —

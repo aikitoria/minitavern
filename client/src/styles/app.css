@@ -490,6 +490,7 @@ textarea.mono,
   display: flex;
   flex-direction: column;
   min-width: 0;
+  position: relative; /* anchors the mobile hamburger overlay */
 }
 
 /* ---- Sidebar ---- */
@@ -758,6 +759,22 @@ textarea.mono,
   font-size: 19px;
 }
 
+/* Mobile-only, mounted while the sidebar (and with it the header bar) is
+   closed: the sole piece of chrome over an otherwise full-height chat. */
+.menu-fab {
+  position: absolute;
+  z-index: 40;
+  top: calc(var(--space-1) + env(safe-area-inset-top));
+  left: var(--space-1);
+  font-size: 19px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-panel) 82%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  backdrop-filter: blur(6px);
+  padding: 3px var(--space-2);
+}
+
 .header-info {
   flex: 1;
   min-width: 0;
@@ -923,13 +940,22 @@ textarea.mono,
   user-select: none;
 }
 
+.image-viewer:fullscreen {
+  width: 100vw;
+  height: 100dvh;
+}
+
+.image-viewer::backdrop {
+  background: #000;
+}
+
 .image-viewer img {
   position: absolute;
   left: 50%;
   top: 50%;
   transform: translate(-50%, -50%);
   max-width: 92vw;
-  max-height: 92vh;
+  max-height: 92dvh;
   will-change: transform;
   cursor: grab;
 }
@@ -940,8 +966,8 @@ textarea.mono,
 
 .image-viewer-close {
   position: fixed;
-  top: var(--space-4);
-  right: var(--space-4);
+  top: max(var(--space-4), env(safe-area-inset-top));
+  right: max(var(--space-4), env(safe-area-inset-right));
   font-size: 20px;
   color: #fff;
 }
@@ -1138,8 +1164,59 @@ textarea.mono,
   border: 1px solid var(--border);
   border-radius: var(--radius-control);
   padding: var(--space-3);
-  overflow-x: auto;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   font-size: 13px;
+}
+
+.md .code-block-wrap {
+  position: relative;
+  margin: 0.8em 0;
+}
+
+.md .code-block-wrap pre {
+  margin: 0;
+}
+
+/* Highlight.js themes style code as a second blue-black padded box inside
+   our pre. Keep token colors, but let the pre own the block surface. */
+.md pre code.hljs {
+  display: block;
+  padding: 0;
+  overflow: visible;
+  color: inherit;
+  background: transparent;
+}
+
+.md pre code {
+  white-space: inherit;
+}
+
+.md .code-copy-btn {
+  position: absolute;
+  z-index: 1;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  min-height: 0;
+  padding: 0;
+  color: var(--text-dim);
+  background: transparent;
+  border: none;
+  font-size: 15px;
+  line-height: 1;
+}
+
+.md .code-copy-btn:hover {
+  color: var(--text);
+  background: transparent;
+}
+
+.md .code-copy-btn.copied {
+  color: #4caf7d;
 }
 
 .md code {
@@ -1424,6 +1501,48 @@ textarea.mono,
   animation: modal-in 0.1s ease-out;
 }
 
+/* Settings has enough dense editors to benefit from a larger desktop canvas;
+   other short-lived dialogs keep the compact modal dimensions above. */
+@media (min-width: 768px) {
+  .settings-modal {
+    width: min(1080px, 100%);
+    height: min(90dvh, 860px);
+  }
+}
+
+.settings-modal {
+  overflow: hidden;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.48);
+}
+
+.settings-modal .modal-head {
+  min-height: 58px;
+  padding: var(--space-2) var(--space-4);
+  background: var(--bg-panel);
+}
+
+.settings-modal .modal-title {
+  font-size: 17px;
+}
+
+.settings-modal .modal-head > .icon-btn {
+  width: 34px;
+  height: 34px;
+  flex-shrink: 0;
+}
+
+.settings-modal .modal-body {
+  flex: 1;
+  min-height: 0;
+  background: var(--bg-panel);
+}
+
+.settings-modal .modal-body > .form {
+  width: min(780px, 100%);
+  margin-inline: auto;
+  padding-top: var(--space-1);
+}
+
 @keyframes modal-in {
   from {
     opacity: 0;
@@ -1488,16 +1607,18 @@ textarea.mono,
 
 .tabs {
   display: flex;
-  gap: 2px;
+  gap: var(--space-1);
   flex: 1;
   min-width: 0;
   flex-wrap: nowrap;
   overflow-x: auto;
   scrollbar-width: none;
-  /* fill the header's height so the active underline sits on its bottom border */
-  align-self: stretch;
-  margin: calc(-1 * var(--space-3)) 0;
-  margin-left: var(--space-2);
+  align-self: center;
+  margin-left: var(--space-3);
+  padding: var(--space-1);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
 }
 
 .tab {
@@ -1505,26 +1626,27 @@ textarea.mono,
   align-items: center;
   background: none;
   border: none;
-  border-radius: 0;
-  padding: 0 var(--space-2);
-  font-size: 13.5px;
+  min-height: 32px;
+  border-radius: var(--radius-control);
+  padding: var(--space-1) var(--space-3);
+  font-size: 13px;
   color: var(--text-dim);
   white-space: nowrap;
-  box-shadow: inset 0 -2px 0 transparent;
+  box-shadow: none;
   transition:
     color 0.12s,
-    box-shadow 0.12s;
+    background 0.12s;
 }
 
 .tab:hover {
-  background: none;
+  background: var(--bg-hover);
   color: var(--text);
 }
 
 .tab.active {
-  background: none;
+  background: var(--bg-raised);
   color: var(--accent);
-  box-shadow: inset 0 -2px 0 var(--accent);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.28);
 }
 
 /* ---- Forms ---- */
@@ -1539,6 +1661,46 @@ textarea.mono,
   font-size: 13px;
   color: var(--text-dim);
   margin-top: var(--space-2);
+}
+
+/* Direct labels are field titles; nested grid labels and explanatory copy
+   remain quieter. This hierarchy is shared by every Settings tab. */
+.settings-modal .form > label:not(.check-row) {
+  margin-top: var(--space-3);
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 550;
+}
+
+.settings-modal .form > label:first-of-type {
+  margin-top: 0;
+}
+
+.settings-modal input:not([type='checkbox']),
+.settings-modal .select-btn,
+.settings-modal .form button:not(.help-btn, .detail-back) {
+  min-height: 40px;
+}
+
+.settings-modal input:not([type='checkbox']),
+.settings-modal textarea,
+.settings-modal .select-btn {
+  border-color: color-mix(in srgb, var(--border) 88%, var(--text-dim));
+  transition:
+    border-color 0.12s,
+    background 0.12s;
+}
+
+.settings-modal input:not([type='checkbox']):hover,
+.settings-modal textarea:hover,
+.settings-modal .select-btn:hover {
+  border-color: var(--text-dim);
+}
+
+.settings-modal .hint {
+  margin: var(--space-1) 0 var(--space-2);
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
 .form-actions {
@@ -1650,9 +1812,23 @@ textarea.mono,
   font-size: 13.5px;
 }
 
+.settings-modal .form > .check-row {
+  align-items: flex-start;
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  line-height: 1.45;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-panel);
+}
+
 .check-row input {
   width: auto;
   flex-shrink: 0;
+}
+
+.settings-modal .check-row input {
+  margin-top: 3px;
 }
 
 .param-grid {
@@ -1695,7 +1871,7 @@ textarea.mono,
 
 .master-detail {
   display: grid;
-  grid-template-columns: 220px 1fr;
+  grid-template-columns: 240px 1fr;
   gap: 0;
   flex: 1;
   min-height: 0;
@@ -1715,9 +1891,10 @@ textarea.mono,
 .entity-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 3px;
   border-right: 1px solid var(--border);
-  padding: var(--space-4);
+  padding: var(--space-3);
+  background: var(--bg);
   overflow-y: auto;
   min-height: 0;
 }
@@ -1729,6 +1906,7 @@ textarea.mono,
   background: none;
   border: none;
   text-align: left;
+  min-height: 40px;
   padding: var(--space-2) var(--space-3);
   border-radius: var(--radius-control);
   overflow: hidden;
@@ -1753,6 +1931,23 @@ textarea.mono,
 
 .entity-list button.active {
   background: var(--bg-raised);
+  color: var(--text);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.entity-list .entity-new-btn {
+  justify-content: center;
+  margin-bottom: var(--space-2);
+  color: var(--accent);
+  background: transparent;
+  border: 1px dashed var(--border);
+}
+
+.entity-list .entity-new-btn:hover,
+.entity-list .entity-new-btn.active {
+  background: var(--bg-raised);
+  border-color: var(--accent);
+  box-shadow: none;
 }
 
 .entity-list .avatar,
@@ -1790,10 +1985,6 @@ textarea.mono,
     background: rgb(0 0 0 / 0.45);
   }
 
-  .menu-btn {
-    display: block;
-  }
-
   .conv-duplicate,
   .conv-delete {
     display: inline-flex;
@@ -1805,14 +1996,36 @@ textarea.mono,
     display: none;
   }
 
+  .menu-btn {
+    display: block;
+  }
+
   /* Dense vertical layout: screen space is precious. One quiet line —
      avatar and info chips are desktop luxuries; only warnings stay.
-     Header and modal title bar share the same height. */
+     Header and modal title bar share the same height.
+
+     The bar belongs to the sidebar, not the chat: it slides in with the panel
+     and is gone otherwise, so the chat scroller owns the full height. It
+     overlays rather than displaces the chat (no relayout on every toggle) and
+     sits above the backdrop, which would otherwise dim and swallow it. */
   .header {
+    position: absolute;
+    inset: 0 0 auto 0;
+    z-index: 55;
     gap: var(--space-2);
     padding: var(--space-1) var(--space-3);
     padding-top: calc(var(--space-1) + env(safe-area-inset-top));
     min-height: calc(46px + env(safe-area-inset-top));
+    transform: translateY(-100%);
+    visibility: hidden;
+    transition:
+      transform 0.1s ease-out,
+      visibility 0.1s;
+  }
+
+  .sidebar-open .header {
+    transform: none;
+    visibility: visible;
   }
 
   .modal-head {
@@ -1820,8 +2033,13 @@ textarea.mono,
     min-height: 46px;
   }
 
-  .modal-head .tabs {
-    margin: calc(-1 * var(--space-1)) 0;
+  .settings-modal .modal-head {
+    min-height: 54px;
+    padding: var(--space-1) var(--space-3);
+  }
+
+  .settings-modal .modal-head .tabs {
+    margin: 0;
     margin-left: var(--space-2);
   }
 
@@ -1884,8 +2102,10 @@ textarea.mono,
     font-size: 15px;
   }
 
+  /* The chat now owns the top of the screen: clear the notch plus the
+     hamburger overlay so the first message starts below it, not under it. */
   .chat-inner {
-    padding: var(--space-2) var(--space-3) var(--space-3);
+    padding: calc(var(--space-2) + 34px + env(safe-area-inset-top)) var(--space-3) var(--space-3);
     gap: var(--space-2);
   }
 

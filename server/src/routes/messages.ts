@@ -40,7 +40,7 @@ import { optionalNullableId } from '../validation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import { discardSpeculativeSwipes, markSwipeRead, nextUnreadSibling } from '../speculation.ts';
 import { parseImageConfig, startImageRender } from '../comfy.ts';
-import { buildSteeredPrompt, resolveSteerTemplate } from '../prompt.ts';
+import { buildSteeredPrompt, buildSteeredToolPrompt, resolveSteerTemplate } from '../prompt.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -134,15 +134,16 @@ route.post('/api/messages/:id/advance', ({ params, body }) => {
 });
 
 /**
- * Steered regeneration: a new assistant sibling whose generation is steered by
- * a one-off instruction. The instruction is rendered into the conversation's
- * resolved steer template (per-template, same chain as the prompt template)
+ * Steered regeneration: assistant output becomes a sibling swipe; revised
+ * image-tool output becomes a new child message immediately after the source.
+ * The instruction is rendered into the conversation's resolved steer template
  * and injected into this generation's prompt only — it never enters history.
+ * Tool revisions retain their image render configuration.
  */
 route.post('/api/messages/:id/regenerate', ({ params, body }) => {
   let msg = requireMessage(positiveId(params.id));
-  if (msg.role !== 'assistant') {
-    throw new HttpError(400, 'only assistant messages can be regenerated');
+  if (msg.role !== 'assistant' && msg.role !== 'tool') {
+    throw new HttpError(400, 'only assistant and tool messages can be regenerated');
   }
   const b = objectBody(body);
   const instruction = requiredString(b, 'instruction');
@@ -156,8 +157,52 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
   // retries must resend exactly this prompt, whatever changes later. Simple
   // macro substitution, not the template engine. Function replacer so '$'
   // sequences in the instruction stay literal.
+  if (msg.role === 'tool') {
+    if (!msg.content.trim()) throw new HttpError(400, 'tool message has no output to revise');
+    if (msg.imagePending) throw new HttpError(409, 'an image render is running for this message');
+    const row = stmt('SELECT image_render_json FROM messages WHERE id = ?').get(msg.id) as {
+      image_render_json: string | null;
+    };
+    const image = row.image_render_json
+      ? (JSON.parse(row.image_render_json) as { workflow: string; comfyUrl: string })
+      : null;
+    const prompt = buildSteeredToolPrompt(
+      conv,
+      getPathToMessage(msg.parentId),
+      msg.content,
+      instruction,
+    );
+    const next = appendMessage(msg.conversationId, 'tool', '', msg.id, 'streaming', null, msg.name);
+    if (image) {
+      stmt('UPDATE messages SET image_pending = 1, image_render_json = ? WHERE id = ?').run(
+        JSON.stringify(image),
+        next.id,
+      );
+    }
+    touchConversation(msg.conversationId);
+    broadcastTree(msg.conversationId);
+    const renderImage = image;
+    startGeneration(getConversation(msg.conversationId), next.id, undefined, {
+      prompt,
+      onDone: renderImage
+        ? () =>
+            startImageRender({
+              conversationId: msg.conversationId,
+              mid: next.id,
+              comfyUrl: renderImage.comfyUrl,
+              workflow: renderImage.workflow,
+              description: getMessage(next.id)?.content ?? '',
+            })
+        : undefined,
+    });
+    invalidate('conversations');
+    return { activeLeafId: next.id, assistantMessageId: next.id };
+  }
   const steer = resolveSteerTemplate(conv).replaceAll(/\{\{instruction\}\}/gi, () => instruction);
-  const prompt = buildSteeredPrompt(conv, getPathToMessage(msg.parentId), steer, msg.name);
+  // The temporary upstream context includes the target reply so the model can
+  // actually revise it. The new stored message still uses msg.parentId below,
+  // making it a sibling; the original never becomes part of the new branch.
+  const prompt = buildSteeredPrompt(conv, getPathToMessage(msg.id), steer, msg.name);
   const mid = spawnAssistantReply(conv, msg.parentId, msg.name, prompt);
   invalidate('conversations');
   return { activeLeafId: mid, assistantMessageId: mid };

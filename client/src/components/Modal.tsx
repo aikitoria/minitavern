@@ -4,6 +4,7 @@ import { openModal } from '../state/store.ts';
 
 export default function Modal(props: {
   title: string;
+  class?: string;
   headerExtra?: JSX.Element;
   children: JSX.Element;
   onClose?: () => void;
@@ -12,7 +13,7 @@ export default function Modal(props: {
     <Portal>
       {/* No close-on-backdrop-click: modals hold unsaved form state. */}
       <div class="modal-backdrop">
-        <div class="modal">
+        <div class={`modal ${props.class ?? ''}`}>
           <div class="modal-head">
             <span class="modal-title">{props.title}</span>
             {props.headerExtra}

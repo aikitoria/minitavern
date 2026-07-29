@@ -135,9 +135,9 @@ export interface Endpoint {
   model: string | null;
   /** Sampling settings sent with every generation through this endpoint. */
   genParams: GenParams;
-  /** How assistant-prefill continuation is requested: generic trailing message,
-   * vLLM's continue_final_message, or DeepSeek's beta prefix flag. */
-  prefillMode: 'none' | 'vllm' | 'deepseek';
+  /** How assistant-prefill continuation is requested: disabled, generic trailing
+   * message, vLLM's continue_final_message, or DeepSeek's beta prefix flag. */
+  prefillMode: 'disabled' | 'none' | 'vllm' | 'deepseek';
   createdAt: number;
 }
 
@@ -182,7 +182,8 @@ export const DEFAULT_PROMPT_TEMPLATE = `{{system}}
  * template leaves it empty). {{instruction}} is replaced with the steer
  * instruction and the result injected into that regeneration's prompt only.
  */
-export const DEFAULT_STEER_TEMPLATE = '[System note: adapt this reply as follows: {{instruction}}]';
+export const DEFAULT_STEER_TEMPLATE =
+  '[Revision request: modify only this aspect of the immediately preceding assistant response: {{instruction}}. Preserve all other content and details. Do not modify anything else. Return only the revised response.]';
 
 export const DEFAULT_SETTINGS: Settings = {
   revision: 0,

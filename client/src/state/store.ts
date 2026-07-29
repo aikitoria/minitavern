@@ -590,6 +590,20 @@ export function toggleSidebar(): void {
   setState('sidebarOpen', (open) => !open);
 }
 
+/** Mirrors the mobile layout breakpoint in app.css — the floating hamburger
+ * only exists in that layout, so it has to be a mount decision, not styling. */
+const mobileQuery = matchMedia('(max-width: 767px), (pointer: coarse) and (max-width: 1024px)');
+const [isMobileLayout, setIsMobileLayout] = createSignal(mobileQuery.matches);
+mobileQuery.addEventListener('change', (e) => setIsMobileLayout(e.matches));
+export { isMobileLayout };
+
+/** The mobile header bar is only up while the sidebar is: acting on one of its
+ * controls means the user is done with both. No-op on desktop, where the
+ * sidebar is static and `open` is unstyled. */
+export function closeSidebar(): void {
+  setState('sidebarOpen', false);
+}
+
 export function toggleGroupByCharacter(): void {
   setState('groupByCharacter', (on) => !on);
   try {

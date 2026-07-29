@@ -487,6 +487,53 @@ async function main() {
     'tree patches carry full structure but bodies only for changed messages',
   );
 
+  console.log('== regenerate with instruction includes the original reply ==');
+  const steered = await req<{ assistantMessageId: number }>(
+    'POST',
+    `/api/messages/${assistant1.id}/regenerate`,
+    await branchBody(conv.id, { instruction: 'Make this much shorter.' }),
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === steered.assistantMessageId,
+    'steered regeneration finished',
+  );
+  const steeredSeen = (await (await fetch(`${MOCK_CONTROL}/control/last-completion`)).json()) as {
+    completion: {
+      assistantMessages: string[];
+      messages: { role: string; content: string }[];
+      lastMessageRole: string | null;
+      lastMessageContent: string | null;
+    } | null;
+  };
+  assert(
+    steeredSeen.completion?.assistantMessages.includes('Rewritten reply.') === true,
+    'steered regeneration sends the original assistant reply upstream',
+  );
+  assert(
+    steeredSeen.completion?.lastMessageRole === 'user' &&
+      steeredSeen.completion.lastMessageContent?.includes('Make this much shorter.') === true,
+    'one-off steer instruction follows the original reply as a user message',
+  );
+  const steeredAlternating = steeredSeen.completion!.messages.filter(
+    (message) => message.role === 'user' || message.role === 'assistant',
+  );
+  assert(
+    steeredAlternating.every(
+      (message, index) =>
+        message.content.trim().length > 0 &&
+        (index === 0 || message.role !== steeredAlternating[index - 1]!.role),
+    ),
+    'steered text request keeps user/assistant messages non-empty and alternating',
+  );
+  snap = await tree(conv.id);
+  const steeredMessage = snap.messages.find(
+    (message) => message.id === steered.assistantMessageId,
+  )!;
+  assert(
+    steeredMessage.parentId === assistant1.parentId,
+    'steered result is stored as a sibling, not as a child of the original reply',
+  );
+
   console.log('== swipe past an in-flight generation ==');
   const sendResult = await sendMessage(conv.id, 'Long answer please');
   await ws.waitFor(
@@ -1067,6 +1114,53 @@ async function main() {
     'resume appended to the same message',
   );
 
+  console.log('== endpoint can disable assistant prefills ==');
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, { prefillMode: 'disabled' });
+  assert(
+    (await fetchTrace(conv2.id)).namePrefill === null,
+    'prompt trace omits the disabled endpoint prefill',
+  );
+  const noPrefillSend = await sendMessage(conv2.id, 'no prefill, please');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === noPrefillSend.assistantMessageId,
+    'generation with prefills disabled finished',
+  );
+  let noPrefillCompletion = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as {
+    completion: { lastMessageRole: string | null; continueFinalMessage: boolean } | null;
+  };
+  assert(
+    noPrefillCompletion.completion?.lastMessageRole === 'user' &&
+      noPrefillCompletion.completion.continueFinalMessage === false,
+    'disabled endpoint omits speaker-name prefill and native continuation flag',
+  );
+
+  const noPrefillBeforeResume = (await tree(conv2.id)).messages.find(
+    (m) => m.id === noPrefillSend.assistantMessageId,
+  )!.content.length;
+  await req(
+    'POST',
+    `/api/messages/${noPrefillSend.assistantMessageId}/continue`,
+    await branchBody(conv2.id),
+  );
+  await ws.waitFor(
+    (e) =>
+      e.t === 'final' &&
+      e.message.id === noPrefillSend.assistantMessageId &&
+      e.message.content.length > noPrefillBeforeResume,
+    'resume with prefills disabled finished',
+  );
+  noPrefillCompletion = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as typeof noPrefillCompletion;
+  assert(
+    noPrefillCompletion.completion?.lastMessageRole === 'user' &&
+      noPrefillCompletion.completion.continueFinalMessage === false,
+    'disabled endpoint also omits partial-content prefill on resume',
+  );
+  await req('PATCH', `/api/endpoints/${endpoint.id}`, { prefillMode: 'none' });
+
   const clearedTemplates = await putSettings({ defaultTemplateId: null });
   assert(
     clearedTemplates.defaultTemplateId === null,
@@ -1187,6 +1281,13 @@ async function main() {
   );
 
   console.log('== comfy image rendering ==');
+  const comfyDeleteCount = async () =>
+    (
+      (await (await fetch(`${MOCK_CONTROL}/control/comfy-deleted`)).json()) as {
+        deleted: { filename: string; type: string }[];
+      }
+    ).deleted;
+  const deletesBeforeRender = (await comfyDeleteCount()).length;
   const COMFY_WORKFLOW =
     '{"3":{"class_type":"KSampler","inputs":{"seed":{{seed}}}},"6":{"inputs":{"text":"{{prompt}}"}}}';
   const imgSnap = await tree(conv2.id);
@@ -1231,6 +1332,21 @@ async function main() {
       (await served.arrayBuffer()).byteLength > 0,
     'generated image is served from /images/',
   );
+  // The download is followed by a best-effort DELETE /view, so ComfyUI doesn't
+  // keep a second copy of every image we already own. It is fire-and-forget on
+  // the server, hence the poll rather than a straight read.
+  let comfyDeletes = await comfyDeleteCount();
+  for (let i = 0; i < 40 && comfyDeletes.length === deletesBeforeRender; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    comfyDeletes = await comfyDeleteCount();
+  }
+  assert(
+    comfyDeletes.length === deletesBeforeRender + 1 &&
+      comfyDeletes.at(-1)!.filename === 'mock.png' &&
+      comfyDeletes.at(-1)!.type === 'output',
+    'the downloaded output is deleted from ComfyUI',
+  );
+
   const { workflow: substituted } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-workflow`)
   ).json()) as {
@@ -1267,6 +1383,91 @@ async function main() {
     'active image selection persists',
   );
   const secondImageUrl = regenMsg.images[1]!;
+
+  console.log('== regenerate image tool with instruction ==');
+  const imageRevisionTrace = await fetchTrace(conv2.id);
+  const steeredImage = await req<{ assistantMessageId: number }>(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/regenerate`,
+    await branchBody(conv2.id, { instruction: 'Make the scene moonlit.' }),
+  );
+  const steeredImageFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === steeredImage.assistantMessageId,
+    'steered image prompt finished',
+  );
+  const imageSteerSeen = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as {
+    completion: {
+      messages: { role: string; content: string }[];
+      lastMessageRole: string | null;
+      lastMessageContent: string | null;
+    } | null;
+  };
+  assert(
+    imageSteerSeen.completion?.messages.some((message) =>
+      message.content.includes(regenMsg.content),
+    ) === true,
+    'image steer sends the original generated prompt upstream',
+  );
+  assert(
+    imageSteerSeen.completion?.lastMessageRole === 'user' &&
+      imageSteerSeen.completion.lastMessageContent?.includes('[IMAGE PROMPT REVISION TASK]') ===
+        true &&
+      imageSteerSeen.completion.lastMessageContent.includes('reference context only') &&
+      imageSteerSeen.completion.lastMessageContent.includes('Do not continue the roleplay') &&
+      imageSteerSeen.completion.lastMessageContent.includes('Do not modify anything else.') &&
+      imageSteerSeen.completion.lastMessageContent?.includes('<original_image_prompt>') === true &&
+      imageSteerSeen.completion.lastMessageContent.includes('<revision_instruction>') &&
+      imageSteerSeen.completion.lastMessageContent?.includes('Make the scene moonlit.') === true &&
+      imageSteerSeen.completion.lastMessageContent.includes(regenMsg.content),
+    'image steer clearly separates the original prompt from the constrained instruction',
+  );
+  assert(
+    JSON.stringify(
+      imageSteerSeen.completion?.messages.slice(0, imageRevisionTrace.messages.length),
+    ) === JSON.stringify(imageRevisionTrace.messages),
+    'image steer preserves the exact roleplay-history prefix for context and caching',
+  );
+  const imageSteerAlternating = imageSteerSeen.completion!.messages.filter(
+    (message) => message.role === 'user' || message.role === 'assistant',
+  );
+  assert(
+    imageSteerAlternating.every(
+      (message, index) =>
+        message.content.trim().length > 0 &&
+        (index === 0 || message.role !== imageSteerAlternating[index - 1]!.role),
+    ),
+    'steered image request keeps contextual user/assistant history alternating',
+  );
+  assert(
+    steeredImageFinal.t === 'final' &&
+      steeredImageFinal.message.role === 'tool' &&
+      steeredImageFinal.message.parentId === imgRes.toolMessageId &&
+      steeredImageFinal.message.hasImageRender,
+    'steered image prompt is appended after the source with its render configuration retained',
+  );
+  let steeredImageRendered: Message | undefined;
+  for (let i = 0; i < 60 && !steeredImageRendered; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const message = (await tree(conv2.id)).messages.find(
+      (candidate) => candidate.id === steeredImage.assistantMessageId,
+    );
+    if (message && !message.imagePending && message.images.length === 1) {
+      steeredImageRendered = message;
+    }
+  }
+  assert(steeredImageRendered != null, 'steered image prompt automatically renders a fresh image');
+  // Remove this test revision so the following chain/deletion checks continue
+  // to exercise their original shape from the source image message.
+  await req(
+    'DELETE',
+    `/api/messages/${steeredImage.assistantMessageId}?expectedActiveLeafId=${steeredImage.assistantMessageId}`,
+  );
+  assert(
+    (await tree(conv2.id)).activeLeafId === imgRes.toolMessageId,
+    'removing the revised image returns to the source image message',
+  );
 
   // Consecutive tool runs chain parent→child; deleting a tool message must
   // splice it out (descendants survive) and still delete its image from disk.

@@ -33,6 +33,7 @@ export default function EntityEditorPane<T extends { id: number }>(props: {
   const editor = props.editor;
   const NewButton = () => (
     <button
+      class="entity-new-btn"
       classList={{ active: editor.selectedId() === 'new' }}
       onClick={() => editor.select('new')}
     >

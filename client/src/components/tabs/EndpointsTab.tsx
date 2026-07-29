@@ -204,6 +204,7 @@ export default function EndpointsTab() {
       <Select
         ref={prefillEl}
         options={[
+          { value: 'disabled', label: 'Disabled (do not send prefills)' },
           { value: 'none', label: 'Generic (trailing assistant message)' },
           { value: 'vllm', label: 'vLLM (continue_final_message)' },
           { value: 'deepseek', label: 'DeepSeek beta (prefix flag, needs /beta base URL)' },

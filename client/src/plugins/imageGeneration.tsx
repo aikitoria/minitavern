@@ -1,4 +1,4 @@
-import { Show, createSignal, onMount } from 'solid-js';
+import { Show, createSignal, onMount, type JSX } from 'solid-js';
 import { workflowValidationError } from '@minitavern/shared';
 import type { Plugin, PluginMessageView } from './api.ts';
 import { pluginSettings, savePluginSettings } from './api.ts';
@@ -22,13 +22,23 @@ interface ImageWorkflow {
   json: string;
 }
 
+interface ImagePromptPreset {
+  name: string;
+  prompt: string;
+}
+
+interface ImagePromptPresetSet {
+  presets: ImagePromptPreset[];
+  /** Name of the selected preset; '' selects the built-in default. */
+  active: string;
+}
+
+type ImagePromptKind =
+  'describe' | 'characterInstruction' | 'face' | 'faceInstruction' | 'instruction' | 'avatar';
+
 interface ImageGenSettings extends Record<string, unknown> {
-  /** Asks the model to describe the character/scene as an image prompt. */
-  describePrompt: string;
-  /** Used by /image <instruction>; {{instruction}} expands to the argument. */
-  instructionPrompt: string;
-  /** Asks the model to write a portrait prompt for the avatar generator. */
-  avatarPrompt: string;
+  /** Independently selected saved prompts for chat image and avatar generation. */
+  promptPresets: Record<ImagePromptKind, ImagePromptPresetSet>;
   comfyUrl: string;
   workflows: ImageWorkflow[];
   /** Name of the workflow /image renders with; '' = describe only, no image. */
@@ -37,12 +47,28 @@ interface ImageGenSettings extends Record<string, unknown> {
   avatarWorkflow: string;
 }
 
-const DEFAULTS: ImageGenSettings = {
-  describePrompt:
+const DEFAULT_PROMPTS: Record<ImagePromptKind, string> = {
+  describe:
     "Describe {{char}}'s current appearance and surroundings as a single detailed image-generation prompt. Reply with only the prompt.",
-  instructionPrompt: '{{instruction}}',
-  avatarPrompt:
+  characterInstruction:
+    "Describe {{char}}'s current appearance and surroundings as a single detailed image-generation prompt. Apply this instruction: {{instruction}}. Reply with only the prompt.",
+  face: "Describe {{char}}'s face and current appearance as a single detailed close-up portrait image-generation prompt. Focus on facial features, hair, expression, and lighting. Reply with only the prompt.",
+  faceInstruction:
+    "Describe {{char}}'s face and current appearance as a single detailed close-up portrait image-generation prompt. Focus on facial features, hair, expression, and lighting, and apply this instruction: {{instruction}}. Reply with only the prompt.",
+  instruction: '{{instruction}}',
+  avatar:
     'Write an image-generation prompt for a portrait avatar of {{char}}, based on their description: {{description}}. Head and shoulders, facing forward. Reply with only the prompt.',
+};
+
+const DEFAULTS: ImageGenSettings = {
+  promptPresets: {
+    describe: { presets: [], active: '' },
+    characterInstruction: { presets: [], active: '' },
+    face: { presets: [], active: '' },
+    faceInstruction: { presets: [], active: '' },
+    instruction: { presets: [], active: '' },
+    avatar: { presets: [], active: '' },
+  },
   comfyUrl: 'http://comfy:8588',
   workflows: [],
   activeWorkflow: '',
@@ -62,18 +88,67 @@ const AVATAR_MACROS: [string, string][] = [
   ['{{scenario}}', 'Character scenario (characters only)'],
 ];
 
+function normalizePromptPresets(
+  cfg: Record<string, unknown>,
+  kind: ImagePromptKind,
+  legacyKey?: 'describePrompt' | 'instructionPrompt' | 'avatarPrompt',
+): ImagePromptPresetSet {
+  const allPresets = cfg.promptPresets;
+  const raw =
+    typeof allPresets === 'object' && allPresets !== null
+      ? (allPresets as Partial<Record<ImagePromptKind, ImagePromptPresetSet>>)[kind]
+      : undefined;
+  if (raw && Array.isArray(raw.presets)) {
+    const presets = raw.presets.filter(
+      (preset): preset is ImagePromptPreset =>
+        typeof preset?.name === 'string' && typeof preset.prompt === 'string',
+    );
+    const active =
+      typeof raw.active === 'string' && presets.some((preset) => preset.name === raw.active)
+        ? raw.active
+        : '';
+    return { presets, active };
+  }
+
+  // Migrate the former single editable field. A value equal to the built-in
+  // default needs no saved copy; a customization becomes the active preset.
+  const legacy = legacyKey ? cfg[legacyKey] : undefined;
+  if (typeof legacy === 'string' && legacy !== DEFAULT_PROMPTS[kind]) {
+    return { presets: [{ name: 'Custom', prompt: legacy }], active: 'Custom' };
+  }
+  return { presets: [], active: '' };
+}
+
 function settings(): ImageGenSettings {
+  const stored = (state.settings.pluginSettings[ID] ?? {}) as Record<string, unknown>;
   const cfg = pluginSettings(ID, DEFAULTS);
+  const promptPresets: ImageGenSettings['promptPresets'] = {
+    describe: normalizePromptPresets(stored, 'describe', 'describePrompt'),
+    characterInstruction: normalizePromptPresets(stored, 'characterInstruction'),
+    face: normalizePromptPresets(stored, 'face'),
+    faceInstruction: normalizePromptPresets(stored, 'faceInstruction'),
+    instruction: normalizePromptPresets(stored, 'instruction', 'instructionPrompt'),
+    avatar: normalizePromptPresets(stored, 'avatar', 'avatarPrompt'),
+  };
   // Migrate the pre-multi-workflow shape (single workflowJson string).
   const legacy = (cfg as Record<string, unknown>).workflowJson;
   if (cfg.workflows.length === 0 && typeof legacy === 'string' && legacy.trim()) {
     return {
       ...cfg,
+      promptPresets,
       workflows: [{ name: 'Default', json: legacy }],
       activeWorkflow: 'Default',
     };
   }
-  return cfg;
+  return { ...cfg, promptPresets };
+}
+
+function selectedPrompt(cfg: ImageGenSettings, kind: ImagePromptKind): string {
+  const selection = cfg.promptPresets[kind];
+  return (
+    selection.presets.find((preset) => preset.name === selection.active)?.prompt ??
+    DEFAULT_PROMPTS[kind]
+  );
 }
 
 /** The server's route-time check (shared implementation) so a broken paste
@@ -82,12 +157,10 @@ function workflowError(workflow: string): string | null {
   return workflow.trim() ? workflowValidationError(workflow) : null;
 }
 
-/** No instruction → the describe-character prompt; otherwise the instruction
- * prompt with {{instruction}} expanded (empty template = the raw instruction).
+/** Selects one prompt variant and expands its optional command instruction.
  * {{char}}/{{user}} expand server-side, where the conversation context lives. */
-function composePrompt(instruction: string): string {
-  if (!instruction) return settings().describePrompt;
-  const template = settings().instructionPrompt.trim() || '{{instruction}}';
+function composePrompt(kind: Exclude<ImagePromptKind, 'avatar'>, instruction = ''): string {
+  const template = selectedPrompt(settings(), kind);
   // Callback replacement: a string would interpret $-sequences in the
   // user's instruction ("$$99" → "$99", "$&" → the matched macro).
   return template.replaceAll(/\{\{instruction\}\}/gi, () => instruction);
@@ -118,12 +191,15 @@ export function avatarGenerationAvailable(): boolean {
 
 /** The avatarPrompt template, expanded server-side by the prompt stream route. */
 export function avatarPromptTemplate(): string {
-  return settings().avatarPrompt;
+  return selectedPrompt(settings(), 'avatar');
 }
 
 /** Streams the image description into a tool message as a foreground
  * generation; with an active workflow, ComfyUI then renders the image. */
-async function generate(instruction: string): Promise<boolean> {
+async function generate(
+  kind: Exclude<ImagePromptKind, 'avatar'>,
+  instruction = '',
+): Promise<boolean> {
   if (state.selectedId == null) {
     toast('No conversation selected.');
     return false;
@@ -131,7 +207,7 @@ async function generate(instruction: string): Promise<boolean> {
   return navigateTree(() =>
     api.toolGenerate(
       state.selectedId!,
-      composePrompt(instruction),
+      composePrompt(kind, instruction),
       'Image prompt',
       state.tree.activeLeafId,
       activeRenderConfig(),
@@ -157,10 +233,150 @@ const ImageIcon = () => (
   </svg>
 );
 
+interface PromptPresetEditorHandle {
+  value: ImagePromptPresetSet;
+}
+
+/** One independently selected prompt-preset editor. The built-in Default is
+ * always present but never serialized, so future default improvements remain
+ * available without overwriting a user's saved prompts. */
+function PromptPresetEditor(props: {
+  label: JSX.Element;
+  defaultPrompt: string;
+  extraKeys?: string[];
+  ref?: PromptPresetEditorHandle | ((handle: PromptPresetEditorHandle) => void);
+}) {
+  let nameEl!: HTMLInputElement;
+  let promptEl!: HTMLTextAreaElement;
+  let pickerEl!: SelectHandle;
+  const [presets, setPresets] = createSignal<ImagePromptPreset[]>([]);
+  /** Index into presets(); -1 = built-in Default. */
+  const [selected, setSelected] = createSignal(-1);
+  const [renaming, setRenaming] = createSignal(false);
+
+  const currentPresets = () => {
+    const idx = selected();
+    return presets().map((preset, i) =>
+      i === idx ? { name: nameEl.value.trim() || preset.name, prompt: promptEl.value } : preset,
+    );
+  };
+
+  const stash = () => setPresets(currentPresets());
+
+  const showPreset = (idx: number) => {
+    setSelected(idx);
+    setRenaming(false);
+    pickerEl.value = String(idx);
+    const preset = presets()[idx];
+    nameEl.value = preset?.name ?? '';
+    promptEl.value = preset?.prompt ?? props.defaultPrompt;
+    promptEl.readOnly = idx === -1;
+  };
+
+  const pick = (idx: number) => {
+    stash();
+    showPreset(idx);
+  };
+
+  const add = () => {
+    const startingPrompt = promptEl.value;
+    stash();
+    setPresets((list) => {
+      let n = list.length + 1;
+      while (list.some((preset) => preset.name === `Preset ${n}`)) n++;
+      return [...list, { name: `Preset ${n}`, prompt: startingPrompt }];
+    });
+    showPreset(presets().length - 1);
+    setRenaming(true);
+    queueMicrotask(() => {
+      nameEl.focus();
+      nameEl.select();
+    });
+  };
+
+  const remove = () => {
+    const idx = selected();
+    if (idx === -1) return;
+    setPresets((list) => list.filter((_, i) => i !== idx));
+    showPreset(-1);
+  };
+
+  const rename = () => {
+    setRenaming(true);
+    queueMicrotask(() => {
+      nameEl.focus();
+      nameEl.select();
+    });
+  };
+
+  const finishRename = () => {
+    stash();
+    setRenaming(false);
+  };
+
+  const handle: PromptPresetEditorHandle = {
+    get value() {
+      const current = currentPresets();
+      return { presets: current, active: current[selected()]?.name ?? '' };
+    },
+    set value(next: ImagePromptPresetSet) {
+      setPresets(next.presets);
+      showPreset(next.presets.findIndex((preset) => preset.name === next.active));
+    },
+  };
+  if (typeof props.ref === 'function') props.ref(handle);
+
+  return (
+    <div class="prompt-preset-editor">
+      <label>{props.label}</label>
+      <div class="key-row prompt-preset-toolbar">
+        <Select
+          ref={pickerEl}
+          onChange={(value) => pick(Number(value))}
+          options={[
+            { value: '-1', label: 'Default' },
+            ...presets().map((preset, i) => ({
+              value: String(i),
+              label: preset.name || `Preset ${i + 1}`,
+            })),
+          ]}
+        />
+        <button onClick={add}>+ New</button>
+        <Show when={selected() !== -1}>
+          <button onClick={rename}>Rename</button>
+          <button class="danger-btn" onClick={remove}>
+            Delete
+          </button>
+        </Show>
+      </div>
+      {/* Stays mounted so switching/default loads can keep using the imperative ref. */}
+      <div class="prompt-preset-rename" classList={{ hidden: !renaming() }}>
+        <label>Preset name</label>
+        <div class="key-row">
+          <input ref={nameEl} placeholder="Preset name" />
+          <button onClick={finishRename}>Done</button>
+        </div>
+      </div>
+      <MacroTextarea
+        ref={promptEl}
+        rows={4}
+        extraKeys={props.extraKeys}
+        classList={{ 'prompt-default': selected() === -1 }}
+      />
+      <Show when={selected() === -1}>
+        <span class="prompt-preset-status">Built-in default · create a preset to customize</span>
+      </Show>
+    </div>
+  );
+}
+
 function SettingsPage() {
-  let describeEl!: HTMLTextAreaElement;
-  let instructionEl!: HTMLTextAreaElement;
-  let avatarEl!: HTMLTextAreaElement;
+  let describeEditor!: PromptPresetEditorHandle;
+  let characterInstructionEditor!: PromptPresetEditorHandle;
+  let faceEditor!: PromptPresetEditorHandle;
+  let faceInstructionEditor!: PromptPresetEditorHandle;
+  let instructionEditor!: PromptPresetEditorHandle;
+  let avatarEditor!: PromptPresetEditorHandle;
   let comfyUrlEl!: HTMLInputElement;
   let nameEl!: HTMLInputElement;
   let workflowEl!: HTMLTextAreaElement;
@@ -227,9 +443,14 @@ function SettingsPage() {
       i === idx ? { name: nameEl.value.trim() || workflow.name, json: workflowEl.value } : workflow,
     );
     return {
-      describePrompt: describeEl.value,
-      instructionPrompt: instructionEl.value,
-      avatarPrompt: avatarEl.value,
+      promptPresets: {
+        describe: describeEditor.value,
+        characterInstruction: characterInstructionEditor.value,
+        face: faceEditor.value,
+        faceInstruction: faceInstructionEditor.value,
+        instruction: instructionEditor.value,
+        avatar: avatarEditor.value,
+      },
       comfyUrl: comfyUrlEl.value.trim() || DEFAULTS.comfyUrl,
       workflows: currentWorkflows,
       activeWorkflow: currentWorkflows[idx]?.name ?? '',
@@ -242,9 +463,12 @@ function SettingsPage() {
 
   const load = () => {
     const cfg = settings();
-    describeEl.value = cfg.describePrompt;
-    instructionEl.value = cfg.instructionPrompt;
-    avatarEl.value = cfg.avatarPrompt;
+    describeEditor.value = cfg.promptPresets.describe;
+    characterInstructionEditor.value = cfg.promptPresets.characterInstruction;
+    faceEditor.value = cfg.promptPresets.face;
+    faceInstructionEditor.value = cfg.promptPresets.faceInstruction;
+    instructionEditor.value = cfg.promptPresets.instruction;
+    avatarEditor.value = cfg.promptPresets.avatar;
     comfyUrlEl.value = cfg.comfyUrl;
     setWorkflows(cfg.workflows);
     showWorkflow(cfg.workflows.findIndex((workflow) => workflow.name === cfg.activeWorkflow));
@@ -260,6 +484,17 @@ function SettingsPage() {
   const save = async () => {
     const values = draft();
     setWorkflows(values.workflows);
+    for (const [kind, selection] of Object.entries(values.promptPresets)) {
+      const names = selection.presets.map((preset) => preset.name);
+      if (new Set(names).size !== names.length) {
+        setError(`${kind[0]!.toUpperCase()}${kind.slice(1)} prompt preset names must be unique.`);
+        return false;
+      }
+      if (names.some((name) => name.toLowerCase() === 'default')) {
+        setError('“Default” is reserved for the built-in prompt. Choose another preset name.');
+        return false;
+      }
+    }
     const names = values.workflows.map((workflow) => workflow.name);
     if (new Set(names).size !== names.length) {
       setError('Workflow names must be unique — the selected name identifies the /image workflow.');
@@ -300,28 +535,68 @@ function SettingsPage() {
 
   return (
     <>
-      <label>
-        Character description prompt (sent to the model to describe the scene as an image prompt){' '}
-        <MacroHelp />
-      </label>
-      <MacroTextarea ref={describeEl} placeholder={DEFAULTS.describePrompt} />
-      <label>
-        Instruction prompt for /image — {'{{instruction}}'} expands to the command argument{' '}
-        <MacroHelp extra={[['{{instruction}}', 'The /image command argument']]} />
-      </label>
-      <MacroTextarea
-        ref={instructionEl}
-        extraKeys={['instruction']}
-        placeholder="Leave empty to use the instruction verbatim"
+      <PromptPresetEditor
+        ref={describeEditor}
+        defaultPrompt={DEFAULT_PROMPTS.describe}
+        label={
+          <>
+            Character image prompt (sent to the model to describe the character and scene){' '}
+            <MacroHelp />
+          </>
+        }
       />
-      <label>
-        Avatar prompt — the model writes the portrait prompt for the Generate avatar button{' '}
-        <MacroHelp extra={AVATAR_MACROS} />
-      </label>
-      <MacroTextarea
-        ref={avatarEl}
+      <PromptPresetEditor
+        ref={characterInstructionEditor}
+        defaultPrompt={DEFAULT_PROMPTS.characterInstruction}
+        extraKeys={['instruction']}
+        label={
+          <>
+            Character image prompt with instruction — used by /imagechar{' '}
+            <MacroHelp extra={[['{{instruction}}', 'The /imagechar command argument']]} />
+          </>
+        }
+      />
+      <PromptPresetEditor
+        ref={faceEditor}
+        defaultPrompt={DEFAULT_PROMPTS.face}
+        label={
+          <>
+            Face image prompt (sent to the model to describe a close-up portrait) <MacroHelp />
+          </>
+        }
+      />
+      <PromptPresetEditor
+        ref={faceInstructionEditor}
+        defaultPrompt={DEFAULT_PROMPTS.faceInstruction}
+        extraKeys={['instruction']}
+        label={
+          <>
+            Face image prompt with instruction — used by /imageface{' '}
+            <MacroHelp extra={[['{{instruction}}', 'The /imageface command argument']]} />
+          </>
+        }
+      />
+      <PromptPresetEditor
+        ref={instructionEditor}
+        defaultPrompt={DEFAULT_PROMPTS.instruction}
+        extraKeys={['instruction']}
+        label={
+          <>
+            Generic instruction prompt for /image — {'{{instruction}}'} expands to the command
+            argument <MacroHelp extra={[['{{instruction}}', 'The /image command argument']]} />
+          </>
+        }
+      />
+      <PromptPresetEditor
+        ref={avatarEditor}
+        defaultPrompt={DEFAULT_PROMPTS.avatar}
         extraKeys={['description', 'personality', 'scenario']}
-        placeholder={DEFAULTS.avatarPrompt}
+        label={
+          <>
+            Avatar prompt — the model writes the portrait prompt for the Generate avatar button{' '}
+            <MacroHelp extra={AVATAR_MACROS} />
+          </>
+        }
       />
       <label>ComfyUI URL</label>
       <input ref={comfyUrlEl} placeholder={DEFAULTS.comfyUrl} />
@@ -545,15 +820,40 @@ export const imageGenerationPlugin: Plugin = {
   id: ID,
   name: 'Image Generation',
   messageView,
-  tools: [{ label: 'Generate image', icon: ImageIcon, run: () => void generate('') }],
+  tools: [
+    {
+      label: 'Generate Character Image',
+      icon: ImageIcon,
+      run: () => void generate('describe'),
+    },
+    { label: 'Generate Face Image', icon: ImageIcon, run: () => void generate('face') },
+  ],
   commands: [
     {
       name: 'image',
       params: '<instruction>',
       description:
-        'Generate an image description; the optional instruction expands into the instruction prompt as {{instruction}}',
+        'Generate an image from the generic instruction prompt; {{instruction}} expands to the command argument',
       // Returning navigateTree's result keeps the composer text on failure.
-      run: (args) => generate(args.trim()),
+      run: (args) => generate('instruction', args.trim()),
+    },
+    {
+      name: 'imagechar',
+      params: '[instruction]',
+      description: 'Generate a character image, optionally using the character-instruction prompt',
+      run: (args) => {
+        const instruction = args.trim();
+        return generate(instruction ? 'characterInstruction' : 'describe', instruction);
+      },
+    },
+    {
+      name: 'imageface',
+      params: '[instruction]',
+      description: 'Generate a face image, optionally using the face-instruction prompt',
+      run: (args) => {
+        const instruction = args.trim();
+        return generate(instruction ? 'faceInstruction' : 'face', instruction);
+      },
     },
   ],
   settingsPage: SettingsPage,

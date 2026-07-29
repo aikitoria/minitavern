@@ -1,6 +1,7 @@
 import { Show, createSignal } from 'solid-js';
 import { api } from '../state/api.ts';
 import {
+  closeSidebar,
   openModal,
   selectedCharacter,
   selectedConversation,
@@ -26,6 +27,18 @@ export default function Header() {
   const activeEndpoint = () => {
     const id = selectedConversation()?.endpointId ?? state.settings.activeEndpointId;
     return id != null ? state.endpoints.find((e) => e.id === id) : undefined;
+  };
+
+  // On mobile this header sits inside the sidebar: every action here targets
+  // the chat behind it, so get the panel out of the way.
+  const show = (modal: 'settings' | 'conversation') => {
+    closeSidebar();
+    openModal(modal);
+  };
+
+  const setView = (mode: 'chat' | 'trace' | 'tree' | 'map') => {
+    closeSidebar();
+    setState('viewMode', mode);
   };
 
   const startRename = () => {
@@ -82,25 +95,25 @@ export default function Header() {
               </Show>
               <div class="header-chips">
                 <Show when={(selectedCharacter()?.name ?? 'Assistant') !== conv().title}>
-                  <button class="chip" onClick={() => openModal('conversation')}>
+                  <button class="chip" onClick={() => show('conversation')}>
                     {selectedCharacter()?.name ?? 'Assistant'}
                   </button>
                 </Show>
                 <Show when={!activeEndpoint() || !activeEndpoint()!.model}>
-                  <button class="chip chip-warn" onClick={() => openModal('settings')}>
+                  <button class="chip chip-warn" onClick={() => show('settings')}>
                     {activeEndpoint() ? 'no model' : 'no endpoint'}
                   </button>
                 </Show>
                 <Show when={activeEndpoint()}>
                   {(endpoint) => (
-                    <button class="chip" onClick={() => openModal('settings')}>
+                    <button class="chip" onClick={() => show('settings')}>
                       {endpoint().name}
                     </button>
                   )}
                 </Show>
                 <Show when={personasEnabled() && selectedPersona()}>
                   {(persona) => (
-                    <button class="chip" onClick={() => openModal('conversation')}>
+                    <button class="chip" onClick={() => show('conversation')}>
                       as {persona().name}
                     </button>
                   )}
@@ -111,7 +124,7 @@ export default function Header() {
               class="icon-btn"
               classList={{ 'icon-btn-active': state.viewMode === 'trace' }}
               title="Toggle prompt trace"
-              onClick={() => setState('viewMode', state.viewMode === 'chat' ? 'trace' : 'chat')}
+              onClick={() => setView(state.viewMode === 'chat' ? 'trace' : 'chat')}
             >
               <TraceIcon />
             </button>
@@ -119,7 +132,7 @@ export default function Header() {
               class="icon-btn"
               classList={{ 'icon-btn-active': state.viewMode === 'tree' }}
               title="Toggle conversation tree"
-              onClick={() => setState('viewMode', state.viewMode === 'tree' ? 'chat' : 'tree')}
+              onClick={() => setView(state.viewMode === 'tree' ? 'chat' : 'tree')}
             >
               <TreeIcon />
             </button>
@@ -127,14 +140,14 @@ export default function Header() {
               class="icon-btn"
               classList={{ 'icon-btn-active': state.viewMode === 'map' }}
               title="Toggle tree map"
-              onClick={() => setState('viewMode', state.viewMode === 'map' ? 'chat' : 'map')}
+              onClick={() => setView(state.viewMode === 'map' ? 'chat' : 'map')}
             >
               <MapIcon />
             </button>
             <button
               class="icon-btn"
               title="Conversation settings"
-              onClick={() => openModal('conversation')}
+              onClick={() => show('conversation')}
             >
               <GearIcon />
             </button>

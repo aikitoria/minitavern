@@ -6,7 +6,7 @@ import { objectBody, optionalNumber, optionalString, positiveId } from '../valid
 import { defineEntityRoutes, nameField, nullableTextField } from './entityRoutes.ts';
 import { rowById } from './entityUtils.ts';
 
-const PREFILL_MODES = new Set<Endpoint['prefillMode']>(['none', 'vllm', 'deepseek']);
+const PREFILL_MODES = new Set<Endpoint['prefillMode']>(['disabled', 'none', 'vllm', 'deepseek']);
 
 const REASONING_EFFORTS = new Set<ReasoningEffort>([
   'none',
@@ -84,7 +84,7 @@ function genParams(value: unknown, current: GenParams = {}): GenParams {
 function prefillMode(value: unknown, current: Endpoint['prefillMode']): Endpoint['prefillMode'] {
   if (value === undefined) return current;
   if (typeof value !== 'string' || !PREFILL_MODES.has(value as Endpoint['prefillMode'])) {
-    throw new HttpError(400, 'prefillMode must be none, vllm or deepseek');
+    throw new HttpError(400, 'prefillMode must be disabled, none, vllm or deepseek');
   }
   return value as Endpoint['prefillMode'];
 }

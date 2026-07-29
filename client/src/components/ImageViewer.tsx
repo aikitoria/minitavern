@@ -21,6 +21,7 @@ export default function ImageViewer(props: { src: string; onClose: () => void })
   let pinchStartScale = 1;
   let lastMidX = 0;
   let lastMidY = 0;
+  let enteredFullscreen = false;
 
   const apply = () => {
     img.style.transform = `translate(-50%, -50%) translate(${x}px, ${y}px) scale(${scale})`;
@@ -129,6 +130,25 @@ export default function ImageViewer(props: { src: string; onClose: () => void })
     }
     if (e.key === 'Escape') {
       e.stopPropagation();
+      close();
+    }
+  };
+
+  /** Exit native fullscreen first; fullscreenchange owns the eventual close.
+   * The fixed overlay remains a complete fallback when the API is unavailable. */
+  const close = () => {
+    if (document.fullscreenElement === overlay) {
+      void document.exitFullscreen().catch(() => props.onClose());
+    } else {
+      props.onClose();
+    }
+  };
+
+  const onFullscreenChange = () => {
+    if (document.fullscreenElement === overlay) {
+      enteredFullscreen = true;
+    } else if (enteredFullscreen) {
+      enteredFullscreen = false;
       props.onClose();
     }
   };
@@ -142,13 +162,24 @@ export default function ImageViewer(props: { src: string; onClose: () => void })
 
   onMount(() => {
     document.addEventListener('keydown', onKey, true);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
     document.addEventListener('mousemove', onMouseMove);
     document.addEventListener('mouseup', onMouseUp);
+    // Mount happens synchronously from the image click, while transient user
+    // activation is still available. If the browser refuses, the fixed
+    // viewport overlay continues to work as before.
+    if (overlay.requestFullscreen) {
+      void overlay.requestFullscreen({ navigationUI: 'hide' }).catch(() => undefined);
+    }
   });
   onCleanup(() => {
     document.removeEventListener('keydown', onKey, true);
+    document.removeEventListener('fullscreenchange', onFullscreenChange);
     document.removeEventListener('mousemove', onMouseMove);
     document.removeEventListener('mouseup', onMouseUp);
+    if (document.fullscreenElement === overlay) {
+      void document.exitFullscreen().catch(() => undefined);
+    }
   });
 
   return (
@@ -157,7 +188,7 @@ export default function ImageViewer(props: { src: string; onClose: () => void })
         ref={overlay}
         class="image-viewer"
         onClick={(e) => {
-          if (e.target === overlay) props.onClose();
+          if (e.target === overlay) close();
         }}
         onDblClick={reset}
         onWheel={onWheel}
@@ -169,7 +200,7 @@ export default function ImageViewer(props: { src: string; onClose: () => void })
         on:touchcancel={onTouchEnd}
       >
         <img ref={img} src={props.src} alt="" draggable={false} onMouseDown={onMouseDown} />
-        <button class="icon-btn image-viewer-close" title="Close" onClick={props.onClose}>
+        <button class="icon-btn image-viewer-close" title="Close" onClick={close}>
           ✕
         </button>
       </div>

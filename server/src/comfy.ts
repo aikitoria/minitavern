@@ -78,6 +78,27 @@ interface ComfyHistoryEntry {
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Drops ComfyUI's copy of an output we have already downloaded (DELETE /view,
+ * same params as the GET). Best-effort by design: our copy is the durable one,
+ * so a failure here is a leftover file on the render box, not a lost image. */
+function deleteRemoteOutput(base: string, params: URLSearchParams): void {
+  void fetch(`${base}/view?${params}`, {
+    method: 'DELETE',
+    signal: AbortSignal.timeout(10_000),
+  })
+    .then((res) => {
+      // 404 means someone/something already removed it — nothing to report.
+      if (!res.ok && res.status !== 404) {
+        console.warn(`[comfy] DELETE ${params.get('filename')} failed (${res.status})`);
+      }
+    })
+    .catch((err: unknown) => {
+      console.warn(
+        `[comfy] DELETE ${params.get('filename')} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    });
+}
+
 /** Best-effort progress socket; rendering works without it (polling drives completion). */
 export function openProgressSocket(
   base: string,
@@ -226,6 +247,10 @@ export async function renderToBuffer(
     chunks.push(Buffer.from(chunk));
   }
   const data = Buffer.concat(chunks);
+  // The bytes are ours now; don't leave a duplicate accumulating in ComfyUI's
+  // output folder. Fire-and-forget so the round trip stays off the path that
+  // makes the image appear in the client.
+  deleteRemoteOutput(base, params);
 
   const ext = image.filename.includes('.')
     ? image.filename.slice(image.filename.lastIndexOf('.'))

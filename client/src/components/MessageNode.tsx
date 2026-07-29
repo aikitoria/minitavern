@@ -201,7 +201,7 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
   const move = (direction: 'up' | 'down') =>
     void navigateTree(() => api.moveMessage(props.message.id, direction, state.tree.activeLeafId));
 
-  // Steered regeneration: new assistant sibling with a one-off prompt instruction.
+  // Steered regeneration: new assistant/tool sibling with a one-off instruction.
   const [steerOpen, setSteerOpen] = createSignal(false);
   let steerArea: HTMLTextAreaElement | undefined;
   const openSteer = () => {
@@ -343,14 +343,14 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                       class="msg-more-menu"
                       ref={(el) => queueMicrotask(() => el.scrollIntoView({ block: 'nearest' }))}
                     >
-                      <Show when={isAssistant()}>
+                      <Show when={isAssistant() || (isTool() && claimedView() != null)}>
                         <button
                           onClick={() => {
                             closeMenu();
                             openSteer();
                           }}
                         >
-                          Regenerate with instruction…
+                          {isTool() ? 'Generate revised image…' : 'Regenerate with instruction…'}
                         </button>
                       </Show>
                       <button

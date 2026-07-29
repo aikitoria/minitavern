@@ -403,16 +403,17 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
   const messages = [...built.messages];
   const namePrefill = built.namePrefill;
   // Prefill-style trailing assistant message (resume content and/or "Name:").
-  // Not part of the official OpenAI spec — with prefillMode 'none' the
-  // backend decides; 'vllm'/'deepseek' send their native continuation flags.
+  // Not part of the official OpenAI spec — 'disabled' omits it entirely,
+  // 'none' lets the backend interpret it without extra flags, and
+  // 'vllm'/'deepseek' send their native continuation flags.
   let prefilled = false;
-  if (isResume && gen.content) {
+  if (endpoint.prefillMode !== 'disabled' && isResume && gen.content) {
     messages.push({
       role: 'assistant',
       content: namePrefill ? `${namePrefill} ${gen.content}` : gen.content,
     });
     prefilled = true;
-  } else if (namePrefill) {
+  } else if (endpoint.prefillMode !== 'disabled' && namePrefill) {
     messages.push({ role: 'assistant', content: namePrefill });
     prefilled = true;
   }
@@ -466,7 +467,8 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
       const text = await res.text().catch(() => '');
       throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
     }
-    await consumeStream(res.body, gen, namePrefill, isResume, resetIdle);
+    // Prefix echo suppression only applies when we actually sent the prefix.
+    await consumeStream(res.body, gen, prefilled ? namePrefill : null, isResume, resetIdle);
   } finally {
     clearTimeout(idleTimer);
   }
