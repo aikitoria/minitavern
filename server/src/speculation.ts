@@ -3,6 +3,8 @@ import { stmt } from './db.ts';
 import { stopBackgroundGenerations } from './generation.ts';
 import { broadcastTree } from './sync.ts';
 import { deleteImageFiles } from './images.ts';
+import { bumpConversationRevision } from './conversationRevision.ts';
+import { getActiveLeafId, getPathToMessage, setActiveLeaf } from './tree.ts';
 
 const retryTimers = new Map<number, NodeJS.Timeout>();
 let refillHandler: ((conversationId?: number) => void) | null = null;
@@ -67,19 +69,44 @@ export function discardSpeculativeSwipes(conversationId?: number): void {
     `SELECT DISTINCT conversation_id FROM messages
        WHERE generation_kind = 'speculative' AND (? IS NULL OR conversation_id = ?)`,
   ).all(cid, cid) as { conversation_id: number }[];
+  // Keep each active path before the cascade. Speculative rows should normally
+  // be inactive and childless, but recovery must not leave active_leaf_id
+  // dangling if an older bug promoted one without normalizing it.
+  const activePaths = new Map(
+    rows.map(({ conversation_id }) => [
+      conversation_id,
+      getPathToMessage(getActiveLeafId(conversation_id)).map((message) => message.id),
+    ]),
+  );
   // Speculative rows can in principle carry images (render-image is role-agnostic);
   // the hard-delete guarantee covers this path too.
   const doomedImages = (
     stmt(
-      `SELECT j.value AS image FROM messages m, json_each(m.images_json) j
-       WHERE m.generation_kind = 'speculative' AND (? IS NULL OR m.conversation_id = ?)`,
+      `WITH RECURSIVE doomed(id) AS (
+         SELECT id FROM messages
+         WHERE generation_kind = 'speculative' AND (? IS NULL OR conversation_id = ?)
+         UNION
+         SELECT m.id FROM messages m JOIN doomed d ON m.parent_id = d.id
+       )
+       SELECT DISTINCT j.value AS image FROM messages m, json_each(m.images_json) j
+       WHERE m.id IN (SELECT id FROM doomed)`,
     ).all(cid, cid) as { image: string }[]
   ).map((r) => r.image);
   stmt(
     "DELETE FROM messages WHERE generation_kind = 'speculative' AND (? IS NULL OR conversation_id = ?)",
   ).run(cid, cid);
+  for (const row of rows) bumpConversationRevision(row.conversation_id);
   deleteImageFiles(doomedImages);
-  for (const row of rows) broadcastTree(row.conversation_id);
+  for (const row of rows) {
+    const path = activePaths.get(row.conversation_id) ?? [];
+    const survivor = path.findLast((messageId) =>
+      stmt('SELECT id FROM messages WHERE id = ?').get(messageId),
+    );
+    if (getActiveLeafId(row.conversation_id) != null && survivor !== path.at(-1)) {
+      setActiveLeaf(row.conversation_id, survivor ?? null);
+    }
+    broadcastTree(row.conversation_id);
+  }
   queueMicrotask(() => refillHandler?.(conversationId));
 }
 
@@ -103,6 +130,7 @@ export function nextUnreadSibling(message: Message): number | null {
     `DELETE FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id > ?
      AND generation_kind = 'speculative' AND status IN ('error', 'stopped')`,
   ).run(message.conversationId, message.parentId, message.id);
+  if (removed.changes) bumpConversationRevision(message.conversationId);
   deleteImageFiles(doomedImages);
   if (removed.changes) broadcastTree(message.conversationId);
   const next = stmt(

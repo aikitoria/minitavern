@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite';
 import type { StatementSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
+import { chmodSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type {
   Character,
@@ -19,17 +19,34 @@ export const AVATAR_DIR = join(DATA_DIR, 'avatars');
 export const IMAGES_DIR = join(DATA_DIR, 'images');
 const DB_PATH = process.env.DB_PATH ?? join(DATA_DIR, 'minitavern.db');
 
-mkdirSync(dirname(DB_PATH), { recursive: true });
-mkdirSync(AVATAR_DIR, { recursive: true });
-mkdirSync(IMAGES_DIR, { recursive: true });
+// Chats and endpoint credentials are plaintext in SQLite. Keep both newly
+// created files and SQLite's later-created WAL/SHM sidecars private, regardless
+// of the host/container's inherited umask.
+process.umask(0o077);
+function privateDirectory(path: string): void {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(path, 0o700);
+}
+privateDirectory(DATA_DIR);
+if (dirname(DB_PATH) !== DATA_DIR) privateDirectory(dirname(DB_PATH));
+privateDirectory(AVATAR_DIR);
+privateDirectory(IMAGES_DIR);
 
 export const db = new DatabaseSync(DB_PATH);
+chmodSync(DB_PATH, 0o600);
 db.exec('PRAGMA foreign_keys = ON');
 // WAL avoids a full journal cycle (two fsyncs) per write — this matters for
 // the periodic streaming flushes. NORMAL is durable enough under WAL: a crash
 // can only lose the last transactions, never corrupt the database.
 db.exec('PRAGMA journal_mode = WAL');
 db.exec('PRAGMA synchronous = NORMAL');
+for (const sidecar of [`${DB_PATH}-wal`, `${DB_PATH}-shm`]) {
+  try {
+    chmodSync(sidecar, 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
 // Auto-checkpointing (default: every ~4MB) keeps the WAL bounded; this only
 // truncates the file back after a large write burst instead of leaving it at
 // its high-water mark.
@@ -325,6 +342,17 @@ if (version < 17) {
   `);
 }
 
+// Optimistic conversation concurrency and generation ABA protection.
+if (version < 18) {
+  db.exec(`
+    BEGIN;
+    ALTER TABLE conversations ADD COLUMN mutation_revision INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE messages ADD COLUMN generation_token INTEGER;
+    PRAGMA user_version = 18;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(
@@ -408,6 +436,7 @@ export function toMessage(r: Row): Message {
     model: r.model as string | null,
     genMeta: r.gen_meta_json ? JSON.parse(r.gen_meta_json as string) : null,
     generationKind: r.generation_kind as Message['generationKind'],
+    generationToken: (r.generation_token as number | null) ?? null,
     images: r.images_json ? (JSON.parse(r.images_json as string) as string[]) : [],
     activeImage: (r.active_image as number) ?? 0,
     imagePending: (r.image_pending as number) === 1,
@@ -425,6 +454,7 @@ export function toConversation(r: Row): Conversation {
     endpointId: r.endpoint_id as number | null,
     speakerName: r.speaker_name as string | null,
     activeLeafId: r.active_leaf_id as number | null,
+    mutationRevision: (r.mutation_revision as number) ?? 0,
     createdAt: r.created_at as number,
     updatedAt: r.updated_at as number,
   };

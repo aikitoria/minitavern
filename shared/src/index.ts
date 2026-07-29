@@ -38,6 +38,9 @@ export interface Message {
   model: string | null;
   genMeta: GenMeta | null;
   generationKind: GenerationKind;
+  /** Identity of the current/most-recent generation attempt group for this message.
+   * Changes when a stopped message is continued in place. */
+  generationToken: number | null;
   /** Generated image alternatives (served /images/ paths); swipeable within the message. */
   images: string[];
   /** Selected index into images (server-persisted so it syncs across devices). */
@@ -59,6 +62,8 @@ export interface Conversation {
   /** Current assistant speaker name (set via /char); null = character's name. */
   speakerName: string | null;
   activeLeafId: number | null;
+  /** Monotonic optimistic-concurrency token for conversation state. */
+  mutationRevision: number;
   createdAt: number;
   updatedAt: number;
 }
@@ -153,6 +158,8 @@ export interface Settings {
   autoExpandThinking: boolean;
   /** Keep one unread assistant sibling prepared ahead of the active reply. */
   backgroundSwipeGeneration: boolean;
+  /** Whether the server has an access password. The password itself is never returned. */
+  hasPassword: boolean;
   /** Per-plugin settings blobs, keyed by plugin id (shapes are plugin-defined). */
   pluginSettings: Record<string, Record<string, unknown>>;
 }
@@ -193,19 +200,69 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultTemplateId: null,
   autoExpandThinking: false,
   backgroundSwipeGeneration: false,
+  hasPassword: false,
   pluginSettings: {},
 };
 
+function workflowMacroPlacementError(workflow: string): string | null {
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < workflow.length; i++) {
+    const macro = workflow.slice(i).match(/^\{\{(prompt|seed)\}\}/i);
+    if (macro) {
+      const key = macro[1]!.toLowerCase();
+      if (key === 'prompt') {
+        if (!inString) return '{{prompt}} must be inside a JSON string';
+        if (escaped) return '{{prompt}} must not follow an unpaired backslash';
+      } else {
+        if (inString) return '{{seed}} must be a JSON number value, not a string';
+        let before = i - 1;
+        while (before >= 0 && /\s/.test(workflow[before]!)) before--;
+        let after = i + macro[0].length;
+        while (after < workflow.length && /\s/.test(workflow[after]!)) after++;
+        if (!':[,'.includes(workflow[before] ?? '') || !',]}'.includes(workflow[after] ?? '')) {
+          return '{{seed}} must occupy a complete JSON value';
+        }
+      }
+      i += macro[0].length - 1;
+      continue;
+    }
+
+    const char = workflow[i]!;
+    if (!inString) {
+      if (char === '"') inString = true;
+      continue;
+    }
+    if (escaped) escaped = false;
+    else if (char === '\\') escaped = true;
+    else if (char === '"') inString = false;
+  }
+  return null;
+}
+
+/** Expands a validated ComfyUI workflow with the exact runtime escaping rules. */
+export function expandWorkflowTemplate(workflow: string, prompt: string, seed: number): string {
+  const placementError = workflowMacroPlacementError(workflow);
+  if (placementError) throw new Error(placementError);
+  const escapedPrompt = JSON.stringify(prompt).slice(1, -1);
+  return workflow.replaceAll(/\{\{(prompt|seed)\}\}/gi, (_, key: string) =>
+    key.toLowerCase() === 'prompt' ? escapedPrompt : String(seed),
+  );
+}
+
 /**
- * Validates a ComfyUI workflow template ({{prompt}}/{{seed}} slots): after
- * macro substitution it must parse as a JSON object (API format). Returns a
- * predicate like 'must be a JSON object', or null when valid. Shared so the
- * client's save-time check and the server's route-time 400 can never drift.
+ * Validates a ComfyUI workflow template ({{prompt}}/{{seed}} slots) with the
+ * same placement and expansion rules used by the server at render time.
  */
 export function workflowValidationError(workflow: string): string | null {
-  const substituted = workflow.replaceAll(/\{\{(prompt|seed)\}\}/gi, (_, key: string) =>
-    key.toLowerCase() === 'prompt' ? 'test' : '1',
-  );
+  let substituted: string;
+  try {
+    // Quotes, slashes and a newline exercise the characters whose JSON context
+    // matters; a plain "test" probe used to miss backslash-adjacent macros.
+    substituted = expandWorkflowTemplate(workflow, 'test "quote" \\ slash\nline', 1);
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
   try {
     const parsed: unknown = JSON.parse(substituted);
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
@@ -220,6 +277,7 @@ export interface TreeSnapshot {
   conversationId: number;
   messages: Message[];
   activeLeafId: number | null;
+  mutationRevision: number;
 }
 
 export type InvalidateEntity =
@@ -232,6 +290,7 @@ export interface TreeNode {
   activeChildId: number | null;
   status: MessageStatus;
   generationKind: GenerationKind;
+  generationToken: number | null;
 }
 
 /** Server -> client WebSocket events. Delta frames are deliberately terse. */
@@ -239,7 +298,13 @@ export type ServerEvent =
   | { t: 'hello' }
   | { t: 'invalidate'; entity: InvalidateEntity }
   /** Full snapshot; sent on subscribe (and used as the client's resync fallback). */
-  | { t: 'tree'; conversationId: number; messages: Message[]; activeLeafId: number | null }
+  | {
+      t: 'tree';
+      conversationId: number;
+      messages: Message[];
+      activeLeafId: number | null;
+      mutationRevision: number;
+    }
   /**
    * Incremental structural update: `nodes` lists every message in the tree
    * (absent ids were deleted); `messages` carries full bodies only for
@@ -249,15 +314,19 @@ export type ServerEvent =
       t: 'treePatch';
       conversationId: number;
       activeLeafId: number | null;
+      mutationRevision: number;
       nodes: TreeNode[];
       messages: Message[];
     }
   | { t: 'delta'; mid: number; d?: string; r?: string }
-  | { t: 'final'; conversationId: number; message: Message }
+  | {
+      t: 'final';
+      conversationId: number;
+      mutationRevision: number;
+      message: Message;
+    }
   /** Image render progress for a message with imagePending (e.g. sampler steps). */
-  | { t: 'imageProgress'; conversationId: number; mid: number; value: number; max: number }
-  /** Render progress for a caller-keyed stateless render (avatar generator). */
-  | { t: 'renderProgress'; jobId: string; value: number; max: number };
+  | { t: 'imageProgress'; conversationId: number; mid: number; value: number; max: number };
 
 /** Client -> server WebSocket commands. */
 export type ClientCommand = { sub: number | null };

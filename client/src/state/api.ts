@@ -22,6 +22,12 @@ export class ApiError extends Error {
   }
 }
 
+let onAuthenticationRequired: (() => void) | null = null;
+
+export function setAuthenticationRequiredHandler(handler: () => void): void {
+  onAuthenticationRequired = handler;
+}
+
 async function request<T>(
   method: string,
   url: string,
@@ -46,6 +52,7 @@ async function request<T>(
     } catch {
       /* keep status */
     }
+    if (res.status === 401 && !url.startsWith('/api/auth/')) onAuthenticationRequired?.();
     throw new ApiError(res.status, message);
   }
   if (res.status === 204) return undefined as T;
@@ -87,6 +94,7 @@ async function streamAvatarPrompt(
   const decoder = new TextDecoder();
   let buffer = '';
   let text = '';
+  let completed = false;
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -96,40 +104,112 @@ async function streamAvatarPrompt(
       const line = buffer.slice(0, nl).trim();
       buffer = buffer.slice(nl + 1);
       if (!line.startsWith('data:')) continue;
-      const payload = JSON.parse(line.slice(5)) as { d?: string; error?: string };
+      const payload = JSON.parse(line.slice(5)) as { d?: string; error?: string; done?: boolean };
       if (payload.error) throw new ApiError(502, payload.error);
+      if (payload.done) completed = true;
       if (payload.d) {
         text += payload.d;
         onDelta(payload.d);
       }
     }
   }
+  if (!completed) throw new ApiError(502, 'avatar prompt stream ended before completion');
   return text;
 }
 
-/** Stateless avatar render: prompt + workflow in, image bytes out. A jobId
- * gets live sampler progress as renderProgress WS events. */
-async function renderAvatar(body: {
-  prompt: string;
-  image: { workflow: string; comfyUrl: string };
-  jobId?: string;
-}): Promise<Blob> {
+/** Stateless avatar render: prompt + workflow in, image bytes out. */
+async function renderAvatar(
+  body: {
+    prompt: string;
+    image: { workflow: string; comfyUrl: string };
+    jobId?: string;
+  },
+  signal?: AbortSignal,
+): Promise<Blob> {
   const res = await fetch('/api/avatar/render', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: signal ?? null,
   });
   if (!res.ok) throw await errorFromResponse(res);
   return res.blob();
 }
 
+/** Opens the job-scoped avatar-render progress stream. Resolving means the
+ * server registered this listener, so the render can start without racing its
+ * first sampler events. */
+async function openAvatarRenderProgress(
+  jobId: string,
+  onProgress: (value: number, max: number) => void,
+  signal?: AbortSignal,
+): Promise<{ done: Promise<void> }> {
+  const res = await fetch(`/api/avatar/render-progress/${encodeURIComponent(jobId)}`, {
+    signal: signal ?? null,
+  });
+  if (!res.ok || !res.body) throw await errorFromResponse(res);
+  const done = (async () => {
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (;;) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      buffer += decoder.decode(chunk.value, { stream: true });
+      let nl: number;
+      while ((nl = buffer.indexOf('\n')) !== -1) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line.startsWith('data:')) continue;
+        const payload = JSON.parse(line.slice(5)) as {
+          value?: unknown;
+          max?: unknown;
+          done?: boolean;
+        };
+        if (
+          typeof payload.value === 'number' &&
+          typeof payload.max === 'number' &&
+          payload.max > 0
+        ) {
+          onProgress(payload.value, payload.max);
+        }
+        if (payload.done) return;
+      }
+    }
+  })();
+  return { done };
+}
+
 export const api = {
+  authStatus: () =>
+    request<{ required: boolean; authenticated: boolean }>('GET', '/api/auth/status'),
+  login: (password: string) =>
+    request<{ authenticated: boolean }>('POST', '/api/auth/login', { password }),
+  logout: () => request<{ authenticated: boolean }>('POST', '/api/auth/logout'),
+
   conversations: () => request<Conversation[]>('GET', '/api/conversations'),
   createConversation: (characterId: number | null) =>
     request<Conversation>('POST', '/api/conversations', { characterId }),
-  patchConversation: (id: number, patch: Partial<Conversation>) =>
-    request<Conversation>('PATCH', `/api/conversations/${id}`, patch),
-  deleteConversation: (id: number) => request<void>('DELETE', `/api/conversations/${id}`),
+  patchConversation: (
+    id: number,
+    patch: Partial<Conversation>,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
+    request<Conversation>('PATCH', `/api/conversations/${id}`, {
+      ...patch,
+      expectedActiveLeafId,
+      expectedMutationRevision,
+    }),
+  deleteConversation: (
+    id: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
+    request<void>(
+      'DELETE',
+      `/api/conversations/${id}?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}&expectedMutationRevision=${expectedMutationRevision}`,
+    ),
   duplicateConversation: (id: number) =>
     request<Conversation>('POST', `/api/conversations/${id}/duplicate`),
   search: (q: string) =>
@@ -142,90 +222,175 @@ export const api = {
       'GET',
       `/api/conversations/${id}/trace`,
     ),
-  send: (conversationId: number, content: string, expectedActiveLeafId: number | null) =>
+  send: (
+    conversationId: number,
+    content: string,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ userMessageId: number; assistantMessageId: number }>(
       'POST',
       `/api/conversations/${conversationId}/messages`,
-      { content, expectedActiveLeafId },
+      { content, expectedActiveLeafId, expectedMutationRevision },
     ),
-  deleteTail: (conversationId: number, count: number, expectedActiveLeafId: number | null) =>
+  deleteTail: (
+    conversationId: number,
+    count: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ activeLeafId: number | null; deletedSiblingRoots: number }>(
       'POST',
       `/api/conversations/${conversationId}/delete-tail`,
-      { count, expectedActiveLeafId },
+      { count, expectedActiveLeafId, expectedMutationRevision },
     ),
   toolGenerate: (
     conversationId: number,
     prompt: string,
     label: string,
     expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
     image?: { workflow: string; comfyUrl: string },
   ) =>
     request<{ toolMessageId: number; activeLeafId: number }>(
       'POST',
       `/api/conversations/${conversationId}/tool`,
-      { prompt, label, expectedActiveLeafId, ...(image ? { image } : {}) },
+      {
+        prompt,
+        label,
+        expectedActiveLeafId,
+        expectedMutationRevision,
+        ...(image ? { image } : {}),
+      },
     ),
 
-  moveMessage: (messageId: number, direction: 'up' | 'down', expectedActiveLeafId: number | null) =>
+  moveMessage: (
+    messageId: number,
+    direction: 'up' | 'down',
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ activeLeafId: number | null }>('POST', `/api/messages/${messageId}/move`, {
       direction,
       expectedActiveLeafId,
+      expectedMutationRevision,
     }),
-  duplicateMessage: (messageId: number, expectedActiveLeafId: number | null) =>
+  duplicateMessage: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ messageId: number; activeLeafId: number }>(
       'POST',
       `/api/messages/${messageId}/duplicate`,
-      { expectedActiveLeafId },
+      { expectedActiveLeafId, expectedMutationRevision },
     ),
-  renderImage: (messageId: number, fallbackConfig?: { workflow: string; comfyUrl: string }) =>
-    request<{ rendering: boolean }>(
-      'POST',
-      `/api/messages/${messageId}/render-image`,
-      fallbackConfig ?? {},
-    ),
-  setActiveImage: (messageId: number, index: number) =>
-    request<void>('POST', `/api/messages/${messageId}/active-image`, { index }),
+  renderImage: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+    fallbackConfig?: { workflow: string; comfyUrl: string },
+  ) =>
+    request<{ rendering: boolean }>('POST', `/api/messages/${messageId}/render-image`, {
+      ...fallbackConfig,
+      expectedActiveLeafId,
+      expectedMutationRevision,
+    }),
+  setActiveImage: (
+    messageId: number,
+    index: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
+    request<void>('POST', `/api/messages/${messageId}/active-image`, {
+      index,
+      expectedActiveLeafId,
+      expectedMutationRevision,
+    }),
 
-  editMessage: (messageId: number, content: string, expectedActiveLeafId: number | null) =>
-    request<unknown>('PATCH', `/api/messages/${messageId}`, { content, expectedActiveLeafId }),
-  editBranch: (messageId: number, content: string, expectedActiveLeafId: number | null) =>
+  editMessage: (
+    messageId: number,
+    content: string,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
+    request<unknown>('PATCH', `/api/messages/${messageId}`, {
+      content,
+      expectedActiveLeafId,
+      expectedMutationRevision,
+    }),
+  editBranch: (
+    messageId: number,
+    content: string,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ messageId: number }>('POST', `/api/messages/${messageId}/edit-branch`, {
       content,
       expectedActiveLeafId,
+      expectedMutationRevision,
     }),
-  activate: (messageId: number, expectedActiveLeafId: number | null) =>
+  activate: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ activeLeafId: number }>('POST', `/api/messages/${messageId}/activate`, {
       expectedActiveLeafId,
+      expectedMutationRevision,
     }),
-  advance: (messageId: number, expectedActiveLeafId: number | null) =>
+  advance: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ activeLeafId: number; assistantMessageId: number | null }>(
       'POST',
       `/api/messages/${messageId}/advance`,
-      { expectedActiveLeafId },
+      { expectedActiveLeafId, expectedMutationRevision },
     ),
-  regenerate: (messageId: number, instruction: string, expectedActiveLeafId: number | null) =>
+  regenerate: (
+    messageId: number,
+    instruction: string,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ activeLeafId: number; assistantMessageId: number }>(
       'POST',
       `/api/messages/${messageId}/regenerate`,
-      { instruction, expectedActiveLeafId },
+      { instruction, expectedActiveLeafId, expectedMutationRevision },
     ),
-  deleteMessage: (messageId: number, expectedActiveLeafId: number | null) =>
+  deleteMessage: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<void>(
       'DELETE',
-      `/api/messages/${messageId}?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}`,
+      `/api/messages/${messageId}?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}&expectedMutationRevision=${expectedMutationRevision}`,
     ),
-  deleteSwipe: (messageId: number, expectedActiveLeafId: number | null) =>
+  deleteSwipe: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ activeLeafId: number | null }>(
       'DELETE',
-      `/api/messages/${messageId}/swipe?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}`,
+      `/api/messages/${messageId}/swipe?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}&expectedMutationRevision=${expectedMutationRevision}`,
     ),
-  resume: (messageId: number, expectedActiveLeafId: number | null) =>
+  resume: (
+    messageId: number,
+    expectedActiveLeafId: number | null,
+    expectedMutationRevision: number,
+  ) =>
     request<{ assistantMessageId: number }>('POST', `/api/messages/${messageId}/continue`, {
       expectedActiveLeafId,
+      expectedMutationRevision,
     }),
-  stopGeneration: (messageId: number) =>
-    request<{ stopped: boolean }>('POST', `/api/generations/${messageId}/stop`),
+  stopGeneration: (messageId: number, expectedGenerationToken: number) =>
+    request<{ stopped: boolean }>('POST', `/api/generations/${messageId}/stop`, {
+      expectedGenerationToken,
+    }),
 
   characters: () => request<Character[]>('GET', '/api/characters'),
   createCharacter: (data: Partial<Character>) =>
@@ -272,6 +437,7 @@ export const api = {
 
   streamAvatarPrompt,
   renderAvatar,
+  openAvatarRenderProgress,
 
   endpoints: () => request<Endpoint[]>('GET', '/api/endpoints'),
   createEndpoint: (data: Partial<Endpoint>) => request<Endpoint>('POST', '/api/endpoints', data),
@@ -281,6 +447,14 @@ export const api = {
   fetchModels: (id: number) => request<string[]>('GET', `/api/endpoints/${id}/models`),
 
   settings: () => request<Settings>('GET', '/api/settings'),
-  putSettings: (settings: Partial<Settings>, expectedRevision: number) =>
-    request<Settings>('PUT', '/api/settings', { ...settings, expectedRevision }),
+  putSettings: (
+    settings: Partial<Settings>,
+    expectedRevision: number,
+    accessPassword?: string | null,
+  ) =>
+    request<Settings>('PUT', '/api/settings', {
+      ...settings,
+      expectedRevision,
+      ...(accessPassword === undefined ? {} : { accessPassword }),
+    }),
 };

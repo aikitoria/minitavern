@@ -1,10 +1,11 @@
 import type { Conversation, Endpoint, GenMeta, Message } from '@minitavern/shared';
 import { stmt, toEndpoint } from './db.ts';
 import { getMessage, getPathToMessage } from './tree.ts';
-import { buildChatMessages } from './prompt.ts';
+import { appendChatMessage, buildChatMessages, withDisabledPrefillSpeakerNote } from './prompt.ts';
 import type { BuiltPrompt, ChatMessage } from './prompt.ts';
 import { getSettings } from './settingsStore.ts';
 import { broadcastConv, invalidate } from './events.ts';
+import { bumpConversationRevision } from './conversationRevision.ts';
 
 interface ActiveGen {
   mid: number;
@@ -17,10 +18,16 @@ interface ActiveGen {
   flushTimer: NodeJS.Timeout;
   meta: GenMeta;
   background: boolean;
+  generationToken: number;
   /** New tokens since the last periodic DB flush. */
   dirty: boolean;
   /** Fixed upstream request (plugin tool generations) instead of the chat history. */
   promptOverride?: BuiltPrompt;
+  /** Immutable endpoint + prompt context reused by every upstream attempt. */
+  requestContext?: {
+    endpoint: Endpoint;
+    built: BuiltPrompt;
+  };
   onDone?: () => void;
   onError?: () => void;
 }
@@ -41,6 +48,10 @@ export function hasForegroundGeneration(conversationId: number): boolean {
 
 export function isBackgroundGeneration(mid: number): boolean {
   return active.get(mid)?.background === true;
+}
+
+export function activeGenerationToken(mid: number): number | null {
+  return active.get(mid)?.generationToken ?? null;
 }
 
 /** Marks a speculative stream as foreground once the user activates it. */
@@ -109,9 +120,11 @@ function finalize(gen: ActiveGen, status: 'done' | 'error' | 'stopped'): void {
     if (status !== 'done') {
       stmt('UPDATE messages SET image_pending = 0 WHERE id = ? AND image_pending = 1').run(gen.mid);
     }
+    const mutationRevision = bumpConversationRevision(gen.conversationId);
     broadcastConv(gen.conversationId, {
       t: 'final',
       conversationId: gen.conversationId,
+      mutationRevision,
       message: getMessage(gen.mid)!,
     });
   }
@@ -173,6 +186,8 @@ export function startGeneration(
     onError?: () => void;
   },
 ): void {
+  const generationToken = bumpConversationRevision(conversation.id);
+  stmt('UPDATE messages SET generation_token = ? WHERE id = ?').run(generationToken, mid);
   const gen: ActiveGen = {
     mid,
     conversationId: conversation.id,
@@ -183,6 +198,7 @@ export function startGeneration(
     flushTimer: setInterval(() => flushToDb(gen), 500),
     meta: {},
     background: options?.background ?? false,
+    generationToken,
     dirty: false,
     promptOverride: options?.prompt,
     onDone: options?.onDone,
@@ -191,13 +207,28 @@ export function startGeneration(
   active.set(mid, gen);
   const isResumeInitially = resumeFrom != null;
   const launch = (attempt: number): void => {
-    run(conversation, gen, isResumeInitially || gen.content.length > 0).catch((err: unknown) => {
+    run(
+      conversation,
+      gen,
+      isResumeInitially || gen.content.length > 0 || gen.reasoning.length > 0,
+    ).catch((err: unknown) => {
       if (active.get(mid) !== gen) return; // already stopped/finalized (or superseded by a resume)
       // Transient upstream failures on foreground generations are retried in
       // place, resuming from the partial content. Background swipes have
       // their own retry loop in speculation.ts. Permanent errors (4xx, e.g.
       // context length exceeded) surface immediately.
       if (!gen.background && attempt < MAX_UPSTREAM_RETRIES && isTransientFailure(err, gen)) {
+        // Disabled assistant prefills cannot carry either accumulated field.
+        // Keeping those buffers and appending a fresh answer would corrupt the
+        // message, so preserve the partial result as an error instead.
+        if (
+          gen.requestContext?.endpoint.prefillMode === 'disabled' &&
+          (gen.content.length > 0 || gen.reasoning.length > 0)
+        ) {
+          gen.meta.error ??= err instanceof Error ? err.message : String(err);
+          finalize(gen, 'error');
+          return;
+        }
         const reason = gen.meta.error ?? (err instanceof Error ? err.message : String(err));
         console.warn(
           `[generation] transient upstream failure for message ${mid} (${reason}), retry ${attempt + 1}/${MAX_UPSTREAM_RETRIES}`,
@@ -242,6 +273,11 @@ function resolveEndpoint(conversation: Conversation | null): Endpoint {
     );
   }
   return endpoint;
+}
+
+/** Whether this conversation's endpoint can continue an existing assistant message. */
+export function supportsAssistantContinuation(conversation: Conversation): boolean {
+  return resolveEndpoint(conversation).prefillMode !== 'disabled';
 }
 
 /**
@@ -304,6 +340,7 @@ export async function streamChatCompletion(
   messages: ChatMessage[],
   maxTokens: number,
   onDelta: (text: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   const endpoint = resolveEndpoint(conversation);
   const res = await fetch(`${endpoint.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -318,7 +355,9 @@ export async function streamChatCompletion(
       stream: true,
       max_tokens: maxTokens,
     }),
-    signal: AbortSignal.timeout(120_000),
+    signal: signal
+      ? AbortSignal.any([signal, AbortSignal.timeout(120_000)])
+      : AbortSignal.timeout(120_000),
   });
   if (!res.ok) {
     const text = await res.text().catch(() => '');
@@ -385,36 +424,39 @@ function isTransientFailure(err: unknown, gen: ActiveGen): boolean {
 }
 
 async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean): Promise<void> {
-  const endpoint = resolveEndpoint(conversation);
+  // Resolve mutable configuration and history exactly once. A retry belongs to
+  // the same logical generation and must not silently switch endpoint, model,
+  // parameters, template, character, or ancestor content midway through it.
+  const context = (gen.requestContext ??= snapshotRequestContext(conversation, gen));
+  const { endpoint, built } = context;
   gen.model = endpoint.model;
 
-  // A reply is based on its ancestors, not whichever sibling happens to be active.
-  // This matters for speculative siblings, which deliberately stay inactive.
-  // Tool generations carry a fixed prompt instead; copy the message list — a
-  // transient retry re-enters run() and must not see earlier prefill pushes.
-  const built =
-    gen.promptOverride ??
-    buildChatMessages(
-      conversation,
-      getPathToMessage(getMessage(gen.mid)?.parentId ?? null),
-      // The reply speaks as the name it was stamped with (regenerations keep their sibling's name).
-      getMessage(gen.mid)?.name ?? null,
-    );
-  const messages = [...built.messages];
+  // Copy the snapshotted list because continuation flags are added per attempt.
+  const messages =
+    endpoint.prefillMode === 'disabled'
+      ? withDisabledPrefillSpeakerNote(built)
+      : built.messages.map((message) => ({ ...message }));
   const namePrefill = built.namePrefill;
   // Prefill-style trailing assistant message (resume content and/or "Name:").
   // Not part of the official OpenAI spec — 'disabled' omits it entirely,
   // 'none' lets the backend interpret it without extra flags, and
   // 'vllm'/'deepseek' send their native continuation flags.
   let prefilled = false;
-  if (endpoint.prefillMode !== 'disabled' && isResume && gen.content) {
-    messages.push({
+  if (
+    endpoint.prefillMode !== 'disabled' &&
+    isResume &&
+    (gen.content.length > 0 || gen.reasoning.length > 0)
+  ) {
+    appendChatMessage(messages, {
       role: 'assistant',
-      content: namePrefill ? `${namePrefill} ${gen.content}` : gen.content,
+      content: namePrefill
+        ? `${namePrefill} ${gen.content}`
+        : gen.content || '(No visible response)',
+      ...(gen.reasoning ? { reasoning_content: gen.reasoning } : {}),
     });
     prefilled = true;
   } else if (endpoint.prefillMode !== 'disabled' && namePrefill) {
-    messages.push({ role: 'assistant', content: namePrefill });
+    appendChatMessage(messages, { role: 'assistant', content: namePrefill });
     prefilled = true;
   }
   const upstreamMessages: Record<string, unknown>[] = messages.map((m) => ({ ...m }));
@@ -467,11 +509,39 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
       const text = await res.text().catch(() => '');
       throw new Error(`Upstream error ${res.status}: ${text.slice(0, 500)}`);
     }
-    // Prefix echo suppression only applies when we actually sent the prefix.
-    await consumeStream(res.body, gen, prefilled ? namePrefill : null, isResume, resetIdle);
+    // Even when assistant prefills are disabled, prefixed history can teach the
+    // model to emit "Name:" itself. Keep the expected prefix for output
+    // normalization without adding it to the upstream request.
+    await consumeStream(res.body, gen, namePrefill, isResume, resetIdle);
   } finally {
     clearTimeout(idleTimer);
   }
+}
+
+function snapshotRequestContext(
+  conversation: Conversation,
+  gen: ActiveGen,
+): NonNullable<ActiveGen['requestContext']> {
+  const resolved = resolveEndpoint(conversation);
+  const endpoint: Endpoint = {
+    ...resolved,
+    genParams: { ...resolved.genParams },
+  };
+  // A reply is based on its ancestors, not whichever sibling happens to be
+  // active. Tool generations already carry a fixed prompt override.
+  const source =
+    gen.promptOverride ??
+    buildChatMessages(
+      conversation,
+      getPathToMessage(getMessage(gen.mid)?.parentId ?? null),
+      // Regenerations keep the speaker name stamped on their sibling.
+      getMessage(gen.mid)?.name ?? null,
+    );
+  const built: BuiltPrompt = {
+    ...source,
+    messages: source.messages.map((message) => ({ ...message })),
+  };
+  return { endpoint, built };
 }
 
 async function consumeStream(

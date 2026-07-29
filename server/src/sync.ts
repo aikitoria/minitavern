@@ -9,12 +9,14 @@ import {
 } from './tree.ts';
 import { mergeLiveBuffers } from './generation.ts';
 import { broadcastConv, sendTo } from './events.ts';
+import { getConversationRevision } from './conversationRevision.ts';
 
 export function treeSnapshot(conversationId: number): TreeSnapshot {
   return {
     conversationId,
     messages: mergeLiveBuffers(getTreeMessages(conversationId)),
     activeLeafId: getActiveLeafId(conversationId),
+    mutationRevision: getConversationRevision(conversationId),
   };
 }
 
@@ -42,6 +44,7 @@ export function broadcastTree(conversationId: number): void {
       t: 'treePatch',
       conversationId,
       activeLeafId: getActiveLeafId(conversationId),
+      mutationRevision: getConversationRevision(conversationId),
       nodes: getTreeNodes(conversationId),
       messages: mergeLiveBuffers(bodies),
     });

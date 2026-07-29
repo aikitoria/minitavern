@@ -6,7 +6,7 @@
 // below protect against.
 import { randomUUID } from 'node:crypto';
 import type { Conversation, GenerationKind, MessageStatus, Role } from '@minitavern/shared';
-import { stmt, toConversation, transaction } from '../db.ts';
+import { stmt, toConversation, toMessage, transaction } from '../db.ts';
 import { route, HttpError } from '../router.ts';
 import {
   appendMessage,
@@ -15,7 +15,6 @@ import {
   getActivePath,
   getMessage,
   getPathToMessage,
-  getTreeMessages,
   setActiveLeaf,
   takeDirtyMessageIds,
 } from '../tree.ts';
@@ -26,6 +25,7 @@ import {
   getCharacter,
   getPersona,
   substituteMacros,
+  withDisabledPrefillSpeakerNote,
 } from '../prompt.ts';
 import type { BuiltPrompt } from '../prompt.ts';
 import { clearSettingReference, getSettings } from '../settingsStore.ts';
@@ -33,6 +33,7 @@ import {
   chatCompletionOnce,
   hasActiveGeneration,
   hasForegroundGeneration,
+  mergeLiveBuffers,
   startGeneration,
   stopBackgroundGenerations,
   stopConversationGenerations,
@@ -53,10 +54,12 @@ import {
   deleteImageFiles,
 } from '../images.ts';
 import { parseImageConfig, startImageRender } from '../comfy.ts';
+import { bumpConversationRevision } from '../conversationRevision.ts';
 import {
   objectBody,
   optionalNullableId,
   optionalNullableString,
+  optionalNumber,
   optionalString,
   positiveId,
   requiredString,
@@ -122,7 +125,6 @@ export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
     false,
     'speculative',
   );
-  broadcastTree(conversation.id);
   startGeneration(getConversation(conversation.id), speculative.id, undefined, {
     background: true,
     onDone: () => {
@@ -140,6 +142,7 @@ export function prepareNextSwipe(messageId: number, retryAttempt = 0): void {
       });
     },
   });
+  broadcastTree(conversation.id);
 }
 
 export function prepareActiveSwipe(conversationId: number): void {
@@ -169,7 +172,6 @@ export function spawnAssistantReply(
     speakerName,
   );
   touchConversation(conversation.id);
-  broadcastTree(conversation.id);
   startGeneration(getConversation(conversation.id), msg.id, undefined, {
     prompt: promptOverride,
     onDone: () => {
@@ -177,6 +179,7 @@ export function spawnAssistantReply(
       maybeAutoTitle(conversation.id, msg.id);
     },
   });
+  broadcastTree(conversation.id);
   return msg.id;
 }
 
@@ -320,6 +323,11 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
   const id = positiveId(params.id);
   const conv = getConversation(id);
   const b = objectBody(body);
+  requireExpectedActiveLeaf(
+    id,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
   const title = optionalString(b, 'title');
   if (title !== undefined && !title.trim()) throw new HttpError(400, 'title is required');
   const characterId = optionalNullableId(b, 'characterId');
@@ -356,13 +364,23 @@ route.patch('/api/conversations/:id', ({ params, body }) => {
     speakerName !== undefined ? speakerName?.trim() || null : conv.speakerName,
     id,
   );
+  bumpConversationRevision(id);
+  broadcastTree(id);
   invalidate('conversations');
   return getConversation(id);
 });
 
-route.del('/api/conversations/:id', ({ params }) => {
+route.del('/api/conversations/:id', ({ params, req }) => {
   const id = positiveId(params.id);
   getConversation(id);
+  const query = new URL(req.url ?? '/', 'http://x').searchParams;
+  const rawLeaf = query.get('expectedActiveLeafId');
+  const rawRevision = query.get('expectedMutationRevision');
+  requireExpectedActiveLeaf(
+    id,
+    rawLeaf === 'null' ? null : rawLeaf == null ? undefined : Number(rawLeaf),
+    rawRevision == null ? undefined : Number(rawRevision),
+  );
   stopConversationGenerations(id);
   const doomedImages = collectConversationImages(id);
   stmt('DELETE FROM conversations WHERE id = ?').run(id);
@@ -401,10 +419,18 @@ interface MessageRow {
 route.post('/api/conversations/:id/duplicate', ({ params }) => {
   const id = positiveId(params.id);
   const conv = getConversation(id);
-  // Ordered by id so every parent is inserted before its children.
+  // Keep a stable source ordering for the old-id -> new-id mapping. Parent ids
+  // are deliberately NOT resolved in this pass: block moves and middle
+  // insertions can place an older row beneath a newer parent.
   const rows = stmt('SELECT * FROM messages WHERE conversation_id = ? ORDER BY id').all(
     id,
   ) as unknown as MessageRow[];
+  const liveMessages = new Map(
+    mergeLiveBuffers(rows.map((row) => toMessage(row as unknown as Record<string, unknown>))).map(
+      (message) => [message.id, message],
+    ),
+  );
+  const sourceActivePath = getActivePath(id).map((message) => message.id);
   // Titles follow the 60-char convention of derivedTitle/auto-title.
   const suffix = ' (copy)';
   const title =
@@ -425,6 +451,7 @@ route.post('/api/conversations/:id/duplicate', ({ params }) => {
       const newConvId = Number(convResult.lastInsertRowid);
       const idMap = new Map<number, number>();
       for (const row of rows) {
+        const live = liveMessages.get(row.id)!;
         const images: string[] = [];
         for (const imagePath of JSON.parse(row.images_json) as string[]) {
           const ext = imagePath.includes('.')
@@ -446,14 +473,12 @@ route.post('/api/conversations/:id/duplicate', ({ params }) => {
              VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
         ).run(
           newConvId,
-          // Old databases may contain dangling references (a parent deleted by
-          // an ancient bug); remap what we can, null the rest.
-          row.parent_id != null ? (idMap.get(row.parent_id) ?? null) : null,
+          null,
           row.role,
-          row.content,
-          row.reasoning,
+          live.content,
+          live.reasoning,
           row.status === 'streaming' ? 'stopped' : row.status,
-          row.model,
+          live.model,
           row.gen_meta_json,
           row.created_at,
           row.name,
@@ -464,14 +489,15 @@ route.post('/api/conversations/:id/duplicate', ({ params }) => {
         );
         idMap.set(row.id, Number(result.lastInsertRowid));
       }
-      // active_child_id can point at a row inserted later than its parent, so
-      // it is remapped in a second pass; the conversation's active leaf too.
-      // Dangling references (see above) are simply skipped — they stay NULL.
+      // Both links are remapped only after every destination row exists. A
+      // newer image revision can become the parent of an older continuation,
+      // and rotateDown can likewise invert id order.
       for (const row of rows) {
-        if (row.active_child_id == null) continue;
-        const mappedChild = idMap.get(row.active_child_id);
-        if (mappedChild == null) continue;
-        stmt('UPDATE messages SET active_child_id = ? WHERE id = ?').run(
+        const mappedParent = row.parent_id != null ? (idMap.get(row.parent_id) ?? null) : null;
+        const mappedChild =
+          row.active_child_id != null ? (idMap.get(row.active_child_id) ?? null) : null;
+        stmt('UPDATE messages SET parent_id = ?, active_child_id = ? WHERE id = ?').run(
+          mappedParent,
           mappedChild,
           idMap.get(row.id)!,
         );
@@ -483,6 +509,14 @@ route.post('/api/conversations/:id/duplicate', ({ params }) => {
             mappedLeaf,
             newConvId,
           );
+          const copiedPath = getPathToMessage(mappedLeaf).map((message) => message.id);
+          const expectedPath = sourceActivePath.map((sourceId) => idMap.get(sourceId)!);
+          if (
+            copiedPath.length !== expectedPath.length ||
+            copiedPath.some((messageId, index) => messageId !== expectedPath[index])
+          ) {
+            throw new Error('duplicated conversation active path failed validation');
+          }
         }
       }
       return newConvId;
@@ -523,7 +557,11 @@ route.post('/api/conversations/:id/tool', ({ params, body }) => {
       throw new HttpError(400, err instanceof Error ? err.message : String(err));
     }
   }
-  requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
+  requireExpectedActiveLeaf(
+    id,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
   // An in-flight speculative swipe is deliberately discarded and not refilled:
   // once the tool output is the leaf, the previous reply can't be swiped
   // without a branch switch, which restarts speculation on its own.
@@ -553,7 +591,6 @@ route.post('/api/conversations/:id/tool', ({ params, body }) => {
     );
   }
   touchConversation(id);
-  broadcastTree(id);
   const renderImage = image;
   startGeneration(getConversation(id), msg.id, undefined, {
     prompt: built,
@@ -568,6 +605,7 @@ route.post('/api/conversations/:id/tool', ({ params, body }) => {
           })
       : undefined,
   });
+  broadcastTree(id);
   invalidate('conversations');
   return { toolMessageId: msg.id, activeLeafId: msg.id };
 });
@@ -576,32 +614,17 @@ route.post('/api/conversations/:id/tool', ({ params, body }) => {
 route.get('/api/conversations/:id/trace', ({ params }) => {
   const conv = getConversation(positiveId(params.id));
   const history = getActivePath(conv.id);
-  const { messages, namePrefill } = buildChatMessages(conv, history);
+  const built = buildChatMessages(conv, history);
   const endpointId = conv.endpointId ?? getSettings().activeEndpointId;
   const endpointRow = endpointId
     ? (stmt('SELECT prefill_mode FROM endpoints WHERE id = ?').get(endpointId) as
         { prefill_mode: string } | undefined)
     : undefined;
+  const prefillDisabled = endpointRow?.prefill_mode === 'disabled';
   return {
-    messages,
-    namePrefill: endpointRow?.prefill_mode === 'disabled' ? null : namePrefill,
+    messages: prefillDisabled ? withDisabledPrefillSpeakerNote(built) : built.messages,
+    namePrefill: prefillDisabled ? null : built.namePrefill,
   };
-});
-
-/** Download the full conversation (all branches) as JSON. */
-route.get('/api/conversations/:id/export', ({ params, res }) => {
-  const conv = getConversation(positiveId(params.id));
-  const payload = JSON.stringify(
-    { exportedAt: Date.now(), conversation: conv, messages: getTreeMessages(conv.id) },
-    null,
-    2,
-  );
-  res
-    .writeHead(200, {
-      'content-type': 'application/json',
-      'content-disposition': `attachment; filename="${conv.title.replace(/[^\w.-]+/g, '_').slice(0, 60)}.json"`,
-    })
-    .end(payload);
 });
 
 /**
@@ -611,6 +634,9 @@ route.get('/api/conversations/:id/export', ({ params, res }) => {
 route.get('/api/search', ({ req }) => {
   const q = new URL(req.url ?? '/', 'http://x').searchParams.get('q')?.trim() ?? '';
   if (!q) return [];
+  if (/[\u0000-\u001f\u007f]/.test(q)) {
+    throw new HttpError(400, 'search query must not contain control characters');
+  }
 
   // Titles: the query is a literal, not a pattern — escape LIKE wildcards.
   const like = `%${q.replace(/[\\%_]/g, '\\$&')}%`;
@@ -624,38 +650,44 @@ route.get('/api/search', ({ req }) => {
   const ftsQuery = tokens
     .map((token, i) => `"${token.replaceAll('"', '""')}"${i === tokens.length - 1 ? '*' : ''}`)
     .join(' ');
-  // snippet() only works in a plain FTS select (SQLite flattens subqueries,
-  // so even a wrapped aggregate breaks) — rank in SQL, dedupe per
-  // conversation in JS keeping the best-ranked hit.
+  // Dedupe at the conversation level without a raw-hit cap: otherwise one chat
+  // with hundreds of matching messages can crowd every other chat out before
+  // JS gets a chance to dedupe it.
   const contentRows = ftsQuery
     ? (stmt(
-        `SELECT m.conversation_id AS cid,
-                snippet(messages_fts, 0, '', '', '…', 24) AS snip
+        `SELECT DISTINCT c.*
          FROM messages_fts
          JOIN messages m ON m.id = messages_fts.rowid
-         WHERE messages_fts MATCH ?
-         ORDER BY rank
-         LIMIT 500`,
-      ).all(ftsQuery) as { cid: number; snip: string }[])
+         JOIN conversations c ON c.id = m.conversation_id
+         WHERE messages_fts MATCH ?`,
+      ).all(ftsQuery) as Record<string, unknown>[])
     : [];
-  const snippets = new Map<number, string>();
-  for (const row of contentRows) {
-    if (!snippets.has(row.cid)) snippets.set(row.cid, row.snip);
-  }
+  const contentIds = new Set(contentRows.map((row) => row.id as number));
 
   const byId = new Map(titleRows.map((row) => [row.id as number, row]));
-  const convById = stmt('SELECT * FROM conversations WHERE id = ?');
-  for (const cid of snippets.keys()) {
-    if (!byId.has(cid)) {
-      const row = convById.get(cid) as Record<string, unknown> | undefined;
-      if (row) byId.set(cid, row);
-    }
-  }
-  return [...byId.values()]
+  for (const row of contentRows) byId.set(row.id as number, row);
+  const conversations = [...byId.values()]
     .map(toConversation)
     .sort((a, b) => b.updatedAt - a.updatedAt)
-    .slice(0, 50)
-    .map((conversation) => ({ conversation, snippet: snippets.get(conversation.id) ?? null }));
+    .slice(0, 50);
+
+  // snippet() must stay in a plain FTS select. Resolve it only for the at-most
+  // 50 conversations that will actually be returned, keeping the best-ranked
+  // matching message within each conversation.
+  const bestSnippet = stmt(
+    `SELECT snippet(messages_fts, 0, '', '', '…', 24) AS snip
+     FROM messages_fts
+     JOIN messages m ON m.id = messages_fts.rowid
+     WHERE messages_fts MATCH ? AND m.conversation_id = ?
+     ORDER BY rank
+     LIMIT 1`,
+  );
+  return conversations.map((conversation) => ({
+    conversation,
+    snippet: contentIds.has(conversation.id)
+      ? ((bestSnippet.get(ftsQuery, conversation.id) as { snip: string }).snip ?? null)
+      : null,
+  }));
 });
 
 route.post('/api/conversations/:id/messages', ({ params, body }) => {
@@ -663,7 +695,11 @@ route.post('/api/conversations/:id/messages', ({ params, body }) => {
   const conv = getConversation(id);
   const b = objectBody(body);
   const content = requiredString(b, 'content');
-  requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
+  requireExpectedActiveLeaf(
+    id,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
   cancelBackgroundSwipe(id);
   if (hasActiveGeneration(id))
     throw new HttpError(409, 'a generation is already running in this conversation');
@@ -686,7 +722,11 @@ route.post('/api/conversations/:id/delete-tail', ({ params, body }) => {
   if (!Number.isSafeInteger(count) || (count as number) <= 0) {
     throw new HttpError(400, 'count must be a positive integer');
   }
-  requireExpectedActiveLeaf(id, optionalNullableId(b, 'expectedActiveLeafId'));
+  requireExpectedActiveLeaf(
+    id,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
   const path = getActivePath(id);
   if (path.length === 0) throw new HttpError(400, 'conversation has no messages to delete');
   const cutoff = path[Math.max(0, path.length - (count as number))]!;

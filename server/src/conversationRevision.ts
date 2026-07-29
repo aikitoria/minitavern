@@ -1,0 +1,23 @@
+import { stmt } from './db.ts';
+
+/** Current persisted optimistic-concurrency revision. */
+export function getConversationRevision(conversationId: number): number {
+  const row = stmt('SELECT mutation_revision FROM conversations WHERE id = ?').get(
+    conversationId,
+  ) as { mutation_revision: number } | undefined;
+  return row?.mutation_revision ?? 0;
+}
+
+/** Advances and returns the conversation's persisted optimistic-concurrency revision. */
+export function bumpConversationRevision(conversationId: number): number {
+  const row = stmt(
+    `UPDATE conversations SET mutation_revision = mutation_revision + 1
+     WHERE id = ? RETURNING mutation_revision`,
+  ).get(conversationId) as { mutation_revision: number } | undefined;
+  return row?.mutation_revision ?? 0;
+}
+
+/** Invalidates every conversation after a shared prompt entity/default changes. */
+export function bumpAllConversationRevisions(): void {
+  stmt('UPDATE conversations SET mutation_revision = mutation_revision + 1').run();
+}

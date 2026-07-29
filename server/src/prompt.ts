@@ -15,6 +15,43 @@ export interface ChatMessage {
   /** Upstream chat roles only — 'tool' messages never leave the server. */
   role: Exclude<Role, 'tool'>;
   content: string;
+  /** Preserve model reasoning when replaying assistant history/continuations. */
+  reasoning_content?: string;
+}
+
+/** Appends while preserving strict non-empty alternating chat roles. Tree
+ * edits and optional prologues can legitimately produce adjacent turns with
+ * the same role; fold those into one upstream turn instead of sending a shape
+ * rejected by strict OpenAI-compatible APIs. */
+export function appendChatMessage(messages: ChatMessage[], message: ChatMessage): void {
+  if (message.role === 'system' && messages.length > 0) {
+    const leading = messages[0]?.role === 'system' ? messages[0] : null;
+    if (leading) {
+      if (message.content) {
+        leading.content = leading.content
+          ? `${leading.content}\n\n${message.content}`
+          : message.content;
+      }
+      return;
+    }
+    messages.unshift(message);
+    return;
+  }
+  const previous = messages.at(-1);
+  if (previous && previous.role === message.role) {
+    if (message.content) {
+      previous.content = previous.content
+        ? `${previous.content}\n\n${message.content}`
+        : message.content;
+    }
+    if (message.reasoning_content) {
+      previous.reasoning_content = previous.reasoning_content
+        ? `${previous.reasoning_content}\n\n${message.reasoning_content}`
+        : message.reasoning_content;
+    }
+    return;
+  }
+  messages.push(message);
 }
 
 export function getCharacter(id: number | null): Character | null {
@@ -114,6 +151,8 @@ export interface BuiltPrompt {
   messages: ChatMessage[];
   /** "Name:" to prefill the assistant turn with, when the template prefixes speaker names. */
   namePrefill: string | null;
+  /** Hidden fallback appended to the final user turn when prefills are disabled. */
+  disabledPrefillSpeakerNote: string | null;
   /** {{char}}/{{user}} as this prompt resolved them (persona honors usesPersonas). */
   charName: string;
   userName: string;
@@ -169,21 +208,67 @@ export function buildChatMessages(
     msg.role === 'user' ? userName : msg.name?.trim() || charName;
 
   const messages: ChatMessage[] = [];
-  if (systemContent) messages.push({ role: 'system', content: systemContent });
-  if (prologue) messages.push({ role: 'user', content: prologue });
+  if (systemContent) appendChatMessage(messages, { role: 'system', content: systemContent });
+  if (prologue) appendChatMessage(messages, { role: 'user', content: prologue });
   for (const msg of history) {
     if (msg.status === 'streaming') continue;
     if (msg.role === 'tool') continue; // plugin output is chat-visible only, never sent upstream
     const trimmedContent = msg.content.trim();
-    if (trimmedContent.length === 0) continue;
+    const reasoning = msg.role === 'assistant' ? msg.reasoning?.trim() : '';
+    // Reasoning-only assistant turns are still replayed. Some APIs accept
+    // empty content alongside reasoning_content; the endpoint decides.
+    if (trimmedContent.length === 0 && !reasoning) continue;
     // Stored history only ever carries user/assistant (tool is skipped above),
     // so every prefixed message has a speaker.
-    const content = prefixNames ? `${speakerFor(msg).trim()}: ${trimmedContent}` : trimmedContent;
-    messages.push({ role: msg.role, content });
+    const content = prefixNames
+      ? `${speakerFor(msg).trim()}: ${trimmedContent}`
+      : trimmedContent || '(No visible response)';
+    appendChatMessage(messages, {
+      role: msg.role,
+      content,
+      ...(reasoning ? { reasoning_content: msg.reasoning! } : {}),
+    });
   }
 
   const currentSpeaker = speakerName?.trim() || charName;
-  return { messages, namePrefill: prefixNames ? `${currentSpeaker}:` : null, charName, userName };
+  const previousAssistant = history.findLast(
+    (message) =>
+      message.role === 'assistant' &&
+      message.status !== 'streaming' &&
+      (message.content.trim().length > 0 || !!message.reasoning?.trim()),
+  );
+  const previousSpeaker = previousAssistant ? speakerFor(previousAssistant).trim() : null;
+  const needsDisabledPrefillSpeakerNote =
+    prefixNames &&
+    (currentSpeaker !== charName ||
+      (currentSpeaker === charName && previousSpeaker != null && previousSpeaker !== charName));
+  return {
+    messages,
+    namePrefill: prefixNames ? `${currentSpeaker}:` : null,
+    disabledPrefillSpeakerNote: needsDisabledPrefillSpeakerNote
+      ? `<Note: Reply as ${currentSpeaker}>`
+      : null,
+    charName,
+    userName,
+  };
+}
+
+/** Copies a prompt and appends its upstream-only speaker handoff to the final user turn. */
+export function withDisabledPrefillSpeakerNote(built: BuiltPrompt): ChatMessage[] {
+  const messages = built.messages.map((message) => ({ ...message }));
+  const note = built.disabledPrefillSpeakerNote;
+  if (!note) return messages;
+  const userIndex = messages.findLastIndex((message) => message.role === 'user');
+  if (userIndex !== -1) {
+    const message = messages[userIndex]!;
+    messages[userIndex] = { ...message, content: `${message.content}\n${note}` };
+  } else {
+    // Root assistant generation can have no user history at all. The hidden
+    // handoff becomes a synthetic user turn, which both preserves the speaker
+    // instruction and gives strict chat APIs a valid turn to answer.
+    appendChatMessage(messages, { role: 'user', content: note });
+  }
+  return messages;
 }
 
 /**
@@ -197,11 +282,11 @@ export function buildToolPrompt(
   prompt: string,
 ): BuiltPrompt {
   const built = buildChatMessages(conversation, history);
-  built.messages.push({
+  appendChatMessage(built.messages, {
     role: 'user',
     content: substituteMacros(prompt.trim(), built.charName, built.userName),
   });
-  return { ...built, namePrefill: null };
+  return { ...built, namePrefill: null, disabledPrefillSpeakerNote: null };
 }
 
 /**
@@ -218,7 +303,7 @@ export function buildSteeredPrompt(
   speakerName: string | null,
 ): BuiltPrompt {
   const built = buildChatMessages(conversation, history, speakerName);
-  built.messages.push({ role: 'user', content: steer });
+  appendChatMessage(built.messages, { role: 'user', content: steer });
   return built;
 }
 
@@ -230,23 +315,35 @@ export function buildSteeredToolPrompt(
   conversation: Conversation,
   history: Message[],
   original: string,
+  originalReasoning: string | null,
   instruction: string,
 ): BuiltPrompt {
   const built = buildChatMessages(conversation, history);
   const originalBlock = `<original_image_prompt>\n${original.trim()}\n</original_image_prompt>`;
-  // A tool can be invoked while a user turn is the leaf. Insert its original
-  // output as an assistant turn first so the final user task still alternates.
-  const originalInPreviousTurn = built.messages.at(-1)?.role === 'user';
-  if (originalInPreviousTurn) built.messages.push({ role: 'assistant', content: originalBlock });
-  built.messages.push({
+  // Always represent the model-produced tool output as an assistant turn so
+  // its reasoning_content can be replayed too. Add a clear bridge only when
+  // needed to preserve strict user/assistant alternation.
+  if (built.messages.at(-1)?.role !== 'user') {
+    appendChatMessage(built.messages, {
+      role: 'user',
+      content:
+        '[IMAGE PROMPT REVISION CONTEXT]\nThe next assistant message is the original image-generation prompt to revise.',
+    });
+  }
+  appendChatMessage(built.messages, {
+    role: 'assistant',
+    content: originalBlock,
+    ...(originalReasoning?.trim() ? { reasoning_content: originalReasoning } : {}),
+  });
+  appendChatMessage(built.messages, {
     role: 'user',
     content:
       `[IMAGE PROMPT REVISION TASK]\n` +
       `The conversation above is reference context only. Do not continue the roleplay or answer its dialogue. ` +
       `Revise the specified image-generation prompt and return only the complete revised image-generation prompt, with no analysis, commentary, tags, or quotation marks. ` +
       `Preserve every detail that the revision does not explicitly change. Do not modify anything else.\n\n` +
-      `${originalInPreviousTurn ? 'The immediately preceding assistant message contains the original image prompt.\n\n' : `${originalBlock}\n\n`}` +
+      `The immediately preceding assistant message contains the original image prompt.\n\n` +
       `<revision_instruction>\n${instruction.trim()}\n</revision_instruction>`,
   });
-  return { ...built, namePrefill: null };
+  return { ...built, namePrefill: null, disabledPrefillSpeakerNote: null };
 }

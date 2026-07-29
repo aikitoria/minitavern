@@ -15,6 +15,13 @@ import type {
 import { DEFAULT_SETTINGS } from '@minitavern/shared';
 import { api, ApiError } from './api.ts';
 import { subscribe } from './ws.ts';
+import {
+  applyImageProgress,
+  retainPendingImageProgress,
+  type ImageProgressState,
+} from './imageProgressSync.ts';
+import { isCurrentSettingsRevision, SuccessfulFetchSequence, upsertById } from './sync.ts';
+import { afterOperationEnd, afterTreeFrame } from './swipeSync.ts';
 
 export type ModalKind = 'settings' | 'conversation' | null;
 
@@ -33,6 +40,7 @@ interface TreeState {
   conversationId: number | null;
   messages: Record<number, Message>;
   activeLeafId: number | null;
+  mutationRevision: number;
 }
 
 interface AppState {
@@ -75,7 +83,7 @@ export const [state, setState] = createStore<AppState>({
   viewMode: 'chat',
   treeNavigationPending: false,
   toasts: [],
-  tree: { conversationId: null, messages: {}, activeLeafId: null },
+  tree: { conversationId: null, messages: {}, activeLeafId: null, mutationRevision: 0 },
 });
 
 let toastCounter = 0;
@@ -184,20 +192,12 @@ function persistSelectedConversation(id: number | null): void {
 // newer one — or after a local write like newConversation's insert — would
 // revert state, so each entity tracks a fetch sequence and stale responses
 // are dropped.
-const fetchSeq = new Map<InvalidateEntity, number>();
+const fetchSeq = new SuccessfulFetchSequence<InvalidateEntity>();
 
 // Conversation deletes broadcast an invalidation before the initiating HTTP
 // request resolves. Remember locally initiated deletes so that refresh can't
 // mistake that race for a deletion performed by another client.
 const locallyDeletingConversationIds = new Set<number>();
-
-/** Marks now as the entity's newest state: any in-flight refetch started
- * earlier is stale and its response will be discarded. */
-function bumpFetchSeq(entity: InvalidateEntity): number {
-  const seq = (fetchSeq.get(entity) ?? 0) + 1;
-  fetchSeq.set(entity, seq);
-  return seq;
-}
 
 function loader<T>(
   entity: InvalidateEntity,
@@ -205,9 +205,11 @@ function loader<T>(
   apply: (data: T) => void,
 ): () => Promise<void> {
   return async () => {
-    const seq = bumpFetchSeq(entity);
+    const seq = fetchSeq.start(entity);
     const data = await fetch();
-    if (fetchSeq.get(entity) !== seq) return; // superseded while in flight
+    // A later-started request that failed must not suppress this useful result.
+    // Conversely, once a later request succeeds, this response is stale.
+    if (!fetchSeq.accept(entity, seq)) return;
     apply(data);
   };
 }
@@ -243,7 +245,11 @@ const loaders: Record<InvalidateEntity, () => Promise<void>> = {
   endpoints: loader('endpoints', api.endpoints, (data) =>
     setState('endpoints', reconcile(data, { key: 'id' })),
   ),
-  settings: loader('settings', api.settings, (data) => setState('settings', data)),
+  settings: loader('settings', api.settings, (data) => {
+    if (isCurrentSettingsRevision(state.settings.revision, data.revision)) {
+      setState('settings', data);
+    }
+  }),
 };
 
 export async function loadAll(): Promise<void> {
@@ -268,6 +274,7 @@ export function handleServerEvent(ev: ServerEvent): void {
         batch(() => {
           setState('tree', 'conversationId', ev.conversationId);
           setState('tree', 'activeLeafId', ev.activeLeafId);
+          setState('tree', 'mutationRevision', ev.mutationRevision);
           // Reconcile keeps object identity for unchanged messages so the DOM
           // (and scroll position) survives branch switches.
           setState(
@@ -276,16 +283,11 @@ export function handleServerEvent(ev: ServerEvent): void {
             reconcile(Object.fromEntries(ev.messages.map((m) => [m.id, m])), { key: 'id' }),
           );
         });
+        consumePendingSwipe(ev.conversationId, ev.activeLeafId);
         // A render may have finished while we were disconnected — progress for
         // messages the snapshot shows as no longer pending is stale and must
         // not front-run the next render on the same message.
-        setImageProgress((progress) => {
-          const pending = new Set(ev.messages.filter((m) => m.imagePending).map((m) => m.id));
-          if (Object.keys(progress).every((mid) => pending.has(Number(mid)))) return progress;
-          return Object.fromEntries(
-            Object.entries(progress).filter(([mid]) => pending.has(Number(mid))),
-          );
-        });
+        setImageProgress((progress) => retainPendingImageProgress(progress, state.tree.messages));
       }
       break;
     case 'treePatch': {
@@ -306,6 +308,7 @@ export function handleServerEvent(ev: ServerEvent): void {
       }
       batch(() => {
         setState('tree', 'activeLeafId', ev.activeLeafId);
+        setState('tree', 'mutationRevision', ev.mutationRevision);
         setState(
           'tree',
           'messages',
@@ -333,11 +336,14 @@ export function handleServerEvent(ev: ServerEvent): void {
                 msg.activeChildId = node.activeChildId;
                 msg.status = node.status;
                 msg.generationKind = node.generationKind;
+                msg.generationToken = node.generationToken;
               }
             }
           }),
         );
       });
+      setImageProgress((progress) => retainPendingImageProgress(progress, state.tree.messages));
+      consumePendingSwipe(ev.conversationId, ev.activeLeafId);
       break;
     }
     case 'delta': {
@@ -356,6 +362,7 @@ export function handleServerEvent(ev: ServerEvent): void {
     case 'final': {
       // A final for an abandoned conversation (mid-switch) must not toast here.
       if (ev.conversationId !== state.selectedId) break;
+      setState('tree', 'mutationRevision', ev.mutationRevision);
       // Surface upstream API failures (e.g. context length exceeded) loudly.
       // Speculative swipes retry quietly in the background.
       if (ev.message.status === 'error' && ev.message.generationKind !== 'speculative') {
@@ -371,33 +378,23 @@ export function handleServerEvent(ev: ServerEvent): void {
           ev.message.id,
           produce((msg) => Object.assign(msg, ev.message)),
         );
-        if (!ev.message.imagePending) clearImageProgress(ev.message.id);
+      }
+      if (!ev.message.imagePending || !state.tree.messages[ev.message.id]) {
+        clearImageProgress(ev.message.id);
       }
       break;
     }
     case 'imageProgress':
       if (ev.conversationId !== state.selectedId) break;
-      setImageProgress((progress) => ({ ...progress, [ev.mid]: { value: ev.value, max: ev.max } }));
-      break;
-    case 'renderProgress':
-      setRenderProgress((progress) => ({
-        ...progress,
-        [ev.jobId]: { value: ev.value, max: ev.max },
-      }));
+      setImageProgress((progress) =>
+        applyImageProgress(progress, state.tree.messages, ev.mid, ev.value, ev.max),
+      );
       break;
   }
 }
 
 /** Per-message image render progress (ephemeral; only read while imagePending). */
-export const [imageProgress, setImageProgress] = createSignal<
-  Record<number, { value: number; max: number }>
->({});
-
-/** Per-job progress for stateless renders (avatar generator), keyed by the
- * caller-provided jobId. Ephemeral; only read while a render is in flight. */
-export const [renderProgress, setRenderProgress] = createSignal<
-  Record<string, { value: number; max: number }>
->({});
+export const [imageProgress, setImageProgress] = createSignal<ImageProgressState>({});
 
 /** Dropped once a body shows the render finished — a later render on the same
  * message must not open with the previous one's final progress. */
@@ -437,7 +434,12 @@ export function selectConversation(id: number | null): void {
     setState('viewMode', 'chat');
     // conversationId is only set when the tree snapshot arrives — its absence
     // marks the tree as still loading.
-    setState('tree', { conversationId: null, messages: {}, activeLeafId: null });
+    setState('tree', {
+      conversationId: null,
+      messages: {},
+      activeLeafId: null,
+      mutationRevision: 0,
+    });
   });
   // A swipe animation pending in the previous conversation must not leak into
   // this one's freshly mounted nodes.
@@ -478,6 +480,11 @@ export async function navigateTree(action: () => Promise<unknown>): Promise<bool
 // ---- Swipe navigation (shared by the touch gesture, ‹ › buttons and arrow keys) ----
 
 export interface PendingSwipe {
+  /** Unique operation identity; message ids can recur across rapid back-and-forth swipes. */
+  token: number;
+  conversationId: number;
+  /** Active leaf observed when the operation began. */
+  sourceLeafId: number | null;
   /** Sibling group the swipe happens in (-1 for root messages). */
   parentKey: number;
   /** The message sliding out. */
@@ -487,6 +494,18 @@ export interface PendingSwipe {
 }
 
 export const [pendingSwipe, setPendingSwipe] = createSignal<PendingSwipe | null>(null);
+let swipeToken = 0;
+
+/** The authoritative tree frame consumes an animation only after it reflects
+ * the branch change. This leaves `pendingSwipe` set while Solid mounts the
+ * incoming path, then prevents later unrelated mounts from inheriting it. */
+function consumePendingSwipe(conversationId: number, activeLeafId: number | null): void {
+  setPendingSwipe((pending) => afterTreeFrame(pending, conversationId, activeLeafId));
+}
+
+function clearPendingSwipe(token: number): void {
+  setPendingSwipe((pending) => afterOperationEnd(pending, token));
+}
 
 /** Set to a message id to ask that MessageNode to open its in-place editor (composer ↑ key). */
 export const [editRequestId, setEditRequestId] = createSignal<number | null>(null);
@@ -506,48 +525,69 @@ export async function swipeToSibling(message: Message, dir: 1 | -1): Promise<voi
   // messages can just switch between existing ones.
   if (dir === -1 || message.role !== 'assistant') {
     const target = siblings[idx + dir];
-    if (target) action = () => api.activate(target.id, state.tree.activeLeafId);
+    if (target)
+      action = () => api.activate(target.id, state.tree.activeLeafId, state.tree.mutationRevision);
   } else {
-    action = () => api.advance(message.id, state.tree.activeLeafId);
+    action = () => api.advance(message.id, state.tree.activeLeafId, state.tree.mutationRevision);
   }
   if (!action) return;
-  setPendingSwipe({ parentKey: message.parentId ?? -1, outgoingId: message.id, dir });
+  const token = ++swipeToken;
+  setPendingSwipe({
+    token,
+    conversationId: message.conversationId,
+    sourceLeafId: state.tree.activeLeafId,
+    parentKey: message.parentId ?? -1,
+    outgoingId: message.id,
+    dir,
+  });
   const ok = await navigateTree(action);
   if (!ok) {
-    setPendingSwipe(null); // spring back
+    clearPendingSwipe(token); // spring back, unless a newer swipe has replaced this one
     return;
   }
-  // The incoming sibling consumes this as it mounts; drop it shortly after so
-  // unrelated mounts never animate.
+  // Normally the matching tree frame consumes the operation. Keep a timeout
+  // only as a fail-safe for a successful HTTP mutation whose WS frame is lost.
   setTimeout(() => {
-    setPendingSwipe((p) => (p?.outgoingId === message.id ? null : p));
-  }, 400);
+    clearPendingSwipe(token);
+  }, 2000);
 }
 
 export async function newConversation(characterId: number | null): Promise<void> {
   const conv = await api.createConversation(characterId);
-  // Insert immediately so Header/ChatView never flash the empty state while
-  // the invalidate-driven refetch is in flight; mark refetches started before
-  // this write as stale so they can't briefly remove the row again.
-  bumpFetchSeq('conversations');
-  setState('conversations', (list) => [conv, ...list]);
-  selectConversation(conv.id);
+  // The invalidate GET may beat this POST response, so this must be an upsert.
+  // Then re-read authoritative ordering/existence: a peer may already have
+  // deleted the row while this response was delayed.
+  setState('conversations', (list) => upsertById(list, conv));
+  let verified = false;
+  try {
+    await loaders.conversations();
+    verified = true;
+  } catch (err) {
+    console.error(err);
+  }
+  if (!verified || state.conversations.some((conversation) => conversation.id === conv.id)) {
+    selectConversation(conv.id);
+  }
 }
 
-/**
- * Applies a local settings write (PUT response), marking refetches started
- * before it as stale so an invalidate-triggered GET that resolves late can't
- * briefly revert the settings — same guard as newConversation's insert.
- */
-export function applySettings(next: Settings): void {
-  bumpFetchSeq('settings');
+/** Applies a local settings response unless a newer revision is already visible. */
+export function applySettings(next: Settings): boolean {
+  if (!isCurrentSettingsRevision(state.settings.revision, next.revision)) return false;
   setState('settings', next);
+  return true;
 }
 
 export async function deleteConversation(id: number): Promise<void> {
   locallyDeletingConversationIds.add(id);
   try {
-    await api.deleteConversation(id);
+    const conversation = state.conversations.find((candidate) => candidate.id === id);
+    if (!conversation) throw new Error(`conversation ${id} not found`);
+    const selected = state.tree.conversationId === id;
+    await api.deleteConversation(
+      id,
+      selected ? state.tree.activeLeafId : conversation.activeLeafId,
+      selected ? state.tree.mutationRevision : conversation.mutationRevision,
+    );
     if (state.selectedId === id) selectConversation(null);
   } finally {
     locallyDeletingConversationIds.delete(id);
@@ -556,11 +596,17 @@ export async function deleteConversation(id: number): Promise<void> {
 
 export async function duplicateConversation(id: number): Promise<void> {
   const conv = await api.duplicateConversation(id);
-  // Same guard as newConversation: insert immediately and mark earlier
-  // refetches stale, then open the copy.
-  bumpFetchSeq('conversations');
-  setState('conversations', (list) => [conv, ...list]);
-  selectConversation(conv.id);
+  setState('conversations', (list) => upsertById(list, conv));
+  let verified = false;
+  try {
+    await loaders.conversations();
+    verified = true;
+  } catch (err) {
+    console.error(err);
+  }
+  if (!verified || state.conversations.some((conversation) => conversation.id === conv.id)) {
+    selectConversation(conv.id);
+  }
 }
 
 export function restoreConversationSelection(): void {

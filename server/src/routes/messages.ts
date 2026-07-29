@@ -24,6 +24,8 @@ import {
   hasForegroundGeneration,
   isBackgroundGeneration,
   promoteBackgroundGeneration,
+  activeGenerationToken,
+  supportsAssistantContinuation,
   startGeneration,
   stopGeneration,
 } from '../generation.ts';
@@ -38,11 +40,12 @@ import {
   touchConversation,
 } from './conversations.ts';
 import { objectBody, positiveId, requiredString } from '../validation.ts';
-import { optionalNullableId } from '../validation.ts';
+import { optionalNullableId, optionalNumber } from '../validation.ts';
 import { requireExpectedActiveLeaf } from '../concurrency.ts';
 import { discardSpeculativeSwipes, markSwipeRead, nextUnreadSibling } from '../speculation.ts';
 import { parseImageConfig, startImageRender } from '../comfy.ts';
 import { buildSteeredPrompt, buildSteeredToolPrompt, resolveSteerTemplate } from '../prompt.ts';
+import { bumpConversationRevision } from '../conversationRevision.ts';
 
 function requireMessage(id: number) {
   const msg = getMessage(id);
@@ -59,7 +62,11 @@ function requireIdle(conversationId: number): void {
 
 function requireExpectedLeaf(message: ReturnType<typeof requireMessage>, body: unknown): void {
   const b = objectBody(body);
-  requireExpectedActiveLeaf(message.conversationId, optionalNullableId(b, 'expectedActiveLeafId'));
+  requireExpectedActiveLeaf(
+    message.conversationId,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
 }
 
 /** Resume: continue the last assistant reply in place via prefill-style trailing assistant message. */
@@ -76,10 +83,12 @@ route.post('/api/messages/:id/continue', ({ params, body }) => {
   requireExpectedLeaf(msg, body);
   if (conv.activeLeafId !== msg.id)
     throw new HttpError(400, 'only the last message on the branch can be resumed');
+  if (!supportsAssistantContinuation(conv)) {
+    throw new HttpError(400, 'the active endpoint disables assistant prefills and continuation');
+  }
   requireIdle(msg.conversationId);
   stmt("UPDATE messages SET status = 'streaming' WHERE id = ?").run(msg.id);
   touchConversation(msg.conversationId);
-  broadcastTree(msg.conversationId);
   startGeneration(
     conv,
     msg.id,
@@ -90,6 +99,7 @@ route.post('/api/messages/:id/continue', ({ params, body }) => {
       },
     },
   );
+  broadcastTree(msg.conversationId);
   invalidate('conversations');
   return { assistantMessageId: msg.id };
 });
@@ -172,6 +182,7 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
       conv,
       getPathToMessage(msg.parentId),
       msg.content,
+      msg.reasoning,
       instruction,
     );
     const next = insertMessageAfter(
@@ -190,7 +201,6 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
       );
     }
     touchConversation(msg.conversationId);
-    broadcastTree(msg.conversationId);
     const renderImage = image;
     startGeneration(getConversation(msg.conversationId), next.id, undefined, {
       prompt,
@@ -205,6 +215,7 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
             })
         : undefined,
     });
+    broadcastTree(msg.conversationId);
     invalidate('conversations');
     return {
       activeLeafId: getActiveLeafId(msg.conversationId),
@@ -228,13 +239,24 @@ route.patch('/api/messages/:id', ({ params, body }) => {
   if (typeof b.content !== 'string') throw new HttpError(400, 'content is required');
   const content = b.content.trim();
   if (!content) throw new HttpError(400, 'content is required');
-  requireExpectedActiveLeaf(msg.conversationId, optionalNullableId(b, 'expectedActiveLeafId'));
+  requireExpectedActiveLeaf(
+    msg.conversationId,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
   if (msg.status === 'streaming') throw new HttpError(409, 'message is still streaming');
+  // The renderer snapshots content when it starts. Editing that content while
+  // the job is pending would attach an image generated from the old prompt to
+  // the newly edited description.
+  if (msg.imagePending) {
+    throw new HttpError(409, 'an image render is running for this message');
+  }
   if (hasForegroundGeneration(msg.conversationId)) {
     throw new HttpError(409, 'a generation is already running in this conversation');
   }
   discardSpeculativeSwipes(msg.conversationId);
   stmt('UPDATE messages SET content = ? WHERE id = ?').run(content, msg.id);
+  bumpConversationRevision(msg.conversationId);
   markMessageDirty(msg.conversationId, msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
@@ -248,7 +270,11 @@ route.post('/api/messages/:id/edit-branch', ({ params, body }) => {
   const b = objectBody(body);
   const content = (typeof b.content === 'string' ? b.content : '').trim();
   if (!content) throw new HttpError(400, 'content is required');
-  requireExpectedActiveLeaf(msg.conversationId, optionalNullableId(b, 'expectedActiveLeafId'));
+  requireExpectedActiveLeaf(
+    msg.conversationId,
+    optionalNullableId(b, 'expectedActiveLeafId'),
+    optionalNumber(b, 'expectedMutationRevision'),
+  );
   requireIdle(msg.conversationId);
   const sibling = appendMessage(
     msg.conversationId,
@@ -291,9 +317,16 @@ route.post('/api/messages/:id/activate', ({ params, body }) => {
 route.del('/api/messages/:id', ({ params, req }) => {
   const msg = requireMessage(positiveId(params.id));
   const rawExpected = new URL(req.url ?? '/', 'http://x').searchParams.get('expectedActiveLeafId');
+  const rawRevision = new URL(req.url ?? '/', 'http://x').searchParams.get(
+    'expectedMutationRevision',
+  );
   const expected =
     rawExpected === 'null' ? null : rawExpected == null ? undefined : Number(rawExpected);
-  requireExpectedActiveLeaf(msg.conversationId, expected);
+  requireExpectedActiveLeaf(
+    msg.conversationId,
+    expected,
+    rawRevision == null ? undefined : Number(rawRevision),
+  );
   requireIdle(msg.conversationId);
   // Removing a block changes the context every prepared swipe was generated for.
   discardSpeculativeSwipes(msg.conversationId);
@@ -309,12 +342,30 @@ route.del('/api/messages/:id', ({ params, req }) => {
  * regular block delete above, sibling swipes survive and no descendants are
  * spliced upward into the remaining branch. */
 route.del('/api/messages/:id/swipe', ({ params, req }) => {
-  const msg = requireMessage(positiveId(params.id));
+  let msg = requireMessage(positiveId(params.id));
   const rawExpected = new URL(req.url ?? '/', 'http://x').searchParams.get('expectedActiveLeafId');
+  const rawRevision = new URL(req.url ?? '/', 'http://x').searchParams.get(
+    'expectedMutationRevision',
+  );
   const expected =
     rawExpected === 'null' ? null : rawExpected == null ? undefined : Number(rawExpected);
-  requireExpectedActiveLeaf(msg.conversationId, expected);
+  requireExpectedActiveLeaf(
+    msg.conversationId,
+    expected,
+    rawRevision == null ? undefined : Number(rawRevision),
+  );
+  const findAlternative = () =>
+    stmt(
+      'SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? AND id != ? LIMIT 1',
+    ).get(msg.conversationId, msg.parentId, msg.id);
+  // A true sole-child rejection must be side-effect free: in particular, do
+  // not cancel an unrelated background generation before returning 400.
+  if (!findAlternative()) throw new HttpError(400, 'message has no other swipe to activate');
   requireIdle(msg.conversationId);
+  // requireIdle may remove an in-flight prepared sibling (or the requested
+  // speculative message itself), so validate the post-cleanup sibling group.
+  msg = requireMessage(msg.id);
+  if (!findAlternative()) throw new HttpError(400, 'message has no other swipe to activate');
   deleteMessage(msg.id);
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
@@ -389,6 +440,10 @@ route.post('/api/messages/:id/duplicate', ({ params, body }) => {
 route.post('/api/messages/:id/render-image', ({ params, body }) => {
   const msg = requireMessage(positiveId(params.id));
   const b = body == null ? {} : objectBody(body);
+  requireExpectedLeaf(msg, b);
+  if (!getActivePath(msg.conversationId).some((active) => active.id === msg.id)) {
+    throw new HttpError(400, 'message is not on the active branch');
+  }
   const row = stmt('SELECT image_render_json FROM messages WHERE id = ?').get(msg.id) as {
     image_render_json: string | null;
   };
@@ -406,7 +461,7 @@ route.post('/api/messages/:id/render-image', ({ params, body }) => {
     } catch (err) {
       // A supplied-but-invalid config gets the specific validation error; the
       // generic note only applies when nothing was supplied at all.
-      if (Object.keys(b).length > 0) {
+      if ('workflow' in b || 'comfyUrl' in b) {
         throw new HttpError(400, err instanceof Error ? err.message : String(err));
       }
       throw new HttpError(400, 'message has no image render configuration');
@@ -417,6 +472,7 @@ route.post('/api/messages/:id/render-image', ({ params, body }) => {
     );
   }
   stmt('UPDATE messages SET image_pending = 1 WHERE id = ?').run(msg.id);
+  bumpConversationRevision(msg.conversationId);
   markMessageDirty(msg.conversationId, msg.id);
   broadcastTree(msg.conversationId);
   startImageRender({
@@ -433,6 +489,10 @@ route.post('/api/messages/:id/render-image', ({ params, body }) => {
 route.post('/api/messages/:id/active-image', ({ params, body }) => {
   const msg = requireMessage(positiveId(params.id));
   const b = objectBody(body);
+  requireExpectedLeaf(msg, b);
+  if (!getActivePath(msg.conversationId).some((active) => active.id === msg.id)) {
+    throw new HttpError(400, 'message is not on the active branch');
+  }
   const index = b.index;
   if (
     typeof index !== 'number' ||
@@ -443,14 +503,24 @@ route.post('/api/messages/:id/active-image', ({ params, body }) => {
     throw new HttpError(400, 'index out of range');
   }
   stmt('UPDATE messages SET active_image = ? WHERE id = ?').run(index, msg.id);
+  bumpConversationRevision(msg.conversationId);
   markMessageDirty(msg.conversationId, msg.id);
   broadcastTree(msg.conversationId);
 });
 
-route.post('/api/generations/:id/stop', ({ params }) => {
+route.post('/api/generations/:id/stop', ({ params, body }) => {
   const mid = positiveId(params.id);
+  const b = objectBody(body);
+  const expectedGenerationToken = optionalNumber(b, 'expectedGenerationToken');
+  if (!Number.isSafeInteger(expectedGenerationToken) || expectedGenerationToken! <= 0) {
+    throw new HttpError(400, 'expectedGenerationToken is required');
+  }
   if (isBackgroundGeneration(mid)) {
     throw new HttpError(409, 'inactive background swipes cannot be stopped directly');
+  }
+  const currentToken = activeGenerationToken(mid);
+  if (currentToken != null && currentToken !== expectedGenerationToken) {
+    throw new HttpError(409, 'generation changed; the stop request is stale');
   }
   const stopped = stopGeneration(mid);
   if (!stopped) throw new HttpError(404, 'no active generation for this message');

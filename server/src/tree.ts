@@ -1,6 +1,7 @@
 import type { GenerationKind, Message, MessageStatus, Role, TreeNode } from '@minitavern/shared';
 import { stmt, toMessage, transaction } from './db.ts';
 import { collectMessageImages, collectSubtreeImages, deleteImageFiles } from './images.ts';
+import { bumpConversationRevision } from './conversationRevision.ts';
 
 // Messages created or edited since the last tree broadcast, per conversation.
 // The coalesced broadcast drains this to know which full bodies to include.
@@ -50,7 +51,7 @@ export function getTreeMessages(conversationId: number): Message[] {
 /** Structure-only view of the tree (no bodies) for incremental patches. */
 export function getTreeNodes(conversationId: number): TreeNode[] {
   const rows = stmt(
-    `SELECT id, parent_id, active_child_id, status, generation_kind
+    `SELECT id, parent_id, active_child_id, status, generation_kind, generation_token
      FROM messages WHERE conversation_id = ? ORDER BY id`,
   ).all(conversationId) as {
     id: number;
@@ -58,6 +59,7 @@ export function getTreeNodes(conversationId: number): TreeNode[] {
     active_child_id: number | null;
     status: MessageStatus;
     generation_kind: GenerationKind;
+    generation_token: number | null;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -65,6 +67,7 @@ export function getTreeNodes(conversationId: number): TreeNode[] {
     activeChildId: r.active_child_id,
     status: r.status,
     generationKind: r.generation_kind,
+    generationToken: r.generation_token,
   }));
 }
 
@@ -103,6 +106,7 @@ export function setActiveLeaf(conversationId: number, leafId: number | null): vo
   // Deliberately does NOT touch updated_at: branch switching is reading, not
   // writing — content-creating routes bump the timestamp themselves.
   stmt('UPDATE conversations SET active_leaf_id = ? WHERE id = ?').run(leafId, conversationId);
+  bumpConversationRevision(conversationId);
   if (leafId == null) return;
   // One statement: each ancestor's active_child_id points at its child on the leaf's path.
   stmt(
@@ -173,6 +177,7 @@ export function appendMessage(
     const id = Number(result.lastInsertRowid);
     markMessageDirty(conversationId, id);
     if (activate) setActiveLeaf(conversationId, id);
+    else bumpConversationRevision(conversationId);
     return getMessage(id)!;
   });
 }
@@ -369,8 +374,24 @@ export function deleteMessage(messageId: number): void {
     const leaf = getActiveLeafId(conversationId);
     if (leaf != null && !getRow(leaf)) {
       const sibling = newestChildId(conversationId, parentId);
-      setActiveLeaf(conversationId, sibling != null ? descendToLeaf(sibling) : parentId);
-    }
+      const replacementLeaf = sibling != null ? descendToLeaf(sibling) : parentId;
+      if (replacementLeaf != null) {
+        // A completed prepared swipe is still tagged speculative until it is
+        // explicitly revealed. Delete-swipe can reveal it indirectly, so
+        // normalize every speculative node on the replacement path before a
+        // later context invalidation bulk-deletes it and its descendants.
+        stmt(
+          `WITH RECURSIVE path(id, parent_id) AS (
+             SELECT id, parent_id FROM messages WHERE id = ?
+             UNION ALL
+             SELECT m.id, m.parent_id FROM messages m JOIN path p ON m.id = p.parent_id
+           )
+           UPDATE messages SET generation_kind = 'normal'
+           WHERE generation_kind = 'speculative' AND id IN (SELECT id FROM path)`,
+        ).run(replacementLeaf);
+      }
+      setActiveLeaf(conversationId, replacementLeaf);
+    } else bumpConversationRevision(conversationId);
   });
   deleteImageFiles(doomedImages);
 }
