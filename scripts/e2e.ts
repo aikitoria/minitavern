@@ -677,6 +677,55 @@ async function main() {
   );
   assert(splicePatch.t === 'treePatch', 'splice patch received');
 
+  console.log('== delete one swipe keeps its sibling branch ==');
+  const swipeBase = await sendMessage(conv.id, 'swipe deletion root');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === swipeBase.assistantMessageId,
+    'swipe-deletion first reply finished',
+  );
+  const keptDescendant = await sendMessage(conv.id, 'keep this branch');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === keptDescendant.assistantMessageId,
+    'kept swipe descendant finished',
+  );
+  const doomedSwipe = await req<{ assistantMessageId: number | null }>(
+    'POST',
+    `/api/messages/${swipeBase.assistantMessageId}/advance`,
+    await branchBody(conv.id),
+  );
+  if (doomedSwipe.assistantMessageId == null) throw new Error('expected a sibling swipe');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === doomedSwipe.assistantMessageId,
+    'doomed sibling swipe finished',
+  );
+  const doomedDescendant = await sendMessage(conv.id, 'delete this branch');
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === doomedDescendant.assistantMessageId,
+    'doomed swipe descendant finished',
+  );
+  const swipeDelete = await req<{ activeLeafId: number | null }>(
+    'DELETE',
+    `/api/messages/${doomedSwipe.assistantMessageId}/swipe?expectedActiveLeafId=${doomedDescendant.assistantMessageId}`,
+  );
+  snap = await tree(conv.id);
+  assert(
+    !snap.messages.some(
+      (message) =>
+        message.id === doomedSwipe.assistantMessageId ||
+        message.id === doomedDescendant.userMessageId ||
+        message.id === doomedDescendant.assistantMessageId,
+    ),
+    'delete swipe removes the selected alternative and its subtree',
+  );
+  assert(
+    snap.messages.some((message) => message.id === swipeBase.assistantMessageId) &&
+      snap.messages.some((message) => message.id === keptDescendant.userMessageId) &&
+      snap.messages.some((message) => message.id === keptDescendant.assistantMessageId) &&
+      swipeDelete.activeLeafId === keptDescendant.assistantMessageId &&
+      snap.activeLeafId === keptDescendant.assistantMessageId,
+    'delete swipe preserves and activates the remaining sibling branch',
+  );
+
   console.log('== message move and duplicate ==');
   const mv = await sendMessage(conv.id, 'move me');
   await ws.waitFor(
@@ -1490,6 +1539,53 @@ async function main() {
       imgRes.toolMessageId,
     'consecutive tool messages chain parent→child',
   );
+
+  console.log('== regenerate image tool in the middle of an existing chain ==');
+  const insertedRevision = await req<{ assistantMessageId: number }>(
+    'POST',
+    `/api/messages/${imgRes.toolMessageId}/regenerate`,
+    await branchBody(conv2.id, { instruction: 'Make the scene warmer.' }),
+  );
+  await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === insertedRevision.assistantMessageId,
+    'inserted image revision prompt finished',
+  );
+  const insertedSnap = await tree(conv2.id);
+  const sourceAfterInsert = insertedSnap.messages.find((m) => m.id === imgRes.toolMessageId)!;
+  const insertedMessage = insertedSnap.messages.find(
+    (m) => m.id === insertedRevision.assistantMessageId,
+  )!;
+  const chainedAfterInsert = insertedSnap.messages.find((m) => m.id === chained.toolMessageId)!;
+  assert(
+    insertedMessage.parentId === imgRes.toolMessageId &&
+      chainedAfterInsert.parentId === insertedMessage.id &&
+      sourceAfterInsert.activeChildId === insertedMessage.id &&
+      insertedMessage.activeChildId === chained.toolMessageId &&
+      insertedSnap.activeLeafId === chained.toolMessageId,
+    'image revision splices into the chain and preserves the active continuation',
+  );
+  let insertedRendered: Message | undefined;
+  for (let i = 0; i < 60 && !insertedRendered; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const message = (await tree(conv2.id)).messages.find(
+      (candidate) => candidate.id === insertedRevision.assistantMessageId,
+    );
+    if (message && !message.imagePending && message.images.length === 1) {
+      insertedRendered = message;
+    }
+  }
+  assert(insertedRendered != null, 'inserted image revision renders normally');
+  await req(
+    'DELETE',
+    `/api/messages/${insertedRevision.assistantMessageId}?expectedActiveLeafId=${chained.toolMessageId}`,
+  );
+  const restoredChain = await tree(conv2.id);
+  assert(
+    restoredChain.messages.find((m) => m.id === chained.toolMessageId)?.parentId ===
+      imgRes.toolMessageId && restoredChain.activeLeafId === chained.toolMessageId,
+    'deleting the inserted revision restores the original chain',
+  );
+
   const imgParent = chainSnap.messages.find((m) => m.id === imgRes.toolMessageId)!.parentId;
   await req(
     'DELETE',

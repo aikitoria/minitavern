@@ -9,10 +9,12 @@ import { route, HttpError } from '../router.ts';
 import {
   activateMessage,
   appendMessage,
+  deleteMessage,
   getActiveLeafId,
   getActivePath,
   getMessage,
   getPathToMessage,
+  insertMessageAfter,
   markMessageDirty,
   rotateDown,
   spliceMessage,
@@ -172,7 +174,15 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
       msg.content,
       instruction,
     );
-    const next = appendMessage(msg.conversationId, 'tool', '', msg.id, 'streaming', null, msg.name);
+    const next = insertMessageAfter(
+      msg.conversationId,
+      'tool',
+      '',
+      msg.id,
+      'streaming',
+      null,
+      msg.name,
+    );
     if (image) {
       stmt('UPDATE messages SET image_pending = 1, image_render_json = ? WHERE id = ?').run(
         JSON.stringify(image),
@@ -196,7 +206,10 @@ route.post('/api/messages/:id/regenerate', ({ params, body }) => {
         : undefined,
     });
     invalidate('conversations');
-    return { activeLeafId: next.id, assistantMessageId: next.id };
+    return {
+      activeLeafId: getActiveLeafId(msg.conversationId),
+      assistantMessageId: next.id,
+    };
   }
   const steer = resolveSteerTemplate(conv).replaceAll(/\{\{instruction\}\}/gi, () => instruction);
   // The temporary upstream context includes the target reply so the model can
@@ -290,6 +303,23 @@ route.del('/api/messages/:id', ({ params, req }) => {
   touchConversation(msg.conversationId);
   broadcastTree(msg.conversationId);
   invalidate('conversations');
+});
+
+/** Deletes only this sibling alternative and its descendants. Unlike the
+ * regular block delete above, sibling swipes survive and no descendants are
+ * spliced upward into the remaining branch. */
+route.del('/api/messages/:id/swipe', ({ params, req }) => {
+  const msg = requireMessage(positiveId(params.id));
+  const rawExpected = new URL(req.url ?? '/', 'http://x').searchParams.get('expectedActiveLeafId');
+  const expected =
+    rawExpected === 'null' ? null : rawExpected == null ? undefined : Number(rawExpected);
+  requireExpectedActiveLeaf(msg.conversationId, expected);
+  requireIdle(msg.conversationId);
+  deleteMessage(msg.id);
+  touchConversation(msg.conversationId);
+  broadcastTree(msg.conversationId);
+  invalidate('conversations');
+  return { activeLeafId: getActiveLeafId(msg.conversationId) };
 });
 
 /** Moves a message's block one step up or down the visible chain. Down rotates

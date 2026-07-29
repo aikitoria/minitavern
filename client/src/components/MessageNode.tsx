@@ -188,6 +188,9 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
   const remove = () => {
     void navigateTree(() => api.deleteMessage(props.message.id, state.tree.activeLeafId));
   };
+  const removeSwipe = () => {
+    void navigateTree(() => api.deleteSwipe(props.message.id, state.tree.activeLeafId));
+  };
 
   const copy = () => void navigator.clipboard.writeText(props.message.content);
 
@@ -378,6 +381,15 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
                         }}
                       >
                         Move down
+                      </button>
+                      <button
+                        class="danger"
+                        onClick={() => {
+                          closeMenu();
+                          removeSwipe();
+                        }}
+                      >
+                        <TrashIcon /> Delete swipe
                       </button>
                       <button
                         class="danger"

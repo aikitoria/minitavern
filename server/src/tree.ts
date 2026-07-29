@@ -177,6 +177,70 @@ export function appendMessage(
   });
 }
 
+/** Inserts a message as the sole child immediately after an existing node.
+ * Every former child branch moves below the inserted message, and the source's
+ * remembered active child moves with them. If the source already had a visible
+ * continuation, its deep active leaf stays active; otherwise the insertion
+ * becomes the new leaf. */
+export function insertMessageAfter(
+  conversationId: number,
+  role: Role,
+  content: string,
+  afterId: number,
+  status: MessageStatus = 'done',
+  model: string | null = null,
+  name: string | null = null,
+  generationKind: GenerationKind = 'normal',
+): Message {
+  return transaction(() => {
+    const after = getRow(afterId);
+    if (!after || after.conversation_id !== conversationId) {
+      throw new Error(`message ${afterId} not found in conversation ${conversationId}`);
+    }
+    const formerChildren = (
+      stmt('SELECT id FROM messages WHERE conversation_id = ? AND parent_id = ?').all(
+        conversationId,
+        afterId,
+      ) as { id: number }[]
+    ).map((row) => row.id);
+    const rememberedChild = formerChildren.includes(after.active_child_id ?? -1)
+      ? after.active_child_id
+      : (formerChildren.at(-1) ?? null);
+    const leaf = getActiveLeafId(conversationId);
+
+    const result = stmt(
+      `INSERT INTO messages
+         (conversation_id, parent_id, role, content, status, model, name,
+          active_child_id, generation_kind, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).run(
+      conversationId,
+      afterId,
+      role,
+      content ? content.trim() : '',
+      status,
+      model,
+      name,
+      rememberedChild,
+      generationKind,
+      Date.now(),
+    );
+    const id = Number(result.lastInsertRowid);
+    markMessageDirty(conversationId, id);
+
+    stmt(
+      `UPDATE messages SET parent_id = ?
+       WHERE conversation_id = ? AND parent_id = ? AND id != ?`,
+    ).run(id, conversationId, afterId, id);
+    stmt('UPDATE messages SET active_child_id = ? WHERE id = ?').run(id, afterId);
+
+    // Re-running setActiveLeaf repairs active-child pointers through the new
+    // link while preserving an existing deep continuation.
+    setActiveLeaf(conversationId, leaf == null || leaf === afterId ? id : leaf);
+    return getMessage(id)!;
+  });
+}
+
 function newestChildId(conversationId: number, parentId: number | null): number | null {
   const row = stmt(
     'SELECT id FROM messages WHERE conversation_id = ? AND parent_id IS ? ORDER BY id DESC LIMIT 1',
@@ -291,11 +355,9 @@ export function rotateDown(messageId: number): boolean {
   return true;
 }
 
-/** Deletes a message and its whole subtree (FK cascade), repairing the active
- * path if needed. The current callers only ever delete inactive speculative
- * siblings, so the repair normally doesn't fire — it's kept because the leaf
- * probe costs one point lookup (the leaf died iff the deleted node was one of
- * its ancestors, i.e. on the active path), not a path walk. */
+/** Deletes one message swipe and its whole subtree (FK cascade), repairing the
+ * active path if it contained that subtree. Used both by the explicit
+ * Delete-swipe action and by speculative-swipe cleanup. */
 export function deleteMessage(messageId: number): void {
   const row = getRow(messageId);
   if (!row) return;

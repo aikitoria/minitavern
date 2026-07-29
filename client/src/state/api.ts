@@ -215,6 +215,11 @@ export const api = {
       'DELETE',
       `/api/messages/${messageId}?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}`,
     ),
+  deleteSwipe: (messageId: number, expectedActiveLeafId: number | null) =>
+    request<{ activeLeafId: number | null }>(
+      'DELETE',
+      `/api/messages/${messageId}/swipe?expectedActiveLeafId=${expectedActiveLeafId ?? 'null'}`,
+    ),
   resume: (messageId: number, expectedActiveLeafId: number | null) =>
     request<{ assistantMessageId: number }>('POST', `/api/messages/${messageId}/continue`, {
       expectedActiveLeafId,
