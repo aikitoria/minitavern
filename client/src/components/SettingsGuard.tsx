@@ -9,14 +9,22 @@ export interface SettingsSectionActions {
 }
 
 type Register = (actions: SettingsSectionActions) => () => void;
+type Navigate = (action: () => void) => void;
 
 const SettingsGuardContext = createContext<Register>();
+const SettingsNavigationContext = createContext<Navigate>();
 
-export function SettingsGuardProvider(props: { register: Register; children: JSX.Element }) {
+export function SettingsGuardProvider(props: {
+  register: Register;
+  navigate: Navigate;
+  children: JSX.Element;
+}) {
   return (
-    <SettingsGuardContext.Provider value={props.register}>
-      {props.children}
-    </SettingsGuardContext.Provider>
+    <SettingsNavigationContext.Provider value={props.navigate}>
+      <SettingsGuardContext.Provider value={props.register}>
+        {props.children}
+      </SettingsGuardContext.Provider>
+    </SettingsNavigationContext.Provider>
   );
 }
 
@@ -26,4 +34,9 @@ export function useSettingsGuard(actions: SettingsSectionActions): void {
   if (!register) return;
   const unregister = register(actions);
   onCleanup(unregister);
+}
+
+/** Runs in-page navigation through Settings' Save / Discard / Cancel prompt. */
+export function useSettingsNavigation(): Navigate {
+  return useContext(SettingsNavigationContext) ?? ((action) => action());
 }

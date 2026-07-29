@@ -1,11 +1,13 @@
-import { Show, createSignal } from 'solid-js';
+import { Show, createEffect, createSignal, onCleanup, untrack } from 'solid-js';
 import { createStore, reconcile } from 'solid-js/store';
 import type { Conversation } from '@minitavern/shared';
 import { api } from '../state/api.ts';
-import { selectedConversation, state } from '../state/store.ts';
+import { openModal, selectedConversation, state } from '../state/store.ts';
 import { createSavedFlash, download, errorMessage, numberOrNull } from '../util.ts';
+import { mergeRemoteDraft, sameValue } from '../state/editorSync.ts';
 import Modal from './Modal.tsx';
 import Select from './Select.tsx';
+import type { SettingsSectionActions } from './SettingsGuard.tsx';
 
 interface Draft {
   title: string;
@@ -25,13 +27,39 @@ function snapshot(conv: Conversation): Draft {
   };
 }
 
-function Editor(props: { conv: Conversation }) {
+function Editor(props: {
+  conv: Conversation;
+  register: (actions: SettingsSectionActions) => () => void;
+}) {
   let base = snapshot(props.conv);
   const [draft, setDraft] = createStore<Draft>({ ...base });
   const [saved, flashSaved] = createSavedFlash();
   const [error, setError] = createSignal('');
+  const [conflicts, setConflicts] = createSignal<(keyof Draft)[]>([]);
+
+  const isDirty = () => !sameValue(draft, base);
+
+  createEffect(() => {
+    const latest = snapshot(props.conv);
+    if (sameValue(latest, base)) return;
+    untrack(() => {
+      const merged = mergeRemoteDraft(base, { ...draft }, latest);
+      base = merged.base;
+      setDraft(reconcile(merged.draft));
+      setConflicts(merged.conflicts);
+      if (merged.conflicts.length > 0) {
+        setError(
+          `Changed on another device: ${merged.conflicts.join(', ')}. Discard or resolve before saving.`,
+        );
+      }
+    });
+  });
 
   const save = async () => {
+    if (conflicts().length > 0) {
+      setError(`Resolve or discard the conflicting fields: ${conflicts().join(', ')}.`);
+      return false;
+    }
     // Only send fields the user changed here — a full-draft PATCH would
     // clobber concurrent updates (auto-titling, /char on another device).
     const dirty = Object.fromEntries(
@@ -40,12 +68,25 @@ function Editor(props: { conv: Conversation }) {
         .map((key) => [key, draft[key]]),
     );
     try {
-      const updated = await api.patchConversation(props.conv.id, dirty);
+      const updated = await api.patchConversation(
+        props.conv.id,
+        dirty,
+        state.tree.conversationId === props.conv.id
+          ? state.tree.activeLeafId
+          : props.conv.activeLeafId,
+        state.tree.conversationId === props.conv.id
+          ? state.tree.mutationRevision
+          : props.conv.mutationRevision,
+      );
       base = snapshot(updated);
+      setDraft(reconcile({ ...base }));
+      setConflicts([]);
       setError('');
       flashSaved();
+      return true;
     } catch (err) {
       setError(errorMessage(err));
+      return false;
     }
   };
 
@@ -55,8 +96,12 @@ function Editor(props: { conv: Conversation }) {
       base = snapshot(current);
       setDraft(reconcile({ ...base }));
     }
+    setConflicts([]);
     setError('');
   };
+
+  const unregister = props.register({ isDirty, save, discard });
+  onCleanup(unregister);
 
   return (
     <div class="form">
@@ -122,13 +167,69 @@ function Editor(props: { conv: Conversation }) {
 }
 
 export default function ConversationSettings() {
+  const [promptOpen, setPromptOpen] = createSignal(false);
+  const [saving, setSaving] = createSignal(false);
+  let actions: SettingsSectionActions | undefined;
+
+  const register = (next: SettingsSectionActions) => {
+    actions = next;
+    return () => {
+      if (actions === next) actions = undefined;
+    };
+  };
+  const close = () => openModal(null);
+  const requestClose = () => {
+    if (!actions?.isDirty()) close();
+    else setPromptOpen(true);
+  };
+  const saveAndClose = async () => {
+    if (!actions || saving()) return;
+    setSaving(true);
+    const ok = await actions.save();
+    setSaving(false);
+    if (ok) close();
+    else setPromptOpen(false);
+  };
+  const discardAndClose = () => {
+    actions?.discard();
+    close();
+  };
+
   return (
-    <Show when={selectedConversation()}>
-      {(conv) => (
-        <Modal title="Conversation settings">
-          <Editor conv={conv()} />
-        </Modal>
-      )}
-    </Show>
+    <>
+      <Show when={selectedConversation()}>
+        {(conv) => (
+          <Modal title="Conversation settings" onClose={requestClose}>
+            <Editor conv={conv()} register={register} />
+          </Modal>
+        )}
+      </Show>
+      <Show when={promptOpen()}>
+        <div class="modal-backdrop settings-prompt-backdrop">
+          <div
+            class="settings-prompt"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="conversation-save-prompt-title"
+          >
+            <span class="modal-title" id="conversation-save-prompt-title">
+              Save changes?
+            </span>
+            <p>You have unsaved conversation settings.</p>
+            <div class="form-actions">
+              <button class="primary-btn" disabled={saving()} onClick={() => void saveAndClose()}>
+                {saving() ? 'Saving…' : 'Save'}
+              </button>
+              <button disabled={saving()} onClick={discardAndClose}>
+                Discard
+              </button>
+              <button disabled={saving()} onClick={() => setPromptOpen(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      </Show>
+    </>
   );
 }

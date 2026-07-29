@@ -99,7 +99,7 @@ export default function SettingsModal() {
           </div>
         }
       >
-        <SettingsGuardProvider register={register}>
+        <SettingsGuardProvider register={register} navigate={navigate}>
           <Dynamic component={activeTab().component} />
         </SettingsGuardProvider>
       </Modal>

@@ -5,6 +5,9 @@ import { route } from '../router.ts';
 import { clearSettingReference } from '../settingsStore.ts';
 import type { SettingsReferenceKey } from '../settingsStore.ts';
 import { discardSpeculativeSwipes } from '../speculation.ts';
+import { bumpAllConversationRevisions } from '../conversationRevision.ts';
+import { subscribedConversationIds } from '../events.ts';
+import { broadcastTree } from '../sync.ts';
 import {
   objectBody,
   optionalNullableId,
@@ -112,6 +115,8 @@ export function defineEntityRoutes<T extends { id: number }>(cfg: EntityConfig<T
     stmt(updateSql).run(...values, id);
     invalidate(cfg.table);
     discardSpeculativeSwipes();
+    bumpAllConversationRevisions();
+    for (const conversationId of subscribedConversationIds()) broadcastTree(conversationId);
     return publish(cfg.toDto(rowById(cfg.table, id)));
   });
 
@@ -120,6 +125,8 @@ export function defineEntityRoutes<T extends { id: number }>(cfg: EntityConfig<T
     rowById(cfg.table, id);
     stmt(`DELETE FROM ${cfg.table} WHERE id = ?`).run(id);
     discardSpeculativeSwipes();
+    bumpAllConversationRevisions();
+    for (const conversationId of subscribedConversationIds()) broadcastTree(conversationId);
     cfg.onDelete?.(id);
     invalidate(cfg.table);
     for (const entity of cfg.invalidateOnDelete ?? []) invalidate(entity);

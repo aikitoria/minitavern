@@ -1,14 +1,15 @@
-import { createSignal, onCleanup, onMount } from 'solid-js';
-import { useSettingsGuard } from './components/SettingsGuard.tsx';
+import { createEffect, createSignal, onCleanup, onMount, untrack } from 'solid-js';
+import { useSettingsGuard, useSettingsNavigation } from './components/SettingsGuard.tsx';
+import { changedFields, sameValue } from './state/editorSync.ts';
 
 export type EditorId = number | 'new';
 
-interface EntityEditorOptions<T extends { id: number }, D> {
+interface EntityEditorOptions<T extends { id: number }, D extends Record<string, unknown>> {
   items: () => readonly T[];
   load: (item: T | undefined) => void;
   data: () => D;
   create: (data: D) => Promise<T>;
-  patch: (id: number, data: D) => Promise<T>;
+  patch: (id: number, data: Partial<D>) => Promise<T>;
   remove: (id: number) => Promise<void>;
   deletePrompt: string;
 }
@@ -47,34 +48,48 @@ export function numberOrNull(value: string): number | null {
 }
 
 /** Shared state/actions for the settings master-detail CRUD editors. */
-export function createEntityEditor<T extends { id: number }, D>(
+export function createEntityEditor<T extends { id: number }, D extends Record<string, unknown>>(
   options: EntityEditorOptions<T, D>,
 ) {
   const [selectedId, setSelectedId] = createSignal<EditorId>('new');
   const [saved, flashSaved] = createSavedFlash();
   const [status, setStatus] = createSignal('');
-  const nav = createDetailNav();
-  let baseline = '';
+  const rawNav = createDetailNav();
+  const requestNavigation = useSettingsNavigation();
+  let baseline: D | null = null;
+  let loadedItem = '';
+  let remoteConflict = false;
 
   const captureBaseline = () => {
-    baseline = JSON.stringify(options.data());
+    baseline = structuredClone(options.data());
   };
   const load = (item: T | undefined) => {
     options.load(item);
     captureBaseline();
+    loadedItem = JSON.stringify(item ?? null);
+    remoteConflict = false;
   };
 
   const selected = () => options.items().find((item) => item.id === selectedId());
-  const select = (id: EditorId) => {
-    nav.openDetail();
+  const isDirty = () => baseline != null && !sameValue(options.data(), baseline);
+  const applySelection = (id: EditorId) => {
+    rawNav.openDetail();
     setSelectedId(id);
     setStatus('');
     load(options.items().find((item) => item.id === id));
   };
+  const select = (id: EditorId) => {
+    if (id === selectedId()) {
+      rawNav.openDetail();
+      return;
+    }
+    requestNavigation(() => applySelection(id));
+  };
+  const closeDetail = () => requestNavigation(rawNav.closeDetail);
   /** Select-and-load an item that may not be in items() yet (e.g. a fresh
    * import whose WS invalidate refetch hasn't landed). */
   const adopt = (item: T) => {
-    nav.openDetail();
+    rawNav.openDetail();
     setSelectedId(item.id);
     load(item);
   };
@@ -83,13 +98,59 @@ export function createEntityEditor<T extends { id: number }, D>(
   onMount(() => {
     if (selectedId() === 'new') load(undefined);
   });
+
+  // Invalidation refetches reconcile the selected DTO in-place. Keep a clean
+  // form current; preserve a dirty form and require an explicit reload when a
+  // peer changed its server baseline.
+  createEffect(() => {
+    const id = selectedId();
+    if (id === 'new') return;
+    const item = selected();
+    const serialized = JSON.stringify(item ?? null);
+    untrack(() => {
+      if (serialized === loadedItem) return;
+      if (!item) {
+        if (isDirty()) {
+          remoteConflict = true;
+          setStatus('This item was deleted on another device. Discard this draft to continue.');
+        } else {
+          applySelection('new');
+          rawNav.closeDetail();
+          setStatus('This item was deleted on another device.');
+        }
+      } else if (isDirty()) {
+        remoteConflict = true;
+        setStatus('This item changed on another device. Discard to load the latest version.');
+      } else {
+        load(item);
+      }
+    });
+  });
+
   const save = async () => {
     try {
       const id = selectedId();
+      if (remoteConflict) {
+        setStatus('This item changed on another device. Discard to load it before saving.');
+        return false;
+      }
+      const data = options.data();
+      const selectedAtStart = JSON.stringify(selected() ?? null);
       const item =
         id === 'new'
-          ? await options.create(options.data())
-          : await options.patch(id, options.data());
+          ? await options.create(data)
+          : await options.patch(id, changedFields(baseline ?? data, data));
+      const latest = id === 'new' ? undefined : selected();
+      const response = JSON.stringify(item);
+      if (
+        latest &&
+        JSON.stringify(latest) !== selectedAtStart &&
+        JSON.stringify(latest) !== response
+      ) {
+        load(latest);
+        setStatus('A newer version arrived while saving; it has been loaded.');
+        return false;
+      }
       setSelectedId(item.id);
       setStatus('');
       // Reload the server's representation so normalized values (and secrets
@@ -107,16 +168,27 @@ export function createEntityEditor<T extends { id: number }, D>(
     if (id === 'new' || !confirm(options.deletePrompt)) return;
     try {
       await options.remove(id);
-      select('new');
-      nav.closeDetail();
+      applySelection('new');
+      rawNav.closeDetail();
     } catch (err) {
       setStatus(errorMessage(err));
     }
   };
-  const discard = () => select(selectedId());
+  const discard = () => {
+    const id = selectedId();
+    const item = options.items().find((candidate) => candidate.id === id);
+    if (id !== 'new' && !item) {
+      applySelection('new');
+      rawNav.closeDetail();
+      setStatus('This item was deleted on another device.');
+    } else {
+      setStatus('');
+      load(item);
+    }
+  };
 
   useSettingsGuard({
-    isDirty: () => JSON.stringify(options.data()) !== baseline,
+    isDirty,
     save,
     discard,
   });
@@ -126,7 +198,7 @@ export function createEntityEditor<T extends { id: number }, D>(
     saved,
     status,
     setStatus,
-    nav,
+    nav: { detailOpen: rawNav.detailOpen, openDetail: rawNav.openDetail, closeDetail },
     selected,
     select,
     adopt,
