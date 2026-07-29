@@ -169,7 +169,9 @@ export default function Markdown(props: { content: string; streaming: boolean })
     const code = button.closest('.code-block-wrap')?.querySelector('code');
     if (!code) return;
     try {
-      await navigator.clipboard.writeText(code.textContent ?? '');
+      // Marked appends one newline to fenced code output. Remove that renderer
+      // artifact without eating any additional blank lines from the source.
+      await navigator.clipboard.writeText((code.textContent ?? '').replace(/\n$/, ''));
       button.textContent = '✓';
       button.title = 'Copied';
       button.setAttribute('aria-label', 'Code copied');
