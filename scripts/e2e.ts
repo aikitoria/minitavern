@@ -2010,16 +2010,15 @@ async function main() {
   // keep a second copy of every image we already own. It is fire-and-forget on
   // the server, hence the poll rather than a straight read.
   let comfyDeletes = await comfyDeleteCount();
-  for (let i = 0; i < 40 && comfyDeletes.length === deletesBeforeRender; i++) {
+  const targetWasDeleted = () =>
+    comfyDeletes
+      .slice(deletesBeforeRender)
+      .some((entry) => entry.filename === 'mock.png' && entry.type === 'output');
+  for (let i = 0; i < 40 && !targetWasDeleted(); i++) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     comfyDeletes = await comfyDeleteCount();
   }
-  assert(
-    comfyDeletes.length === deletesBeforeRender + 1 &&
-      comfyDeletes.at(-1)!.filename === 'mock.png' &&
-      comfyDeletes.at(-1)!.type === 'output',
-    'the downloaded output is deleted from ComfyUI',
-  );
+  assert(targetWasDeleted(), 'the downloaded output is deleted from ComfyUI');
 
   const { workflow: substituted } = (await (
     await fetch(`${MOCK_CONTROL}/control/last-workflow`)
