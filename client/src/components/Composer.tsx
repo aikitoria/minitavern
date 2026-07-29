@@ -1,11 +1,17 @@
-import { For, Show, createEffect, createSignal } from 'solid-js';
+import { For, Show, createEffect, createSignal, onCleanup } from 'solid-js';
 import { api } from '../state/api.ts';
+import {
+  completeComposerDraft,
+  draftCompletionActive,
+  stopDraftCompletion,
+} from '../state/draftCompletion.ts';
 import type { PluginCommand } from '../plugins/api.ts';
 import { pluginCommands, pluginTools } from '../plugins/index.ts';
 import {
   activePath,
   deleteConversation,
   navigateTree,
+  selectedConversation,
   setEditRequestId,
   state,
   streamingMessage,
@@ -69,7 +75,12 @@ const BUILTIN_COMMANDS: PluginCommand[] = [
       'Set the assistant speaker name for this conversation (empty resets to the character)',
     run: async (args) => {
       if (state.selectedId == null) throw new Error('no conversation selected');
-      await api.patchConversation(state.selectedId, { speakerName: args.trim() || null });
+      await api.patchConversation(
+        state.selectedId,
+        { speakerName: args.trim() || null },
+        state.tree.activeLeafId,
+        state.tree.mutationRevision,
+      );
     },
   },
   {
@@ -82,7 +93,14 @@ const BUILTIN_COMMANDS: PluginCommand[] = [
         throw new Error('Usage: /del <positive count>');
       }
       if (state.selectedId == null) throw new Error('no conversation selected');
-      return navigateTree(() => api.deleteTail(state.selectedId!, count, state.tree.activeLeafId));
+      return navigateTree(() =>
+        api.deleteTail(
+          state.selectedId!,
+          count,
+          state.tree.activeLeafId,
+          state.tree.mutationRevision,
+        ),
+      );
     },
   },
   {
@@ -118,6 +136,8 @@ export default function Composer() {
   const [toolsOpen, setToolsOpen] = createSignal(false);
   let area: HTMLTextAreaElement | undefined;
   let toolsWrap: HTMLSpanElement | undefined;
+
+  onCleanup(stopDraftCompletion);
 
   useDismiss(
     () => toolsWrap,
@@ -181,10 +201,12 @@ export default function Composer() {
       return;
     }
 
-    if (streamingMessage()) return;
+    if (streamingMessage() || draftCompletionActive()) return;
     setText('');
     queueMicrotask(resize);
-    const sent = await navigateTree(() => api.send(id, content, state.tree.activeLeafId));
+    const sent = await navigateTree(() =>
+      api.send(id, content, state.tree.activeLeafId, state.tree.mutationRevision),
+    );
     // Restore on failure so nothing is lost — unless the user typed something
     // new during the round-trip, which must not be clobbered.
     if (!sent && !text()) {
@@ -194,22 +216,61 @@ export default function Composer() {
   };
 
   const stop = () => {
+    if (draftCompletionActive()) {
+      stopDraftCompletion();
+      return;
+    }
     const msg = streamingMessage();
-    if (msg) void api.stopGeneration(msg.id).catch(() => {});
+    if (msg?.generationToken != null)
+      void api.stopGeneration(msg.id, msg.generationToken).catch(() => {});
   };
 
   // Resume = continue the last assistant reply in place (prefill-style).
   const resumable = () => {
+    const endpointId = selectedConversation()?.endpointId ?? state.settings.activeEndpointId;
+    const endpoint = state.endpoints.find((candidate) => candidate.id === endpointId);
+    if (endpoint?.prefillMode === 'disabled') return null;
     const path = activePath();
     const last = path[path.length - 1];
-    return last && last.role === 'assistant' && last.status !== 'streaming' && last.content
+    return last &&
+      last.role === 'assistant' &&
+      last.status !== 'streaming' &&
+      (last.content || last.reasoning)
       ? last
       : null;
   };
 
   const resume = () => {
     const msg = resumable();
-    if (msg) void navigateTree(() => api.resume(msg.id, state.tree.activeLeafId));
+    if (msg)
+      void navigateTree(() =>
+        api.resume(msg.id, state.tree.activeLeafId, state.tree.mutationRevision),
+      );
+  };
+
+  const continueDraft = async () => {
+    const conversationId = state.selectedId;
+    const draft = text();
+    if (conversationId == null || !draft.trim() || draftCompletionActive()) return;
+    try {
+      await completeComposerDraft({
+        conversationId,
+        draft,
+        expectedActiveLeafId: state.tree.activeLeafId,
+        expectedMutationRevision: state.tree.mutationRevision,
+        onText: (next) => {
+          setText(next);
+          queueMicrotask(resize);
+        },
+      });
+    } catch (err) {
+      toast(errorMessage(err));
+    }
+  };
+
+  const continueTextOrReply = () => {
+    if (text().trim()) void continueDraft();
+    else resume();
   };
 
   const onKeyDown = (event: KeyboardEvent) => {
@@ -321,6 +382,7 @@ export default function Composer() {
           rows="1"
           placeholder="Type a message or / for commands…"
           value={text()}
+          readOnly={draftCompletionActive()}
           onInput={(e) => {
             setText(e.currentTarget.value);
             resize();
@@ -328,18 +390,22 @@ export default function Composer() {
           onKeyDown={onKeyDown}
         />
         <Show
-          when={!streamingMessage()}
+          when={!streamingMessage() && !draftCompletionActive()}
           fallback={
             <button class="send-btn stop-btn" title="Stop generating" onClick={stop}>
               <StopIcon />
             </button>
           }
         >
-          <Show when={resumable()}>
+          <Show when={text().trim() || resumable()}>
             <button
               class="send-btn resume-btn"
-              title="Resume last reply (assistant prefill)"
-              onClick={resume}
+              title={
+                text().trim()
+                  ? 'Continue writing this message'
+                  : 'Resume last reply (assistant prefill)'
+              }
+              onClick={continueTextOrReply}
             >
               <ResumeIcon />
             </button>
