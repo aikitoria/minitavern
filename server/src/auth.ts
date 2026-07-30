@@ -1,4 +1,4 @@
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { stmt } from './db.ts';
 
@@ -7,11 +7,13 @@ const SESSION_COOKIE = 'minitavern_session';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PASSWORD_LENGTH = 1024;
 
-interface Session {
-  expiresAt: number;
+function sessionHash(token: string): string {
+  return createHash('sha256').update(token).digest('base64url');
 }
 
-const sessions = new Map<string, Session>();
+// Expired rows from devices that never return are pruned at process startup;
+// individual expiry is still checked on every authenticated request.
+stmt('DELETE FROM auth_sessions WHERE expires_at <= ?').run(Date.now());
 
 function storedPasswordHash(): string | null {
   const row = stmt('SELECT value FROM settings WHERE key = ?').get(PASSWORD_KEY) as
@@ -67,7 +69,7 @@ export function setAccessPassword(password: string | null): void {
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     ).run(PASSWORD_KEY, hashPassword(password));
   }
-  sessions.clear();
+  stmt('DELETE FROM auth_sessions').run();
 }
 
 function cookieValue(req: IncomingMessage, name: string): string | null {
@@ -84,10 +86,13 @@ function cookieValue(req: IncomingMessage, name: string): string | null {
 function validSession(req: IncomingMessage): boolean {
   const token = cookieValue(req, SESSION_COOKIE);
   if (!token) return false;
-  const session = sessions.get(token);
+  const tokenHash = sessionHash(token);
+  const session = stmt('SELECT expires_at FROM auth_sessions WHERE token_hash = ?').get(
+    tokenHash,
+  ) as { expires_at: number } | undefined;
   if (!session) return false;
-  if (session.expiresAt <= Date.now()) {
-    sessions.delete(token);
+  if (session.expires_at <= Date.now()) {
+    stmt('DELETE FROM auth_sessions WHERE token_hash = ?').run(tokenHash);
     return false;
   }
   return true;
@@ -108,7 +113,12 @@ function cookieSecurity(req: IncomingMessage): string {
 
 export function startSession(req: IncomingMessage, res: ServerResponse): void {
   const token = randomBytes(32).toString('base64url');
-  sessions.set(token, { expiresAt: Date.now() + SESSION_TTL_MS });
+  const now = Date.now();
+  stmt('INSERT INTO auth_sessions (token_hash, expires_at, created_at) VALUES (?, ?, ?)').run(
+    sessionHash(token),
+    now + SESSION_TTL_MS,
+    now,
+  );
   res.setHeader(
     'set-cookie',
     `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${cookieSecurity(req)}`,
@@ -117,7 +127,7 @@ export function startSession(req: IncomingMessage, res: ServerResponse): void {
 
 export function clearSession(req: IncomingMessage, res: ServerResponse): void {
   const token = cookieValue(req, SESSION_COOKIE);
-  if (token) sessions.delete(token);
+  if (token) stmt('DELETE FROM auth_sessions WHERE token_hash = ?').run(sessionHash(token));
   res.setHeader(
     'set-cookie',
     `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${cookieSecurity(req)}`,

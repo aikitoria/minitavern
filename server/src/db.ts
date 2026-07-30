@@ -371,6 +371,23 @@ if (version < 19) {
   `);
 }
 
+// Login sessions survive ordinary process/container restarts. Only a SHA-256
+// digest of the opaque cookie token is stored; changing/removing the password
+// clears this table through auth.ts.
+if (version < 20) {
+  db.exec(`
+    BEGIN;
+    CREATE TABLE auth_sessions (
+      token_hash TEXT PRIMARY KEY,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX auth_sessions_expiry ON auth_sessions(expires_at);
+    PRAGMA user_version = 20;
+    COMMIT;
+  `);
+}
+
 // Generations don't survive a restart: finalize any rows a previous process left streaming.
 // Speculative placeholders are disposable; do not expose them as broken swipe choices.
 db.prepare(

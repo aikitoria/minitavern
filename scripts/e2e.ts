@@ -3290,6 +3290,44 @@ async function main() {
     login.status === 200 && cookie.startsWith('minitavern_session='),
     'the correct access password creates a session',
   );
+  const authModule = new URL('../server/src/auth.ts', import.meta.url).href;
+  const freshProcessAuth = execFileSync(
+    process.execPath,
+    [
+      '--input-type=module',
+      '-e',
+      `const { isRequestAuthenticated } = await import(process.env.AUTH_MODULE);
+       process.stdout.write(isRequestAuthenticated({ headers: { cookie: process.env.AUTH_COOKIE }, socket: {} }) ? 'yes' : 'no');`,
+    ],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AUTH_MODULE: authModule, AUTH_COOKIE: cookie },
+      encoding: 'utf8',
+    },
+  );
+  assert(
+    freshProcessAuth === 'yes',
+    'a login cookie remains valid in a fresh server process using the same database',
+  );
+  const sessionToken = cookie.slice(cookie.indexOf('=') + 1);
+  const sessionDb = new DatabaseSync(join(dataDir, 'minitavern.db'), { readOnly: true });
+  try {
+    const persisted = sessionDb
+      .prepare('SELECT token_hash, expires_at FROM auth_sessions')
+      .all() as { token_hash: string; expires_at: number }[];
+    assert(
+      persisted.length >= 1 &&
+        persisted.every(
+          (session) =>
+            session.token_hash !== sessionToken &&
+            !session.token_hash.includes(sessionToken) &&
+            session.expires_at > Date.now(),
+        ),
+      'persistent sessions store only unexpired token hashes',
+    );
+  } finally {
+    sessionDb.close();
+  }
   const authenticatedApi = await fetch(`${BASE}/api/conversations`, {
     headers: { cookie },
   });
@@ -3320,6 +3358,17 @@ async function main() {
     }),
   });
   assert(disableAuth.status === 200, 'the access password can be removed in settings');
+  const sessionsAfterDisable = new DatabaseSync(join(dataDir, 'minitavern.db'), {
+    readOnly: true,
+  });
+  try {
+    const count = sessionsAfterDisable.prepare('SELECT count(*) AS n FROM auth_sessions').get() as {
+      n: number;
+    };
+    assert(count.n === 0, 'removing the access password revokes persisted sessions');
+  } finally {
+    sessionsAfterDisable.close();
+  }
   const passwordFreeAgain = await fetch(`${BASE}/api/conversations`);
   assert(passwordFreeAgain.status === 200, 'removing the password restores password-free access');
 
