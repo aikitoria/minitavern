@@ -74,7 +74,8 @@ Set `MINITAVERN_IP_ALLOWLIST=` (an explicitly empty value) to allow every source
 For an additional application-level gate, set an access password under **Settings > General**.
 No password is configured by default. When enabled, API requests, generated media, avatars, and
 WebSocket connections require an authenticated HTTP-only session cookie; the IP allowlist still
-applies independently.
+applies independently. Login sessions last 30 days and survive ordinary server/container restarts;
+changing or removing the password revokes them immediately.
 Use HTTPS when the password will cross an untrusted network.
 
 ### HTTPS
@@ -117,7 +118,7 @@ supported; the selected one is what `/image` uses.
 
 - **Enter** sends, **Shift+Enter** inserts a newline (on touch layouts Enter is always a newline; use the send button).
 - **Up** in an empty composer edits your last message in place; **Ctrl/Cmd+Enter** in any message editor submits as a new branch, **Escape** cancels.
-- **Left/Right** swipe the last assistant reply between siblings (Right past the end regenerates); on touch, swipe the reply horizontally.
+- **Left/Right** swipe the last image's alternatives when an image message is above the composer (Right past the end renders another); otherwise they swipe the last assistant reply between siblings (Right past the end regenerates). On touch, swipe a reply horizontally—the forward gesture also cancels an in-flight reply before generating its next swipe.
 - `/char <name>` sets the assistant speaker name, `/del <n>` deletes the last n messages including their swipes and descendants, `/delchat` deletes the conversation.
 - `/image [instruction]` generates an image description from the chat context and, with a workflow configured, renders it via ComfyUI (Image Generation plugin; prompts and workflows configurable in Settings > Tools).
 
