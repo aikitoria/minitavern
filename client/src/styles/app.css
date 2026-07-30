@@ -654,6 +654,15 @@ textarea.mono,
   background: var(--bg-hover);
 }
 
+.new-chat-search {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: var(--space-2);
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
 .new-chat-menu .new-chat-folder-toggle {
   color: var(--text-muted);
   font-size: 12px;
@@ -946,6 +955,12 @@ textarea.mono,
 .msg-body {
   flex: 1;
   min-width: 0;
+}
+
+/* Keep vertical chat scrolling native while reserving horizontal assistant
+   card swipes for branch navigation (including an in-flight reply). */
+.msg-assistant {
+  touch-action: pan-y;
 }
 
 /* Plugin tool output: visibly part of the chat, but not a character reply. */
@@ -2015,6 +2030,14 @@ textarea.mono,
   border: 1px dashed var(--border);
 }
 
+.entity-list-search {
+  margin-bottom: var(--space-2);
+}
+
+.entity-list-search .search-input {
+  min-height: 36px;
+}
+
 .entity-list .entity-new-btn:hover,
 .entity-list .entity-new-btn.active {
   background: var(--bg-raised);
@@ -2027,6 +2050,11 @@ textarea.mono,
   width: 24px;
   height: 24px;
   font-size: 12px;
+}
+
+.entity-list .character-tree-entry {
+  min-height: 34px;
+  padding: var(--space-1) var(--space-2);
 }
 
 .entity-list .character-folder {
@@ -2071,8 +2099,8 @@ textarea.mono,
 }
 
 .entity-list .character-tree-child {
-  margin-left: 20px;
-  padding-left: 24px;
+  margin-left: 12px;
+  padding-left: 20px;
   position: relative;
 }
 

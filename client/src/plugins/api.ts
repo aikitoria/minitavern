@@ -29,12 +29,16 @@ export interface PluginMessageView {
   claims: (message: Message) => boolean;
   /** Current render configuration to use for a manual regeneration. */
   currentImageConfig?: () => { workflow: string; comfyUrl: string } | undefined;
+  /** Optional Left/Right action when this is the last message above the composer. */
+  swipe?: (message: Message, dir: 1 | -1) => void;
   create: (
     message: () => Message,
     ctx: { streaming: () => boolean },
   ) => {
     /** Rendered among the chips in the message header. */
     Header?: () => JSX.Element;
+    /** Rendered in the right-aligned group with swipe and action controls. */
+    HeaderTools?: () => JSX.Element;
     /** Replaces the default content rendering of the message body. */
     Body: () => JSX.Element;
   };

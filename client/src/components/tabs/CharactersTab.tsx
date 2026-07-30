@@ -18,6 +18,7 @@ export default function CharactersTab() {
   const [customPrompt, setCustomPrompt] = createSignal(false);
   const [customTemplate, setCustomTemplate] = createSignal(false);
   const [avatarGen, setAvatarGen] = createSignal(false);
+  const [characterQuery, setCharacterQuery] = createSignal('');
   let nameEl!: HTMLInputElement;
   let folderEl!: SelectHandle;
   let personalityEl!: HTMLTextAreaElement;
@@ -97,12 +98,27 @@ export default function CharactersTab() {
     });
   };
   const characterFolderExists = (id: number) => state.characterFolders.some((f) => f.id === id);
+  const normalizedCharacterQuery = () => characterQuery().trim().toLocaleLowerCase();
+  const characterMatches = (character: Character) =>
+    !normalizedCharacterQuery() ||
+    character.name.toLocaleLowerCase().includes(normalizedCharacterQuery());
   const rootCharacters = () =>
     state.characters.filter(
-      (character) => character.folderId == null || !characterFolderExists(character.folderId),
+      (character) =>
+        (character.folderId == null || !characterFolderExists(character.folderId)) &&
+        characterMatches(character),
     );
   const charactersInFolder = (id: number) =>
-    state.characters.filter((character) => character.folderId === id);
+    state.characters.filter(
+      (character) => character.folderId === id && characterMatches(character),
+    );
+  const searchActive = () => normalizedCharacterQuery().length > 0;
+  const matchingCharacterCount = () =>
+    rootCharacters().length +
+    state.characterFolders.reduce(
+      (total, folder) => total + charactersInFolder(folder.id).length,
+      0,
+    );
 
   const createFolder = async () => {
     const name = prompt('Folder name?')?.trim();
@@ -135,6 +151,7 @@ export default function CharactersTab() {
 
   const CharacterButton = (props: { character: Character; child?: boolean }) => (
     <button
+      class="character-tree-entry"
       classList={{
         active: editor.selectedId() === props.character.id,
         'character-tree-child': props.child,
@@ -206,52 +223,75 @@ export default function CharactersTab() {
           />
         </>
       }
+      listSearch={
+        <div class="entity-list-search">
+          <input
+            class="search-input"
+            placeholder="Search characters…"
+            value={characterQuery()}
+            onInput={(event) => setCharacterQuery(event.currentTarget.value)}
+          />
+        </div>
+      }
       listContent={
         <>
           <For each={state.characterFolders}>
             {(folder) => (
-              <section class="character-folder">
-                <div class="character-folder-row">
-                  <button
-                    class="character-folder-toggle"
-                    aria-expanded={!collapsedFolders().has(folder.id)}
-                    title={collapsedFolders().has(folder.id) ? 'Expand folder' : 'Collapse folder'}
-                    onClick={() => toggleFolder(folder.id)}
-                  >
-                    <span class="tree-disclosure">
-                      {collapsedFolders().has(folder.id) ? '▸' : '▾'}
-                    </span>
-                    <span class="character-folder-name">{folder.name}</span>
-                  </button>
-                  <button
-                    class="character-folder-action"
-                    title="Rename folder"
-                    onClick={() => void renameFolder(folder.id, folder.name)}
-                  >
-                    ✎
-                  </button>
-                  <button
-                    class="character-folder-action"
-                    title="Delete folder"
-                    onClick={() => void deleteFolder(folder.id, folder.name)}
-                  >
-                    ×
-                  </button>
-                </div>
-                <Show when={!collapsedFolders().has(folder.id)}>
-                  <For each={charactersInFolder(folder.id)}>
-                    {(character) => <CharacterButton character={character} child />}
-                  </For>
-                  <Show when={charactersInFolder(folder.id).length === 0}>
-                    <span class="character-folder-empty">Empty folder</span>
+              <Show when={!searchActive() || charactersInFolder(folder.id).length > 0}>
+                <section class="character-folder">
+                  <div class="character-folder-row">
+                    <button
+                      class="character-folder-toggle"
+                      aria-expanded={searchActive() || !collapsedFolders().has(folder.id)}
+                      title={
+                        searchActive()
+                          ? 'Matching characters'
+                          : collapsedFolders().has(folder.id)
+                            ? 'Expand folder'
+                            : 'Collapse folder'
+                      }
+                      onClick={() => {
+                        if (!searchActive()) toggleFolder(folder.id);
+                      }}
+                    >
+                      <span class="tree-disclosure">
+                        {searchActive() || !collapsedFolders().has(folder.id) ? '▾' : '▸'}
+                      </span>
+                      <span class="character-folder-name">{folder.name}</span>
+                    </button>
+                    <button
+                      class="character-folder-action"
+                      title="Rename folder"
+                      onClick={() => void renameFolder(folder.id, folder.name)}
+                    >
+                      ✎
+                    </button>
+                    <button
+                      class="character-folder-action"
+                      title="Delete folder"
+                      onClick={() => void deleteFolder(folder.id, folder.name)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                  <Show when={searchActive() || !collapsedFolders().has(folder.id)}>
+                    <For each={charactersInFolder(folder.id)}>
+                      {(character) => <CharacterButton character={character} child />}
+                    </For>
+                    <Show when={!searchActive() && charactersInFolder(folder.id).length === 0}>
+                      <span class="character-folder-empty">Empty folder</span>
+                    </Show>
                   </Show>
-                </Show>
-              </section>
+                </section>
+              </Show>
             )}
           </For>
           <For each={rootCharacters()}>
             {(character) => <CharacterButton character={character} />}
           </For>
+          <Show when={searchActive() && matchingCharacterCount() === 0}>
+            <p class="hint search-empty">No matches.</p>
+          </Show>
         </>
       }
       extraActions={

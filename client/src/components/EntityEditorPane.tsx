@@ -26,6 +26,8 @@ export default function EntityEditorPane<T extends { id: number }>(props: {
   newLabel: string;
   /** Extra list-header content rendered beside "+ New" (e.g. card import). */
   listActions?: JSX.Element;
+  /** Optional filtering control between the list actions and list contents. */
+  listSearch?: JSX.Element;
   /** Extra action buttons for existing entities, before Delete (e.g. Export). */
   extraActions?: JSX.Element;
   /** Custom hierarchy for lists that are not flat (e.g. character folders). */
@@ -51,6 +53,7 @@ export default function EntityEditorPane<T extends { id: number }>(props: {
             {props.listActions}
           </div>
         </Show>
+        {props.listSearch}
         <Show
           when={props.listContent}
           fallback={

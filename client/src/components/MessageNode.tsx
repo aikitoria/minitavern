@@ -362,6 +362,7 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
           </Show>
           {pluginView()?.Header?.()}
           <span class="msg-tools-top">
+            {pluginView()?.HeaderTools?.()}
             <Show when={siblings().length > 1 || (isAssistant() && !editing())}>
               <span class="branch-nav">
                 <button

@@ -1,4 +1,4 @@
-import { For, Show, createSignal } from 'solid-js';
+import { For, Show, createSignal, onCleanup, onMount } from 'solid-js';
 import type { Component } from 'solid-js';
 import { Dynamic } from 'solid-js/web';
 import { openModal } from '../state/store.ts';
@@ -23,6 +23,31 @@ const TABS: { key: string; label: string; component: Component }[] = [
   { key: 'tools', label: 'Tools', component: ToolsTab },
 ];
 
+const canScroll = (element: HTMLElement, deltaY: number) =>
+  deltaY < 0
+    ? element.scrollTop > 1
+    : element.scrollTop + element.clientHeight < element.scrollHeight - 1;
+
+/** The modal body scrolls simple tabs, while master-detail tabs scroll their
+ * detail form. Find whichever scroll owner encloses this field. */
+function settingsScrollOwner(area: HTMLTextAreaElement): HTMLElement | null {
+  const modal = area.closest<HTMLElement>('.settings-modal');
+  for (
+    let element = area.parentElement;
+    element && element !== modal;
+    element = element.parentElement
+  ) {
+    const overflow = getComputedStyle(element).overflowY;
+    if (
+      (overflow === 'auto' || overflow === 'scroll') &&
+      element.scrollHeight > element.clientHeight
+    ) {
+      return element;
+    }
+  }
+  return null;
+}
+
 export default function SettingsModal() {
   const [tab, setTab] = createSignal('general');
   const [promptOpen, setPromptOpen] = createSignal(false);
@@ -30,6 +55,27 @@ export default function SettingsModal() {
   const activeTab = () => TABS.find((item) => item.key === tab()) ?? TABS[0]!;
   let activeActions: SettingsSectionActions | undefined;
   let pendingNavigation: (() => void) | undefined;
+
+  const onWheel = (event: WheelEvent) => {
+    if (!event.deltaY || Math.abs(event.deltaX) > Math.abs(event.deltaY)) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const area = target.closest<HTMLTextAreaElement>('.settings-modal textarea');
+    if (!area) return;
+    // Focusing a multiline editor explicitly opts into its native wheel
+    // behavior, including what happens at its own scroll boundaries.
+    if (document.activeElement === area) return;
+    const owner = settingsScrollOwner(area);
+    if (!owner || !canScroll(owner, event.deltaY)) return;
+
+    // Hover alone should never trap settings scroll.
+    const scale = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? owner.clientHeight : 1;
+    event.preventDefault();
+    owner.scrollTop += event.deltaY * scale;
+  };
+
+  onMount(() => document.addEventListener('wheel', onWheel, { capture: true, passive: false }));
+  onCleanup(() => document.removeEventListener('wheel', onWheel, true));
 
   const register = (actions: SettingsSectionActions) => {
     activeActions = actions;

@@ -11,6 +11,7 @@ import MessageNode from './MessageNode.tsx';
 import TraceView from './TraceView.tsx';
 import TreeMap from './TreeMap.tsx';
 import TreeView from './TreeView.tsx';
+import { findMessageView } from '../plugins/index.ts';
 
 export default function ChatView() {
   let scroller!: HTMLDivElement;
@@ -56,8 +57,9 @@ export default function ChatView() {
     lastTouchY = touch.clientY;
   };
 
-  // Arrow keys swipe the last assistant message (like the touch gesture),
-  // unless the user is typing somewhere non-empty.
+  // Arrow keys operate the last swipeable item above the composer: plugin
+  // media alternatives take priority, then ordinary assistant siblings.
+  // Anything non-empty and editable keeps its normal caret behavior.
   const onKey = (event: KeyboardEvent) => {
     if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
     if (event.repeat) return;
@@ -84,7 +86,15 @@ export default function ChatView() {
     }
     const path = activePath();
     const last = path[path.length - 1];
-    if (!last || last.role !== 'assistant') return;
+    if (!last) return;
+    const dir = event.key === 'ArrowLeft' ? -1 : 1;
+    const pluginSwipe = findMessageView(last)?.swipe;
+    if (pluginSwipe) {
+      pluginSwipe(last, dir);
+      event.preventDefault();
+      return;
+    }
+    if (last.role !== 'assistant') return;
     if (event.key === 'ArrowLeft') {
       if (last.status === 'streaming' || streamingMessage()) return;
       void swipeToSibling(last, -1);

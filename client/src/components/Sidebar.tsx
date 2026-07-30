@@ -28,6 +28,7 @@ interface ConvGroup {
 
 export default function Sidebar() {
   const [newMenuOpen, setNewMenuOpen] = createSignal(false);
+  const [newChatQuery, setNewChatQuery] = createSignal('');
   const [collapsedCharacterFolders, setCollapsedCharacterFolders] = createSignal<
     ReadonlySet<number>
   >(new Set());
@@ -39,7 +40,10 @@ export default function Sidebar() {
   useDismiss(
     () => newChatWrap,
     newMenuOpen,
-    () => setNewMenuOpen(false),
+    () => {
+      setNewMenuOpen(false);
+      setNewChatQuery('');
+    },
   );
 
   // Apply only if the query hasn't changed while the request was in flight.
@@ -79,6 +83,7 @@ export default function Sidebar() {
 
   const create = (characterId: number | null) => {
     setNewMenuOpen(false);
+    setNewChatQuery('');
     void newConversation(characterId);
   };
 
@@ -92,12 +97,27 @@ export default function Sidebar() {
   };
 
   const characterFolderExists = (id: number) => state.characterFolders.some((f) => f.id === id);
+  const normalizedNewChatQuery = () => newChatQuery().trim().toLocaleLowerCase();
+  const characterMatches = (character: Character) =>
+    !normalizedNewChatQuery() ||
+    character.name.toLocaleLowerCase().includes(normalizedNewChatQuery());
   const rootCharacters = () =>
     state.characters.filter(
-      (character) => character.folderId == null || !characterFolderExists(character.folderId),
+      (character) =>
+        (character.folderId == null || !characterFolderExists(character.folderId)) &&
+        characterMatches(character),
     );
   const charactersInFolder = (id: number) =>
-    state.characters.filter((character) => character.folderId === id);
+    state.characters.filter(
+      (character) => character.folderId === id && characterMatches(character),
+    );
+  const newChatSearchActive = () => normalizedNewChatQuery().length > 0;
+  const matchingNewChatCharacters = () =>
+    rootCharacters().length +
+    state.characterFolders.reduce(
+      (total, folder) => total + charactersInFolder(folder.id).length,
+      0,
+    );
 
   const remove = async (id: number, event: MouseEvent) => {
     event.stopPropagation();
@@ -206,11 +226,26 @@ export default function Sidebar() {
       </div>
 
       <div class="new-chat-wrap" ref={newChatWrap}>
-        <button class="new-chat-btn" onClick={() => setNewMenuOpen(!newMenuOpen())}>
+        <button
+          class="new-chat-btn"
+          onClick={() => {
+            const open = !newMenuOpen();
+            setNewMenuOpen(open);
+            if (!open) setNewChatQuery('');
+          }}
+        >
           + New chat
         </button>
         <Show when={newMenuOpen()}>
           <div class="new-chat-menu">
+            <div class="new-chat-search">
+              <input
+                class="search-input"
+                placeholder="Search characters…"
+                value={newChatQuery()}
+                onInput={(event) => setNewChatQuery(event.currentTarget.value)}
+              />
+            </div>
             {/* Characterless fallback, only when no characters exist (Assistant is normally a seeded character). */}
             <Show when={state.characters.length === 0}>
               <button onClick={() => create(null)}>
@@ -223,15 +258,23 @@ export default function Sidebar() {
                   <div class="new-chat-folder">
                     <button
                       class="new-chat-folder-toggle"
-                      aria-expanded={!collapsedCharacterFolders().has(folder.id)}
-                      onClick={() => toggleCharacterFolder(folder.id)}
+                      aria-expanded={
+                        newChatSearchActive() || !collapsedCharacterFolders().has(folder.id)
+                      }
+                      onClick={() => {
+                        if (!newChatSearchActive()) toggleCharacterFolder(folder.id);
+                      }}
                     >
                       <span class="tree-disclosure">
-                        {collapsedCharacterFolders().has(folder.id) ? '▸' : '▾'}
+                        {newChatSearchActive() || !collapsedCharacterFolders().has(folder.id)
+                          ? '▾'
+                          : '▸'}
                       </span>
                       <span>{folder.name}</span>
                     </button>
-                    <Show when={!collapsedCharacterFolders().has(folder.id)}>
+                    <Show
+                      when={newChatSearchActive() || !collapsedCharacterFolders().has(folder.id)}
+                    >
                       <For each={charactersInFolder(folder.id)}>
                         {(character) => (
                           <button
@@ -254,6 +297,9 @@ export default function Sidebar() {
                 </button>
               )}
             </For>
+            <Show when={newChatSearchActive() && matchingNewChatCharacters() === 0}>
+              <p class="hint search-empty">No matches.</p>
+            </Show>
           </div>
         </Show>
       </div>

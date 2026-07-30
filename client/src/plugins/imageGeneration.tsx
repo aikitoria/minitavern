@@ -1,5 +1,5 @@
 import { Show, createSignal, onMount, type JSX } from 'solid-js';
-import { workflowValidationError } from '@minitavern/shared';
+import { workflowValidationError, type Message } from '@minitavern/shared';
 import type { Plugin, PluginMessageView, PluginTool } from './api.ts';
 import { pluginSettings } from './api.ts';
 import { api, ApiError } from '../state/api.ts';
@@ -804,6 +804,48 @@ function SettingsPage() {
   );
 }
 
+const imageSwipeBusy = new Set<number>();
+
+const imageOnActivePath = (message: Message) =>
+  activePath().some((active) => active.id === message.id);
+
+const canRenderImage = (message: Message) =>
+  !state.treeNavigationPending &&
+  imageOnActivePath(message) &&
+  !message.imagePending &&
+  (message.hasImageRender || activeRenderConfig() != null);
+
+/** Shared by header buttons and ChatView's Left/Right shortcut. */
+async function swipeImage(message: Message, dir: 1 | -1): Promise<void> {
+  const activeImage = Math.min(message.activeImage, message.images.length - 1);
+  const index = activeImage + dir;
+  if (index < 0 || imageSwipeBusy.has(message.id) || state.treeNavigationPending) return;
+  imageSwipeBusy.add(message.id);
+  try {
+    if (index >= message.images.length) {
+      if (!canRenderImage(message)) return;
+      await navigateTree(() =>
+        api.renderImage(
+          message.id,
+          state.tree.activeLeafId,
+          state.tree.mutationRevision,
+          // A manual rerender follows the workflow currently selected in
+          // settings. The server falls back to the stored snapshot only when
+          // no workflow is selected now.
+          activeRenderConfig(),
+        ),
+      );
+    } else {
+      if (!imageOnActivePath(message)) return;
+      await navigateTree(() =>
+        api.setActiveImage(message.id, index, state.tree.activeLeafId, state.tree.mutationRevision),
+      );
+    }
+  } finally {
+    imageSwipeBusy.delete(message.id);
+  }
+}
+
 /** Owns the rendering of this plugin's tool messages: collapsible prompt,
  * image with fullscreen viewer, header swiper (› past the end re-renders
  * with a fresh seed), render progress and error/retry. */
@@ -814,6 +856,9 @@ const messageView: PluginMessageView = {
     message.hasImageRender ||
     message.name === 'Image prompt',
   currentImageConfig: activeRenderConfig,
+  swipe: (message, dir) => {
+    void swipeImage(message, dir);
+  },
   create: (message, ctx) => {
     const [showPrompt, setShowPrompt] = createSignal(false);
     const [viewerOpen, setViewerOpen] = createSignal(false);
@@ -832,65 +877,25 @@ const messageView: PluginMessageView = {
     // streamed preview frame during the render.
     const promptCollapsed = () => images().length > 0 || livePreview() != null;
     const onActivePath = () => activePath().some((active) => active.id === message().id);
-    const canRender = () =>
-      !state.treeNavigationPending &&
-      onActivePath() &&
-      !message().imagePending &&
-      (message().hasImageRender || activeRenderConfig() != null);
-
-    // In-flight guard: a double-click must not fire a second request that the
-    // server would just 409 into an error toast.
-    let swipeBusy = false;
-    const imageSwipe = async (dir: 1 | -1) => {
-      const idx = activeImage() + dir;
-      if (idx < 0 || swipeBusy || state.treeNavigationPending) return;
-      swipeBusy = true;
-      try {
-        if (idx >= images().length) {
-          if (!canRender()) return;
-          await navigateTree(() =>
-            api.renderImage(
-              message().id,
-              state.tree.activeLeafId,
-              state.tree.mutationRevision,
-              // A manual rerender follows the workflow currently selected in
-              // settings. The server falls back to the stored snapshot only
-              // when no workflow is selected now.
-              activeRenderConfig(),
-            ),
-          );
-        } else {
-          if (!onActivePath()) return;
-          await navigateTree(() =>
-            api.setActiveImage(
-              message().id,
-              idx,
-              state.tree.activeLeafId,
-              state.tree.mutationRevision,
-            ),
-          );
-        }
-      } catch (err) {
-        toast(errorMessage(err));
-      } finally {
-        swipeBusy = false;
-      }
-    };
+    const canRender = () => canRenderImage(message());
 
     const Header = () => (
+      <Show when={promptCollapsed()}>
+        <button
+          class="chip reasoning-chip icon-chip"
+          classList={{ 'chip-active': showPrompt() }}
+          title={showPrompt() ? 'Hide image prompt' : 'Show image prompt'}
+          aria-label={showPrompt() ? 'Hide image prompt' : 'Show image prompt'}
+          aria-expanded={showPrompt()}
+          onClick={() => setShowPrompt(!showPrompt())}
+        >
+          <PromptIcon />
+        </button>
+      </Show>
+    );
+
+    const HeaderTools = () => (
       <>
-        <Show when={promptCollapsed()}>
-          <button
-            class="chip reasoning-chip icon-chip"
-            classList={{ 'chip-active': showPrompt() }}
-            title={showPrompt() ? 'Hide image prompt' : 'Show image prompt'}
-            aria-label={showPrompt() ? 'Hide image prompt' : 'Show image prompt'}
-            aria-expanded={showPrompt()}
-            onClick={() => setShowPrompt(!showPrompt())}
-          >
-            <PromptIcon />
-          </button>
-        </Show>
         {/* Keep render status adjacent to, and before, the image alternatives
             it is currently extending. */}
         <Show when={message().imagePending && !ctx.streaming()}>
@@ -920,7 +925,7 @@ const messageView: PluginMessageView = {
             <button
               class="icon-btn"
               disabled={state.treeNavigationPending || !onActivePath() || activeImage() <= 0}
-              onClick={() => void imageSwipe(-1)}
+              onClick={() => void swipeImage(message(), -1)}
             >
               ‹
             </button>
@@ -937,7 +942,7 @@ const messageView: PluginMessageView = {
                   ? 'Generate another image (same prompt, new seed)'
                   : undefined
               }
-              onClick={() => void imageSwipe(1)}
+              onClick={() => void swipeImage(message(), 1)}
             >
               ›
             </button>
@@ -972,14 +977,14 @@ const messageView: PluginMessageView = {
           <div class="msg-error">
             Image render failed: {message().genMeta!.imageError}{' '}
             <Show when={canRender()}>
-              <button onClick={() => void imageSwipe(1)}>Retry</button>
+              <button onClick={() => void swipeImage(message(), 1)}>Retry</button>
             </Show>
           </div>
         </Show>
       </>
     );
 
-    return { Header, Body };
+    return { Header, HeaderTools, Body };
   },
 };
 
