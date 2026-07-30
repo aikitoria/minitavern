@@ -181,6 +181,22 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
     horizontal = false;
   };
 
+  const revealImageControlsOnFirstTap = (event: MouseEvent) => {
+    if (
+      !props.inMap &&
+      window.matchMedia('(pointer: coarse)').matches &&
+      touchedId() !== props.message.id &&
+      (event.target as Element).closest?.('.msg-image')
+    ) {
+      // Full-bleed images leave no spare card surface to tap. Consume the
+      // first image tap to reveal its controls; a second tap reaches the
+      // image viewer's click handler normally.
+      event.preventDefault();
+      event.stopPropagation();
+      setTouchedId(props.message.id);
+    }
+  };
+
   // An active descendant generation makes switching this ancestor incompatible
   // with the server's foreground-generation guard. Preserve the intentional
   // forward action on the active streaming leaf ("swipe past generation").
@@ -301,11 +317,20 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
 
   return (
     <article
+      ref={(element) => {
+        element.addEventListener('click', revealImageControlsOnFirstTap, true);
+        onCleanup(() =>
+          element.removeEventListener('click', revealImageControlsOnFirstTap, true),
+        );
+      }}
       class="msg"
       classList={{
         'msg-user': isUser(),
         'msg-assistant': isAssistant(),
         'msg-tool': isTool(),
+        'msg-streaming': streaming(),
+        'msg-hide-name': pluginView()?.hideName === true,
+        'msg-full-bleed': pluginView()?.fullBleed?.() === true,
         touched: touchedId() === props.message.id,
       }}
       // In the tree map the card handles clicks (branch activation) and pans on
@@ -345,22 +370,24 @@ export default function MessageNode(props: { message: Message; inMap?: boolean }
           <Show when={streaming() && !props.message.content && !props.message.reasoning}>
             <span class="spinner spinner-wait" />
           </Show>
-          <Show when={props.message.reasoning}>
-            <button
-              class="chip reasoning-chip icon-chip"
-              classList={{ 'chip-active': reasoningOpen() }}
-              title={reasoningOpen() ? 'Hide thinking' : 'Show thinking'}
-              aria-label={reasoningOpen() ? 'Hide thinking' : 'Show thinking'}
-              aria-expanded={reasoningOpen()}
-              onClick={() => setShowReasoning(!showReasoning())}
-            >
-              <ThinkingIcon />
-              <Show when={streaming() && !props.message.content}>
-                <span class="spinner" />
-              </Show>
-            </button>
-          </Show>
-          {pluginView()?.Header?.()}
+          <span class="msg-tools-left">
+            <Show when={props.message.reasoning}>
+              <button
+                class="chip reasoning-chip icon-chip"
+                classList={{ 'chip-active': reasoningOpen() }}
+                title={reasoningOpen() ? 'Hide thinking' : 'Show thinking'}
+                aria-label={reasoningOpen() ? 'Hide thinking' : 'Show thinking'}
+                aria-expanded={reasoningOpen()}
+                onClick={() => setShowReasoning(!showReasoning())}
+              >
+                <ThinkingIcon />
+                <Show when={streaming() && !props.message.content}>
+                  <span class="spinner" />
+                </Show>
+              </button>
+            </Show>
+            {pluginView()?.Header?.()}
+          </span>
           <span class="msg-tools-top">
             {pluginView()?.HeaderTools?.()}
             <Show when={siblings().length > 1 || (isAssistant() && !editing())}>

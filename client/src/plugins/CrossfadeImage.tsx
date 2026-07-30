@@ -86,7 +86,10 @@ export default function CrossfadeImage(props: {
               alt={current() ? props.alt : ''}
               aria-hidden={!current()}
               class={props.class}
-              style={{ opacity: layer.fade ? 0 : 1, 'z-index': layer.id }}
+              // Later grid items naturally paint above earlier ones, so the
+              // incoming frame needs no z-index. An ever-increasing value
+              // would eventually cover the message header controls.
+              style={{ opacity: layer.fade ? 0 : 1 }}
               classList={{
                 ...(props.classList ?? {}),
                 'image-crossfade-underlay': !current(),

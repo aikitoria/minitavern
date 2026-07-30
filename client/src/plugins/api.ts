@@ -39,6 +39,10 @@ export interface PluginMessageView {
     Header?: () => JSX.Element;
     /** Rendered in the right-aligned group with swipe and action controls. */
     HeaderTools?: () => JSX.Element;
+    /** Suppress the normal message-name label (the plugin supplies its own visual identity). */
+    hideName?: boolean;
+    /** Switch the message to a media-first card once visual output exists. */
+    fullBleed?: () => boolean;
     /** Replaces the default content rendering of the message body. */
     Body: () => JSX.Element;
   };

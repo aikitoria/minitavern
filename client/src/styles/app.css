@@ -26,6 +26,7 @@
   --radius-control: 8px;
   --radius-panel: 12px;
   --radius-modal: 16px;
+  --radius-media: calc(var(--radius-panel) + var(--space-3));
   --radius-pill: 999px;
   /* Backwards-compatible panel radius for plugin-owned styles. */
   --radius: var(--radius-panel);
@@ -969,12 +970,138 @@ textarea.mono,
   border: 1px dashed var(--border);
   /* Generated media uses a 12px radius. A uniform 12px inset keeps its
      bottom corners concentric with the card: 12px inner + 12px inset. */
-  border-radius: calc(var(--radius-panel) + var(--space-3));
+  border-radius: var(--radius-media);
   padding: var(--space-3);
 }
 
 .msg-tool .msg-name {
   color: var(--text-dim);
+}
+
+.msg-hide-name .msg-name {
+  display: none;
+}
+
+/* Once an image tool has visual output, it becomes the message surface: no
+   dashed wrapper, inset padding, or separate header row. The normal avatar
+   gutter remains so media aligns with the other messages. Header controls
+   remain structurally present as an overlay for hover/focus/touch. */
+
+.msg-tool.msg-full-bleed .msg-body {
+  position: relative;
+  padding: 0;
+  overflow: hidden;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-media);
+}
+
+.msg-tool.msg-full-bleed .msg-head {
+  position: absolute;
+  z-index: 3;
+  top: var(--space-2);
+  right: var(--space-2);
+  left: var(--space-2);
+  margin: 0;
+  pointer-events: none;
+}
+
+.msg-tool.msg-full-bleed .msg-tools-left,
+.msg-tool.msg-full-bleed .msg-tools-top {
+  pointer-events: auto;
+}
+
+.msg-tools-left,
+.msg-tool.msg-full-bleed .msg-tools-top {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.msg-tool.msg-full-bleed .msg-tools-top {
+  padding: 2px var(--space-1);
+  color: #fff;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--radius-pill);
+  transition:
+    background 0.12s,
+    border-color 0.12s,
+    box-shadow 0.12s;
+}
+
+.msg-tool.msg-full-bleed .msg-tools-top .branch-nav,
+.msg-tool.msg-full-bleed .msg-tools-top .msg-image-pending {
+  color: inherit;
+}
+
+.msg-tool.msg-full-bleed:hover .msg-tools-top,
+.msg-tool.msg-full-bleed:focus-within .msg-tools-top,
+.msg-tool.msg-full-bleed .msg-tools-top:has(.msg-image-pending) {
+  background: rgb(8 10 14 / 0.78);
+  border-color: rgb(255 255 255 / 0.22);
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(6px);
+}
+
+/* Thinking and image-prompt controls mirror the right-side toolbar: one
+   shared backdrop with transparent icon buttons inside. */
+.msg-tool.msg-hide-name .msg-tools-left {
+  opacity: 0;
+  pointer-events: none;
+  padding: 2px var(--space-1);
+  background: rgb(8 10 14 / 0.78);
+  border: 1px solid rgb(255 255 255 / 0.22);
+  border-radius: var(--radius-pill);
+  box-shadow: 0 2px 12px rgb(0 0 0 / 0.45);
+  backdrop-filter: blur(6px);
+  transition: opacity 0.12s;
+}
+
+.msg-tool.msg-hide-name .msg-tools-left:empty {
+  display: none;
+}
+
+.msg-tool.msg-hide-name .msg-tools-left .reasoning-chip {
+  min-width: 0;
+  height: auto;
+  padding: var(--space-1) var(--space-2);
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-radius: var(--radius-control);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.msg-tool.msg-hide-name .msg-tools-left .reasoning-chip:hover {
+  color: var(--text);
+  background: var(--bg-hover);
+}
+
+.msg-tool.msg-hide-name .msg-tools-left .reasoning-chip.chip-active {
+  color: var(--accent);
+}
+
+.msg-tool.msg-hide-name:hover .msg-tools-left,
+.msg-tool.msg-hide-name:focus-within .msg-tools-left,
+.msg-tool.msg-hide-name.msg-streaming .msg-tools-left {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+@media (pointer: coarse) {
+  .msg-tool.msg-full-bleed.touched .msg-tools-top {
+    background: rgb(8 10 14 / 0.78);
+    border-color: rgb(255 255 255 / 0.22);
+    box-shadow: 0 2px 12px rgb(0 0 0 / 0.45);
+    backdrop-filter: blur(6px);
+  }
+
+  .msg-tool.msg-hide-name.touched .msg-tools-left {
+    opacity: 1;
+    pointer-events: auto;
+  }
 }
 
 .msg-tool .msg-content {
@@ -1020,6 +1147,8 @@ textarea.mono,
   transform: translate(-50%, -50%);
   max-width: 92vw;
   max-height: 92dvh;
+  /* Match the image message and its loading card. */
+  border-radius: var(--radius-media);
   will-change: transform;
   cursor: grab;
 }

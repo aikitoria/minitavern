@@ -31,6 +31,15 @@
   margin-top: var(--space-2);
 }
 
+.msg-full-bleed .msg-image-crossfade {
+  margin-top: 0;
+}
+
+.msg-full-bleed .msg-image {
+  border: none;
+  border-radius: var(--radius-media);
+}
+
 .msg-image-live {
   cursor: default;
 }

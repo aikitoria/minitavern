@@ -984,7 +984,13 @@ const messageView: PluginMessageView = {
       </>
     );
 
-    return { Header, HeaderTools, Body };
+    return {
+      Header,
+      HeaderTools,
+      Body,
+      hideName: true,
+      fullBleed: () => displayedImage() != null,
+    };
   },
 };
 
