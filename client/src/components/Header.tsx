@@ -108,9 +108,9 @@ export default function Header() {
                     {selectedCharacter()?.name ?? 'Assistant'}
                   </button>
                 </Show>
-                <Show when={!activeEndpoint() || !activeEndpoint()!.model}>
+                <Show when={!activeEndpoint()}>
                   <button class="chip chip-warn" onClick={() => show('settings')}>
-                    {activeEndpoint() ? 'no model' : 'no endpoint'}
+                    no endpoint
                   </button>
                 </Show>
                 <Show when={activeEndpoint()}>

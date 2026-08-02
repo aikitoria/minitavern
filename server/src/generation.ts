@@ -266,13 +266,7 @@ function resolveEndpoint(conversation: Conversation | null): Endpoint {
   if (!endpointRow) {
     throw new Error('No active endpoint — pick one in Settings → General');
   }
-  const endpoint = toEndpoint(endpointRow);
-  if (!endpoint.model) {
-    throw new Error(
-      `Endpoint "${endpoint.name}" has no model selected — set one in Settings → Endpoints`,
-    );
-  }
-  return endpoint;
+  return toEndpoint(endpointRow);
 }
 
 /** Whether this conversation's endpoint can continue an existing assistant message. */
@@ -299,7 +293,7 @@ export async function chatCompletionOnce(
       ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
     },
     body: JSON.stringify({
-      model: endpoint.model,
+      ...(endpoint.model ? { model: endpoint.model } : {}),
       messages,
       stream: false,
       max_tokens: maxTokens,
@@ -350,7 +344,7 @@ export async function streamChatCompletion(
       ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
     },
     body: JSON.stringify({
-      model: endpoint.model,
+      ...(endpoint.model ? { model: endpoint.model } : {}),
       messages,
       stream: true,
       max_tokens: maxTokens,
@@ -487,7 +481,7 @@ async function run(conversation: Conversation, gen: ActiveGen, isResume: boolean
         ...(endpoint.apiKey ? { authorization: `Bearer ${endpoint.apiKey}` } : {}),
       },
       body: JSON.stringify({
-        model: endpoint.model,
+        ...(endpoint.model ? { model: endpoint.model } : {}),
         messages: upstreamMessages,
         stream: true,
         ...(p.temperature != null ? { temperature: p.temperature } : {}),

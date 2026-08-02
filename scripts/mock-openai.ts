@@ -62,6 +62,7 @@ interface CompletionRecord {
   assistantMessages: string[];
   messages: { role: string; content: string; reasoning_content?: string }[];
   model: string | null;
+  hasModel: boolean;
   maxTokens: number | null;
   reasoningEffort: string | null;
   lastMessageRole: string | null;
@@ -353,6 +354,7 @@ const server = http.createServer((req, res) => {
           .map((message) => message.content),
         messages: parsed.messages,
         model: parsed.model ?? null,
+        hasModel: Object.hasOwn(parsed, 'model'),
         maxTokens: parsed.max_tokens ?? null,
         reasoningEffort: parsed.reasoning_effort ?? null,
         lastMessageRole: parsed.messages.at(-1)?.role ?? null,

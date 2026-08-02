@@ -110,7 +110,7 @@ supported; the selected one is what `/image` uses.
 
 ## First-run setup
 
-1. Open Settings > **Endpoints**, add your OpenAI-compatible API (base URL up to `/v1`), create it, "Fetch models", pick the model and sampling settings, save.
+1. Open Settings > **Endpoints**, add your OpenAI-compatible API (base URL up to `/v1`), create it, and configure its sampling settings. Pick a model if the API requires one; leaving it blank lets the endpoint use its default model.
 2. In **General**, pick the active endpoint.
 3. Start chatting with the built-in **Assistant** character - it's a regular character, so you can edit its system prompt/template in **Characters**, or clone the pattern into as many specialized assistants as you like. Optionally define **Prompts** (system prompt presets), **Templates**, more **Characters** (or import PNG cards) and **Personas**.
 

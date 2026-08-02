@@ -1963,7 +1963,6 @@ async function main() {
   const smallEndpoint = await req<{ id: number }>('POST', '/api/endpoints', {
     name: 'mock-small',
     baseUrl: MOCK_URL,
-    model: 'mock-small',
   });
   const overridden = await req<{ endpointId: number | null }>(
     'PATCH',
@@ -1971,6 +1970,21 @@ async function main() {
     await branchBody(conv2.id, { endpointId: smallEndpoint.id }),
   );
   assert(overridden.endpointId === smallEndpoint.id, 'endpoint override persisted');
+  const defaultModelSend = await sendMessage(conv2.id, 'use the endpoint default');
+  const defaultModelFinal = await ws.waitFor(
+    (e) => e.t === 'final' && e.message.id === defaultModelSend.assistantMessageId,
+    'default-model generation finished',
+  );
+  const defaultModelSeen = (await (
+    await fetch(`${MOCK_CONTROL}/control/last-completion`)
+  ).json()) as { completion: { hasModel: boolean } | null };
+  assert(
+    defaultModelFinal.t === 'final' &&
+      defaultModelFinal.message.model === null &&
+      defaultModelSeen.completion?.hasModel === false,
+    'an endpoint without a selected model omits model from the upstream request',
+  );
+  await req('PATCH', `/api/endpoints/${smallEndpoint.id}`, { model: 'mock-small' });
   const overrideSend = await sendMessage(conv2.id, 'which model?');
   const overrideFinal = await ws.waitFor(
     (e) => e.t === 'final' && e.message.id === overrideSend.assistantMessageId,

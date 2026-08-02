@@ -133,14 +133,14 @@ export default function EndpointsTab() {
         </Show>
       </div>
 
-      <label>Model</label>
+      <label>Model (optional; blank uses the endpoint default)</label>
       <Show
         when={models().length > 0}
         fallback={
           <input
             value={model()}
             onChange={(e) => setModel(e.currentTarget.value)}
-            placeholder="model id (use Fetch models to list)"
+            placeholder="model id (blank uses endpoint default)"
           />
         }
       >
@@ -148,7 +148,7 @@ export default function EndpointsTab() {
           value={model()}
           onChange={setModel}
           options={[
-            { value: '', label: '— none —' },
+            { value: '', label: '— endpoint default —' },
             ...(model() && !models().includes(model())
               ? [{ value: model(), label: `${model()} (custom)` }]
               : []),

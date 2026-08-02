@@ -144,7 +144,7 @@ export interface Endpoint {
   /** Whether a secret is stored; the secret itself is never returned by the API. */
   hasApiKey: boolean;
   models: string[];
-  /** The model used for generations through this endpoint. */
+  /** The model used for generations; null omits the field and lets the endpoint choose. */
   model: string | null;
   /** Sampling settings sent with every generation through this endpoint. */
   genParams: GenParams;
